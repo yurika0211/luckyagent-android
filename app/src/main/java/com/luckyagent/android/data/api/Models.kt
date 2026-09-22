@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 @Serializable
 data class SessionsResponse(
     val sessions: List<RuntimeSession> = emptyList(),
+    val count: Int? = null,
 )
 
 @Serializable
@@ -57,6 +58,8 @@ data class HealthLive(
 data class WsEnvelope(
     val type: String,
     @SerialName("session_id") val sessionId: String? = null,
+    val id: String? = null,
+    @SerialName("parent_id") val parentId: String? = null,
     val data: JsonElement? = null,
     val error: String? = null,
 )
@@ -77,8 +80,21 @@ data class ChatOutbound(
 @Serializable
 data class MemoryListResponse(
     val entries: List<MemoryEntry> = emptyList(),
+    val results: List<MemoryEntry> = emptyList(),
     val count: Int? = null,
     val total: Int? = null,
+    val stats: MemoryStats? = null,
+)
+
+@Serializable
+data class MemoryStats(
+    val total: Int? = null,
+    val active: Int? = null,
+    val categories: Int? = null,
+    val short: Int? = null,
+    val medium: Int? = null,
+    val long: Int? = null,
+    @SerialName("long_term") val longTerm: Int? = null,
 )
 
 @Serializable
@@ -88,6 +104,44 @@ data class MemoryEntry(
     val category: String? = null,
     val tier: String? = null,
     val importance: Double? = null,
+    val tags: List<String> = emptyList(),
+    @SerialName("access_count") val accessCount: Int? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("state_key") val stateKey: String? = null,
+    @SerialName("state_value") val stateValue: String? = null,
+)
+
+@Serializable
+data class MemoryGraphResponse(
+    val nodes: List<MemoryGraphNode> = emptyList(),
+    val edges: List<MemoryGraphEdge> = emptyList(),
+    @SerialName("total_notes") val totalNotes: Int? = null,
+    @SerialName("total_edges") val totalEdges: Int? = null,
+    @SerialName("isolated_count") val isolatedCount: Int? = null,
+    val unresolved: Int? = null,
+    val truncated: Boolean? = null,
+    val categories: List<String> = emptyList(),
+)
+
+@Serializable
+data class MemoryGraphNode(
+    val id: String,
+    val title: String? = null,
+    val category: String? = null,
+    val tier: String? = null,
+    val path: String? = null,
+    val tags: List<String> = emptyList(),
+    val importance: Double? = null,
+    val degree: Int? = null,
+    val resolved: Boolean? = null,
+)
+
+@Serializable
+data class MemoryGraphEdge(
+    val source: String,
+    val target: String,
+    val weight: Int? = null,
 )
 
 @Serializable

@@ -15,21 +15,46 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 两端都只调同一套 HTTP API：
 
 - `GET /api/v1/health/live`
-- `GET /api/v1/sessions`
-- `GET /api/v1/sessions/{id}`
+- `GET /api/v1/sessions`（支持 `q` 搜索）
+- `GET /api/v1/sessions/{id}`（历史消息）
 - `POST /api/v1/chat`（可选；本客户端默认走 WebSocket）
 - `WS  /api/v1/ws?session=...`
-- `GET/POST /api/v1/memory` 等
+- `GET /api/v1/memory`、`/api/v1/memory/recall`、`/api/v1/memory/graph`
 
 **不走尚未补齐 TLS + 鉴权的 gRPC 对外通道。**
 
-## UI 对照 GUI
+## 当前能力（可日常联调）
 
-布局与导航对齐主仓 `UI/GUI`（OpenAI 风格聊天仪表盘）：
+- **Chat**
+  - WebSocket 事件：`stream_chunk` / `assistant_delta`、`tool_call`、`tool_result`、`stream_end` / `final`、`error`、`status`、`reasoning`、`cancel`
+  - 流式助手气泡 + 轻量 Markdown（标题 / 列表 / 粗斜体 / 行内代码 / 代码块）
+  - 工具调用卡片（名称、参数摘要、结果、running/done/failed）
+  - 连接状态条 + 断线有限次自动重连（最多 8 次，指数退避）
+  - 发送 / 停止（cancel）
+- **Sessions**
+  - 抽屉搜索、切换 session、加载历史（含历史 tool_calls）
+- **Settings**
+  - API Base / API Key / Session
+  - Bearer vs `X-API-Key`
+  - Health 探测、WS 重连、加密存储 Key
+- **Memory**
+  - recall 查询、tier stats、graph 摘要（节点/边数量占位，可视化下一迭代）
+- **Trajectory / Gateways / Skills**
+  - 只读 JSON 面板（对齐 GUI 入口，便于联调）
+
+## 还缺什么
+
+- 会话历史分页 / 向上加载更多
+- Memory graph 真正可视化（力导向或列表关系图）
+- 附件上传（图片等多模态）
+- 证书 pinning / 正式 release 签名与 CI APK
+- Trajectory 结构化时间线 UI（现为 JSON）
+
+## UI 对照 GUI
 
 | GUI (`UI/GUI`) | Android |
 |----------------|---------|
-| 左侧 sidebar 导航 | `AppScaffold` + `NavigationBar` / 抽屉 |
+| 左侧 sidebar 导航 | `NavigationBar` / `NavigationRail` |
 | Chat | `ChatScreen` |
 | Trajectory | `TrajectoryScreen` |
 | Gateways | `GatewaysScreen` |
@@ -37,83 +62,71 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 | Settings | `SettingsScreen` |
 | Memory graph | `MemoryScreen` |
 | 会话列表 + 搜索 | `SessionDrawer` |
-| 顶部 topbar + composer | `ChatTopBar` + `ComposerBar` |
-| 四叶草绿主题 | `CloverTheme`（同色 token） |
+| topbar + composer | `ChatTopBar` + `ComposerBar` |
+| 四叶草绿主题 | `CloverTheme` |
 
-主题色采样自 GUI `styles.css`：
+主题色：bg `#f9faf4` / side `#eef1e5` / surface `#ffffff` / text `#16190f` / accent `#3f8a37`。
 
-- bg `#f9faf4` / side `#eef1e5` / surface `#ffffff`
-- text `#16190f` / muted `#565a4b`
-- accent `#3f8a37` / leaf `#9dc74b`
+## 鉴权
 
-## 鉴权（必须）
-
-手机连非本机 `lh serve` 时，服务端需配置 `server.api_keys`。客户端在请求头带：
+手机连非本机 `lh serve` 时需 `server.api_keys`。客户端请求头：
 
 ```http
 X-API-Key: <key>
-```
-
-或：
-
-```http
+# 或
 Authorization: Bearer <key>
 ```
 
-Key 只存在应用加密存储（`EncryptedSharedPreferences` / DataStore），不进日志、不进 query string。
+Key 存在 `EncryptedSharedPreferences`，不进 URL / 默认不进 body 日志。
 
-局域网建议：
+## 真机联调步骤
 
-1. 电脑 `lh serve` 监听 `0.0.0.0:9090`（或具体局域网 IP）
-2. 配置 `server.api_keys`
-3. 手机与电脑同一 Wi-Fi，填 `http://192.168.x.x:9090` + API Key  
-4. 更稳：Tailscale / 隧道，而不是裸公网端口
+1. 电脑启动 API：`lh serve`（监听 `0.0.0.0:9090`，配好 `server.api_keys`）
+2. 手机与电脑同一局域网（或 Tailscale）
+3. 安装 debug APK 后打开 App → **Settings**
+4. API Base 填 `http://<电脑局域网IP>:9090`（模拟器可用 `http://10.0.2.2:9090`）
+5. 填 API Key，选择 Bearer 或 X-API-Key
+6. 点「保存并探测」看 Health；点「重连 WS」
+7. 回 **Chat** 发一条消息；侧栏可搜 session / 切历史
+8. **Memory** 可 recall；工具调用应出现卡片
 
-## 本地开发
+## 本地构建
 
-本机需要 Android SDK + JDK 17。若尚未安装 Android Studio，可用 Android Studio 打开本目录同步 Gradle。
+需要 **JDK 17** + **Android SDK (API 35)**。
 
 ```bash
-# 可选：生成 wrapper（有 Gradle 时）
-gradle wrapper
+bash scripts/check-env.sh
 
-# 编译 debug APK
+cp local.properties.example local.properties
+# 编辑 sdk.dir=...
+
+# 若缺 wrapper jar 且本机有 Gradle：
+gradle wrapper --gradle-version 8.11.1
+
 ./gradlew :app:assembleDebug
+# 输出: app/build/outputs/apk/debug/app-debug.apk
 
-# 装到设备 / 模拟器
 ./gradlew :app:installDebug
 ```
 
-首次打开 App：
-
-1. Settings → API Base（例 `http://192.168.1.8:9090`）
-2. Settings → API Key（与 `server.api_keys` 一致）
-3. 点「探测连接」→ 进入 Chat
-
-模拟器访问宿主机可用 `http://10.0.2.2:9090`。
+无 Android Studio / SDK 的机器只能改源码；编译请在装好 SDK 的环境或 CI 进行。
 
 ## 目录
 
 ```text
-app/
-  src/main/
-    AndroidManifest.xml
-    java/com/luckyagent/android/
-      LuckyAgentApp.kt
-      MainActivity.kt
-      ui/           # Compose 界面（对照 GUI）
-      data/         # API / WS / 设置存储
-      ui/theme/     # Clover 色板
+app/src/main/java/com/luckyagent/android/
+  data/api/          # HTTP + WebSocket 客户端与模型
+  data/settings/     # 加密设置
+  ui/screens/        # Chat / Settings / Memory / ...
+  ui/components/     # MarkdownText
+  ui/theme/          # Clover 色板
+scripts/check-env.sh
+docs/GUI-MAPPING.md
 ```
 
 ## 与主仓关系
 
 - 主仓：`yurika0211/lucky-agent`（Go + `UI/GUI`）
-- 本仓：仅 Android 客户端
-- 协议源：`docs/API.md` + `internal/server`
-- Electron 桌面壳在主仓 `UI/desktop`；手机端不复用 Electron
-
-## 状态
-
-脚手架已可编译结构齐全：导航、主题、设置、会话列表、聊天 WS 客户端骨架。  
-后续迭代：会话历史分页、Markdown/工具卡片、Memory graph 可视化、附件上传、证书 pinning。
+- 本仓：仅 Android 客户端 → `yurika0211/luckyagent-android`
+- 协议：`internal/websocket/message.go` + HTTP `/api/v1/*`
+- Electron 在主仓 `UI/desktop`；手机端不复用 Electron，也不内嵌 Go 运行时

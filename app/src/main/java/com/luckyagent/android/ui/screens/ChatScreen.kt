@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,6 +54,7 @@ import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
+import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverBgSide
@@ -70,7 +73,7 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    LaunchedEffect(state.bubbles.size) {
+    LaunchedEffect(state.bubbles.size, state.bubbles.lastOrNull()?.content) {
         if (state.bubbles.isNotEmpty()) {
             listState.animateScrollToItem(state.bubbles.lastIndex)
         }
@@ -139,6 +142,7 @@ private fun ChatTopBar(
     onReload: () -> Unit,
     onReconnect: () -> Unit,
 ) {
+    val reconnectHint = state.reconnectInfo?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
     Row(
         Modifier
             .fillMaxWidth()
@@ -152,7 +156,7 @@ private fun ChatTopBar(
         Column(Modifier.weight(1f)) {
             Text("LuckyAgent", style = MaterialTheme.typography.titleMedium, color = CloverText)
             Text(
-                text = "${state.settings.sessionId} · ${state.socketState.name.lowercase()}",
+                text = "${state.settings.sessionId} · ${state.socketState.name.lowercase()}$reconnectHint",
                 style = MaterialTheme.typography.labelSmall,
                 color = CloverText2,
                 maxLines = 1,
@@ -171,10 +175,12 @@ private fun MessageBubble(bubble: ChatBubble) {
     val isUser = bubble.role == "user"
     val isError = bubble.role == "error"
     val isTool = bubble.role == "tool"
+    val isSystem = bubble.role == "system"
     val bg = when {
         isUser -> CloverUserBubble
         isError -> MaterialTheme.colorScheme.errorContainer
         isTool -> CloverBgSide
+        isSystem -> CloverBgSide
         else -> CloverSurface
     }
     val align = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
@@ -189,18 +195,64 @@ private fun MessageBubble(bubble: ChatBubble) {
         ) {
             Text(
                 text = when {
-                    isTool -> bubble.toolName ?: "tool"
+                    isTool -> "tool"
+                    bubble.streaming -> "assistant · streaming"
                     else -> bubble.role
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = CloverText3,
             )
             Spacer(Modifier.height(4.dp))
-            Text(
-                text = bubble.content + if (bubble.streaming) " ▍" else "",
-                style = MaterialTheme.typography.bodyLarge,
-                color = CloverText,
-            )
+            when {
+                isTool -> {
+                    val status = when {
+                        !bubble.toolDone -> "running"
+                        bubble.toolSuccess == false -> "failed"
+                        else -> "done"
+                    }
+                    Text(
+                        text = "${bubble.toolName ?: "tool"} · $status",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = when {
+                            bubble.toolSuccess == false -> MaterialTheme.colorScheme.error
+                            bubble.toolDone -> CloverAccent
+                            else -> CloverText
+                        },
+                    )
+                    val args = bubble.toolArgs.orEmpty()
+                    if (args.isNotBlank()) {
+                        Text(
+                            text = args,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = CloverText2,
+                            modifier = Modifier
+                                .padding(top = 6.dp)
+                                .fillMaxWidth()
+                                .background(CloverSurface, RoundedCornerShape(8.dp))
+                                .padding(8.dp),
+                        )
+                    }
+                    val out = bubble.toolOutput.orEmpty()
+                    if (out.isNotBlank()) {
+                        Text(
+                            text = out,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = CloverText,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+                isError || isSystem || isUser -> {
+                    Text(
+                        text = bubble.content,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = CloverText,
+                    )
+                }
+                else -> {
+                    MarkdownText(markdown = bubble.content.ifBlank { if (bubble.streaming) "…" else "" })
+                }
+            }
         }
     }
 }
@@ -229,9 +281,6 @@ private fun ComposerBar(
                 .background(CloverBg)
                 .padding(horizontal = 12.dp, vertical = 10.dp),
         ) {
-            if (value.isEmpty()) {
-                Text("Message LuckyAgent…", color = CloverText3, style = MaterialTheme.typography.bodyLarge)
-            }
             BasicTextField(
                 value = value,
                 onValueChange = onChange,
@@ -239,7 +288,13 @@ private fun ComposerBar(
                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = CloverText),
                 cursorBrush = SolidColor(CloverAccent),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { onSend() }),
+                keyboardActions = KeyboardActions(onSend = { if (!running) onSend() }),
+                decorationBox = { inner ->
+                    if (value.isEmpty()) {
+                        Text("Message LuckyAgent…", color = CloverText3)
+                    }
+                    inner()
+                },
             )
         }
         if (running) {
@@ -261,9 +316,7 @@ private fun SessionDrawerContent(state: AppUiState, vm: AppViewModel) {
         Spacer(Modifier.height(8.dp))
         BasicTextField(
             value = state.sessionQuery,
-            onValueChange = {
-                vm.updateSessionQuery(it)
-            },
+            onValueChange = { vm.updateSessionQuery(it) },
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
@@ -281,7 +334,11 @@ private fun SessionDrawerContent(state: AppUiState, vm: AppViewModel) {
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = vm::refreshSessions) { Text("Search") }
-            TextButton(onClick = { vm.loadHistory() }) { Text("Load current") }
+            TextButton(onClick = {
+                vm.updateSessionQuery("")
+                vm.refreshSessions()
+            }) { Text("Clear") }
+            TextButton(onClick = { vm.loadHistory() }) { Text("History") }
         }
         if (state.sessionsLoading) {
             Text("Loading…", color = CloverText2, style = MaterialTheme.typography.bodyMedium)
@@ -292,7 +349,8 @@ private fun SessionDrawerContent(state: AppUiState, vm: AppViewModel) {
         Spacer(Modifier.height(8.dp))
         state.sessions.forEach { session ->
             val selected = session.id == state.settings.sessionId
-            AssistChip(
+            FilterChip(
+                selected = selected,
                 onClick = { vm.selectSession(session.id) },
                 label = {
                     Column {
@@ -302,7 +360,7 @@ private fun SessionDrawerContent(state: AppUiState, vm: AppViewModel) {
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            "${session.messageCount ?: 0} msgs · ${session.id}",
+                            "${session.messageCount ?: 0} msgs · ${session.updatedAt ?: session.id}",
                             style = MaterialTheme.typography.labelSmall,
                             color = CloverText3,
                             maxLines = 1,
@@ -314,9 +372,6 @@ private fun SessionDrawerContent(state: AppUiState, vm: AppViewModel) {
                     .fillMaxWidth()
                     .padding(vertical = 2.dp),
             )
-            if (selected) {
-                Text("current", color = CloverAccent, style = MaterialTheme.typography.labelSmall)
-            }
         }
         if (state.sessions.isEmpty() && !state.sessionsLoading) {
             Text(

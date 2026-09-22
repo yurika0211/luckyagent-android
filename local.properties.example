@@ -1,2 +1,8 @@
-## Copy to local.properties and set SDK path
+## Copy to local.properties (gitignored) and set your SDK path.
+## Android Studio usually writes this automatically.
+
 sdk.dir=/path/to/Android/Sdk
+
+## Optional NDK / CMake if you add native code later:
+# ndk.dir=/path/to/Android/Sdk/ndk/<version>
+# cmake.dir=/path/to/Android/Sdk/cmake/<version>

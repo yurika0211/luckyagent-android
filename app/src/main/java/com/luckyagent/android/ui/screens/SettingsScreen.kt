@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.theme.CloverBg
@@ -108,11 +109,17 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 Button(
                     onClick = {
                         vm.saveSettings(apiBase, apiKey, sessionId, useBearer)
-                        vm.probeHealth()
                     },
                 ) { Text("保存并探测") }
+                Button(onClick = vm::probeHealth) { Text("Health") }
                 Button(onClick = vm::connectSocket) { Text("重连 WS") }
             }
+            Text(
+                "WS · ${state.socketState.name}" +
+                    state.reconnectInfo?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                color = CloverText2,
+            )
             state.healthText?.let {
                 Text(
                     text = if (state.healthOk == true) "Health OK · $it" else "Health · $it",
@@ -132,7 +139,8 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
             Text(
                 """• 只走 HTTP(S) /api/v1/* + WS，不走未加固的 gRPC
 • Key 存 EncryptedSharedPreferences，不进 URL
-• 公网请用 Tailscale / 反代 TLS，不要裸端口""",
+• 公网请用 Tailscale / 反代 TLS，不要裸端口
+• Chat WS 断线会自动重试最多 8 次（指数退避）""",
                 style = MaterialTheme.typography.bodyMedium,
                 color = CloverText2,
             )

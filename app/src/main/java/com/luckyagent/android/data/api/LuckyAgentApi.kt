@@ -5,10 +5,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
 import java.util.concurrent.TimeUnit
 
@@ -98,20 +96,61 @@ class LuckyAgentApi(
             }
         }
 
-    suspend fun listMemory(limit: Int = 50): Result<List<MemoryEntry>> = withContext(Dispatchers.IO) {
+    /**
+     * GET /api/v1/memory returns tier stats only.
+     * Prefer /api/v1/memory/recall?q=... for readable entries.
+     */
+    suspend fun memoryStats(): Result<MemoryStats> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/memory")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("memory stats ${resp.code}: $body")
+                json.decodeFromString(MemoryListResponse.serializer(), body).stats
+                    ?: MemoryStats()
+            }
+        }
+    }
+
+    suspend fun recallMemory(query: String, limit: Int = 50): Result<List<MemoryEntry>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val q = query.trim().ifBlank { "project" }
+                val request = Request.Builder()
+                    .url(
+                        url(
+                            "/api/v1/memory/recall",
+                            mapOf(
+                                "q" to q,
+                                "limit" to limit.toString(),
+                            ),
+                        ),
+                    )
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("memory recall ${resp.code}: $body")
+                    val decoded = json.decodeFromString(MemoryListResponse.serializer(), body)
+                    when {
+                        decoded.results.isNotEmpty() -> decoded.results
+                        decoded.entries.isNotEmpty() -> decoded.entries
+                        else -> emptyList()
+                    }
+                }
+            }
+        }
+
+    suspend fun memoryGraph(limit: Int = 120): Result<MemoryGraphResponse> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder()
-                .url(url("/api/v1/memory", mapOf("limit" to limit.toString())))
+                .url(url("/api/v1/memory/graph", mapOf("limit" to limit.toString())))
                 .get()
                 .build()
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) error("memory ${resp.code}: $body")
-                runCatching {
-                    json.decodeFromString(MemoryListResponse.serializer(), body).entries
-                }.getOrElse {
-                    json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(MemoryEntry.serializer()), body)
-                }
+                if (!resp.isSuccessful) error("memory graph ${resp.code}: $body")
+                json.decodeFromString(MemoryGraphResponse.serializer(), body)
             }
         }
     }
@@ -119,21 +158,6 @@ class LuckyAgentApi(
     suspend fun getJson(path: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder().url(url(path)).get().build()
-            client.newCall(request).execute().use { resp ->
-                val body = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) error("${resp.code}: $body")
-                body
-            }
-        }
-    }
-
-    suspend fun postJson(path: String, payload: String): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            val media = "application/json; charset=utf-8".toMediaType()
-            val request = Request.Builder()
-                .url(url(path))
-                .post(payload.toRequestBody(media))
-                .build()
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) error("${resp.code}: $body")

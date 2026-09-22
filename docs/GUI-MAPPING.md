@@ -19,3 +19,15 @@ Non-goals for v0:
 - Embed Go runtime on device
 - Public gRPC without TLS/auth
 - Shipping provider API keys on phone
+
+## WS event map (runtime → Android)
+
+| Server (`message.go`) | Android handler |
+|-----------------------|-----------------|
+| stream_chunk | assistant bubble append (also accepts assistant_delta) |
+| stream_end | finalize assistant (full_response) |
+| tool_call | tool card (name + args/params/display) |
+| tool_result | merge into same step card |
+| status / reasoning | activity line |
+| error | error bubble |
+| cancel status | stop streaming |

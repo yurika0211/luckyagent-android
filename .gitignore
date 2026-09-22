@@ -12,3 +12,5 @@
 *.aab
 *.ap_
 *.dex
+
+.main_agent_owned

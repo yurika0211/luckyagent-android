@@ -104,7 +104,7 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
                     AppDestination.Trajectory -> TrajectoryScreen(state = state, onRefresh = vm::refreshTrajectory)
                     AppDestination.Gateways -> GatewaysScreen(state = state, onRefresh = vm::refreshGateways)
                     AppDestination.Skills -> SkillsScreen(state = state, onRefresh = vm::refreshSkills)
-                    AppDestination.Memory -> MemoryScreen(state = state, onRefresh = vm::refreshMemory)
+                    AppDestination.Memory -> MemoryScreen(state = state, vm = vm)
                     AppDestination.Settings -> SettingsScreen(state = state, vm = vm)
                 }
             }

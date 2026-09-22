@@ -5,6 +5,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.luckyagent.android.data.AppContainer
 import com.luckyagent.android.data.api.MemoryEntry
+import com.luckyagent.android.data.api.MemoryGraphEdge
+import com.luckyagent.android.data.api.MemoryGraphNode
+import com.luckyagent.android.data.api.MemoryStats
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.SocketState
@@ -15,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -31,6 +35,11 @@ data class ChatBubble(
     val content: String,
     val streaming: Boolean = false,
     val toolName: String? = null,
+    val toolArgs: String? = null,
+    val toolOutput: String? = null,
+    val toolDone: Boolean = false,
+    val toolSuccess: Boolean? = null,
+    val stepId: String? = null,
 )
 
 data class AppUiState(
@@ -44,9 +53,16 @@ data class AppUiState(
     val composer: String = "",
     val socketState: SocketState = SocketState.Idle,
     val socketError: String? = null,
+    val reconnectInfo: String? = null,
     val healthText: String? = null,
     val healthOk: Boolean? = null,
     val memoryEntries: List<MemoryEntry> = emptyList(),
+    val memoryStats: MemoryStats? = null,
+    val memoryGraphNodes: List<MemoryGraphNode> = emptyList(),
+    val memoryGraphEdges: List<MemoryGraphEdge> = emptyList(),
+    val memoryGraphSummary: String? = null,
+    val memoryQuery: String = "project",
+    val memoryLoading: Boolean = false,
     val memoryError: String? = null,
     val skillsJson: String? = null,
     val gatewaysJson: String? = null,
@@ -63,6 +79,7 @@ class AppViewModel(
 
     private var eventsJob: Job? = null
     private var assistantBufferId: String? = null
+    private val toolStepIndex = mutableMapOf<String, String>()
 
     init {
         viewModelScope.launch {
@@ -80,6 +97,11 @@ class AppViewModel(
                 _ui.update { it.copy(socketError = err) }
             }
         }
+        viewModelScope.launch {
+            container.wsClient.reconnectInfo.collect { info ->
+                _ui.update { it.copy(reconnectInfo = info) }
+            }
+        }
         observeWs()
         refreshSessions()
         connectSocket()
@@ -90,38 +112,52 @@ class AppViewModel(
         eventsJob = viewModelScope.launch {
             container.wsClient.events.collect { env ->
                 when (env.type) {
-                    "assistant_delta", "delta", "chunk" -> {
+                    "stream_chunk", "assistant_delta", "delta", "chunk" -> {
                         val piece = extractText(env.data) ?: return@collect
                         appendAssistant(piece)
                     }
-                    "assistant_message", "final", "done", "chat_done", "message" -> {
-                        val piece = extractText(env.data)
-                        if (!piece.isNullOrBlank()) finishAssistant(piece) else finishAssistant(null)
+                    "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
+                        val piece = extractFullResponse(env.data) ?: extractText(env.data)
+                        finishAssistant(piece)
+                        refreshSessions()
                     }
-                    "tool_call", "tool" -> {
-                        val name = extractToolName(env.data) ?: "tool"
-                        pushBubble(ChatBubble(
-                            id = "tool-${System.currentTimeMillis()}",
-                            role = "tool",
-                            content = "Calling $name…",
-                            toolName = name,
-                        ))
-                        _ui.update { it.copy(activityLine = "tool · $name") }
+                    "tool_call", "tool" -> handleToolCall(env.data)
+                    "tool_result" -> handleToolResult(env.data)
+                    "cancel", "cancelled" -> {
+                        finishAssistant(null)
+                        _ui.update { it.copy(activityLine = "cancelled") }
                     }
                     "error" -> {
-                        val msg = env.error ?: extractText(env.data) ?: "Unknown error"
-                        pushBubble(ChatBubble(
-                            id = "err-${System.currentTimeMillis()}",
-                            role = "error",
-                            content = msg,
-                        ))
+                        val msg = env.error
+                            ?: extractField(env.data, "message")
+                            ?: extractText(env.data)
+                            ?: "Unknown error"
+                        finishAssistant(null)
+                        pushBubble(
+                            ChatBubble(
+                                id = "err-${System.currentTimeMillis()}",
+                                role = "error",
+                                content = msg,
+                            ),
+                        )
                         _ui.update { it.copy(activityLine = "error · $msg") }
                     }
                     "status", "info" -> {
-                        _ui.update { it.copy(activityLine = extractText(env.data) ?: env.type) }
+                        val state = extractField(env.data, "state")
+                        val message = extractField(env.data, "message") ?: extractText(env.data)
+                        _ui.update {
+                            it.copy(activityLine = listOfNotNull(state, message).joinToString(": ").ifBlank { env.type })
+                        }
+                    }
+                    "reasoning" -> {
+                        val summary = extractField(env.data, "summary")
+                            ?: extractField(env.data, "content")
+                            ?: extractText(env.data)
+                        if (!summary.isNullOrBlank()) {
+                            _ui.update { it.copy(activityLine = "reasoning · ${summary.take(120)}") }
+                        }
                     }
                     else -> {
-                        // keep raw signal light
                         if (env.error != null) {
                             _ui.update { it.copy(activityLine = env.error) }
                         }
@@ -131,24 +167,164 @@ class AppViewModel(
         }
     }
 
+    private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
+        val name = extractToolName(data) ?: "tool"
+        val stepId = extractField(data, "step_id").orEmpty()
+        val args = extractToolArgs(data)
+        val id = when {
+            stepId.isNotBlank() -> toolStepIndex[stepId] ?: "tool-$stepId".also { toolStepIndex[stepId] = it }
+            else -> "tool-${System.currentTimeMillis()}"
+        }
+        upsertToolBubble(
+            id = id,
+            name = name,
+            args = args,
+            done = false,
+            success = null,
+            output = null,
+        )
+        _ui.update { it.copy(activityLine = "tool · $name") }
+    }
+
+    private fun handleToolResult(data: kotlinx.serialization.json.JsonElement?) {
+        val name = extractToolName(data) ?: "tool"
+        if (name == "__memory_trace") return
+        val stepId = extractField(data, "step_id").orEmpty()
+        val output = extractField(data, "output")
+            ?: extractField(data, "display")
+            ?: extractText(data)
+            ?: ""
+        val success = when (val raw = (data as? JsonObject)?.get("success")) {
+            is JsonPrimitive -> when {
+                raw.isString -> raw.contentOrNull?.toBooleanStrictOrNull() ?: true
+                else -> runCatching { raw.content.toBooleanStrict() }.getOrElse {
+                    raw.contentOrNull?.toBooleanStrictOrNull() ?: true
+                }
+            }
+            else -> true
+        }
+        val id = when {
+            stepId.isNotBlank() -> toolStepIndex[stepId] ?: "tool-$stepId".also { toolStepIndex[stepId] = it }
+            else -> _ui.value.bubbles.lastOrNull { it.role == "tool" && it.toolName == name && !it.toolDone }?.id
+                ?: "tool-${System.currentTimeMillis()}"
+        }
+        upsertToolBubble(
+            id = id,
+            name = name,
+            args = null,
+            done = true,
+            success = success,
+            output = output,
+        )
+        _ui.update {
+            it.copy(activityLine = if (success) "tool done · $name" else "tool failed · $name")
+        }
+    }
+
+    private fun upsertToolBubble(
+        id: String,
+        name: String,
+        args: String?,
+        done: Boolean,
+        success: Boolean?,
+        output: String?,
+    ) {
+        _ui.update { st ->
+            val list = st.bubbles.toMutableList()
+            val idx = list.indexOfLast { it.id == id }
+            if (idx >= 0) {
+                val old = list[idx]
+                list[idx] = old.copy(
+                    role = "tool",
+                    toolName = name,
+                    toolArgs = args?.takeIf { it.isNotBlank() } ?: old.toolArgs,
+                    toolOutput = output?.takeIf { it.isNotBlank() } ?: old.toolOutput,
+                    toolDone = done || old.toolDone,
+                    toolSuccess = success ?: old.toolSuccess,
+                    content = buildToolContent(
+                        name = name,
+                        args = args?.takeIf { it.isNotBlank() } ?: old.toolArgs,
+                        output = output?.takeIf { it.isNotBlank() } ?: old.toolOutput,
+                        done = done || old.toolDone,
+                        success = success ?: old.toolSuccess,
+                    ),
+                    stepId = old.stepId,
+                )
+            } else {
+                list += ChatBubble(
+                    id = id,
+                    role = "tool",
+                    content = buildToolContent(name, args, output, done, success),
+                    toolName = name,
+                    toolArgs = args,
+                    toolOutput = output,
+                    toolDone = done,
+                    toolSuccess = success,
+                    stepId = id.removePrefix("tool-").takeIf { it != id },
+                )
+            }
+            st.copy(bubbles = list)
+        }
+    }
+
+    private fun buildToolContent(
+        name: String,
+        args: String?,
+        output: String?,
+        done: Boolean,
+        success: Boolean?,
+    ): String {
+        val status = when {
+            !done -> "running"
+            success == false -> "failed"
+            else -> "done"
+        }
+        val parts = mutableListOf("$name · $status")
+        if (!args.isNullOrBlank()) parts += "args: ${args.take(400)}"
+        if (!output.isNullOrBlank()) parts += "out: ${output.take(600)}"
+        return parts.joinToString("\n")
+    }
+
     private fun extractText(data: kotlinx.serialization.json.JsonElement?): String? {
         if (data == null) return null
         return when (data) {
             is JsonPrimitive -> data.contentOrNull
             is JsonObject -> {
-                val o = data
-                sequenceOf("content", "text", "delta", "message", "response")
-                    .mapNotNull { key -> o[key]?.jsonPrimitive?.contentOrNull }
+                sequenceOf("content", "text", "delta", "message", "response", "full_response")
+                    .mapNotNull { key -> data[key]?.jsonPrimitive?.contentOrNull }
                     .firstOrNull()
             }
             else -> data.toString()
         }
     }
 
+    private fun extractFullResponse(data: kotlinx.serialization.json.JsonElement?): String? {
+        val o = data as? JsonObject ?: return null
+        return o["full_response"]?.jsonPrimitive?.contentOrNull
+    }
+
+    private fun extractField(data: kotlinx.serialization.json.JsonElement?, key: String): String? {
+        val o = data as? JsonObject ?: return null
+        return o[key]?.jsonPrimitive?.contentOrNull
+    }
+
     private fun extractToolName(data: kotlinx.serialization.json.JsonElement?): String? {
         val o = data as? JsonObject ?: return null
         return o["name"]?.jsonPrimitive?.contentOrNull
             ?: o["tool"]?.jsonPrimitive?.contentOrNull
+    }
+
+    private fun extractToolArgs(data: kotlinx.serialization.json.JsonElement?): String? {
+        val o = data as? JsonObject ?: return null
+        o["args"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { return it }
+        o["display"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { return it }
+        val params = o["params"]
+        return when (params) {
+            null -> null
+            is JsonPrimitive -> params.contentOrNull
+            is JsonObject, is JsonArray -> params.toString()
+            else -> params.toString()
+        }
     }
 
     private fun appendAssistant(piece: String) {
@@ -209,6 +385,10 @@ class AppViewModel(
         _ui.update { it.copy(sessionQuery = value) }
     }
 
+    fun updateMemoryQuery(value: String) {
+        _ui.update { it.copy(memoryQuery = value) }
+    }
+
     fun saveSettings(
         apiBase: String,
         apiKey: String,
@@ -257,6 +437,8 @@ class AppViewModel(
 
     fun selectSession(id: String) {
         container.settingsRepository.update { it.copy(sessionId = id) }
+        assistantBufferId = null
+        toolStepIndex.clear()
         connectSocket()
         loadHistory(id)
     }
@@ -265,6 +447,8 @@ class AppViewModel(
         viewModelScope.launch {
             val result = container.api.sessionHistory(sessionId)
             result.onSuccess { history ->
+                assistantBufferId = null
+                toolStepIndex.clear()
                 val bubbles = history.messages.mapIndexed { idx, msg -> msg.toBubble(idx) }
                 _ui.update { it.copy(bubbles = bubbles, activityLine = "loaded ${bubbles.size} messages") }
             }.onFailure { e ->
@@ -276,16 +460,31 @@ class AppViewModel(
     private fun ProviderMessage.toBubble(idx: Int): ChatBubble {
         val role = role ?: "assistant"
         val base = content.orEmpty()
-        val tool = toolCalls.firstOrNull()?.name
-        return ChatBubble(
-            id = "h-$idx-${role.hashCode()}",
-            role = if (tool != null && role == "assistant") "tool" else role,
-            content = when {
-                tool != null && base.isBlank() -> "tool_call · $tool"
-                else -> base.ifBlank { reasoningContent.orEmpty() }
-            },
-            toolName = tool,
-        )
+        val tool = toolCalls.firstOrNull()
+        return if (tool != null && (role == "assistant" || role == "tool")) {
+            ChatBubble(
+                id = "h-$idx-tool",
+                role = "tool",
+                content = buildToolContent(
+                    name = tool.name ?: "tool",
+                    args = tool.arguments,
+                    output = base.takeIf { it.isNotBlank() },
+                    done = true,
+                    success = true,
+                ),
+                toolName = tool.name,
+                toolArgs = tool.arguments,
+                toolOutput = base.takeIf { it.isNotBlank() },
+                toolDone = true,
+                toolSuccess = true,
+            )
+        } else {
+            ChatBubble(
+                id = "h-$idx-${role.hashCode()}",
+                role = role,
+                content = base.ifBlank { reasoningContent.orEmpty() },
+            )
+        }
     }
 
     fun connectSocket() {
@@ -300,10 +499,9 @@ class AppViewModel(
         assistantBufferId = null
         val ok = container.wsClient.sendChat(text)
         if (!ok) {
-            // reconnect once then retry
             connectSocket()
             viewModelScope.launch {
-                kotlinx.coroutines.delay(400)
+                kotlinx.coroutines.delay(450)
                 if (!container.wsClient.sendChat(text)) {
                     pushBubble(
                         ChatBubble(
@@ -319,15 +517,31 @@ class AppViewModel(
 
     fun cancelRun() {
         container.wsClient.cancel()
+        finishAssistant(null)
+        _ui.update { it.copy(activityLine = "cancel requested") }
     }
 
     fun refreshMemory() {
         viewModelScope.launch {
-            val result = container.api.listMemory()
+            _ui.update { it.copy(memoryLoading = true, memoryError = null) }
+            val q = _ui.value.memoryQuery
+            val stats = container.api.memoryStats()
+            val recall = container.api.recallMemory(q)
+            val graph = container.api.memoryGraph()
             _ui.update {
                 it.copy(
-                    memoryEntries = result.getOrDefault(emptyList()),
-                    memoryError = result.exceptionOrNull()?.message,
+                    memoryLoading = false,
+                    memoryStats = stats.getOrNull() ?: it.memoryStats,
+                    memoryEntries = recall.getOrDefault(emptyList()),
+                    memoryGraphNodes = graph.getOrNull()?.nodes.orEmpty(),
+                    memoryGraphEdges = graph.getOrNull()?.edges.orEmpty(),
+                    memoryGraphSummary = graph.getOrNull()?.let { g ->
+                        "nodes=${g.nodes.size} edges=${g.edges.size} notes=${g.totalNotes ?: "?"} unresolved=${g.unresolved ?: 0}" +
+                            if (g.truncated == true) " truncated" else ""
+                    },
+                    memoryError = recall.exceptionOrNull()?.message
+                        ?: graph.exceptionOrNull()?.message
+                        ?: stats.exceptionOrNull()?.message,
                 )
             }
         }
@@ -344,7 +558,6 @@ class AppViewModel(
 
     fun refreshGateways() {
         viewModelScope.launch {
-            // dashboard-ish endpoints may vary; try a few
             val paths = listOf("/api/v1/gateways", "/api/v1/msg-gateway", "/api/data")
             var body: String? = null
             var err: String? = null
