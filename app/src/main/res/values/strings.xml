@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LuckyAgent</string>
+    <string name="nav_chat">Chat</string>
+    <string name="nav_trajectory">Trajectory</string>
+    <string name="nav_gateways">Gateways</string>
+    <string name="nav_skills">Skills</string>
+    <string name="nav_settings">Settings</string>
+    <string name="nav_memory">Memory graph</string>
+</resources>

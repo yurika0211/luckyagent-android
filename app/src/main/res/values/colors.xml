@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mirrored from UI/GUI/src/styles.css :root -->
+    <color name="clover_bg">#f9faf4</color>
+    <color name="clover_bg_side">#eef1e5</color>
+    <color name="clover_surface">#ffffff</color>
+    <color name="clover_surface_2">#f0f3e7</color>
+    <color name="clover_user_bubble">#e9efd9</color>
+    <color name="clover_line">#e0e5d2</color>
+    <color name="clover_text">#16190f</color>
+    <color name="clover_text2">#565a4b</color>
+    <color name="clover_text3">#868a77</color>
+    <color name="clover_accent">#3f8a37</color>
+    <color name="clover_accent_hover">#35762e</color>
+    <color name="clover_leaf">#9dc74b</color>
+    <color name="clover_leaf_ink">#16190f</color>
+    <color name="ic_launcher_background">#eef1e5</color>
+</resources>

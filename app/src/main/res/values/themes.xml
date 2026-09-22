@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.LuckyAgent" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#eef1e5</item>
+        <item name="android:navigationBarColor">#f9faf4</item>
+        <item name="android:windowBackground">@color/clover_bg</item>
+        <item name="android:colorPrimary">@color/clover_accent</item>
+    </style>
+</resources>
