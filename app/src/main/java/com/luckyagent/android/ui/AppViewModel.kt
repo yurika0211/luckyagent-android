@@ -35,6 +35,14 @@ enum class AppDestination {
 
 enum class TrajectoryFilter { All, Success, Failure }
 
+enum class ProgressStatus { Active, Complete, Failed }
+
+data class ChatProgressStep(
+    val id: String,
+    val label: String,
+    val status: ProgressStatus,
+)
+
 data class ChatBubble(
     val id: String,
     val role: String,
@@ -46,7 +54,6 @@ data class ChatBubble(
     val toolDone: Boolean = false,
     val toolSuccess: Boolean? = null,
     val stepId: String? = null,
-    val reasoning: String? = null,
 )
 
 data class AppUiState(
@@ -88,6 +95,8 @@ data class AppUiState(
     val skillsError: String? = null,
     val skillsQuery: String = "",
     val activityLine: String? = null,
+    val isResponding: Boolean = false,
+    val progressSteps: List<ChatProgressStep> = emptyList(),
     val drawerOpenHint: Boolean = false,
     val suggestionPrompts: List<String> = listOf(
         "Summarize the current session trajectory",
@@ -105,6 +114,7 @@ class AppViewModel(
 
     private var eventsJob: Job? = null
     private var assistantBufferId: String? = null
+    private var currentTurnId = "turn-0"
     private val toolStepIndex = mutableMapOf<String, String>()
 
     init {
@@ -140,18 +150,28 @@ class AppViewModel(
                 when (env.type) {
                     "stream_chunk", "assistant_delta", "delta", "chunk" -> {
                         val piece = extractText(env.data) ?: return@collect
+                        updatePhase("response", "Preparing response")
                         appendAssistant(piece)
                     }
                     "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
                         val piece = extractFullResponse(env.data) ?: extractText(env.data)
                         finishAssistant(piece)
+                        _ui.update { it.copy(isResponding = false) }
                         refreshSessions()
                     }
                     "tool_call", "tool" -> handleToolCall(env.data)
                     "tool_result" -> handleToolResult(env.data)
                     "cancel", "cancelled" -> {
                         finishAssistant(null)
-                        _ui.update { it.copy(activityLine = "cancelled") }
+                        _ui.update {
+                            it.copy(
+                                isResponding = false,
+                                activityLine = "cancelled",
+                                progressSteps = it.progressSteps.map { step ->
+                                    if (step.status == ProgressStatus.Active) step.copy(label = "Cancelled", status = ProgressStatus.Complete) else step
+                                },
+                            )
+                        }
                     }
                     "error" -> {
                         val msg = env.error
@@ -166,22 +186,46 @@ class AppViewModel(
                                 content = msg,
                             ),
                         )
-                        _ui.update { it.copy(activityLine = "error · $msg") }
+                        _ui.update {
+                            it.copy(
+                                activityLine = "error · $msg",
+                                isResponding = false,
+                                progressSteps = it.progressSteps.map { step ->
+                                    if (step.status == ProgressStatus.Active) step.copy(label = "Request failed", status = ProgressStatus.Failed) else step
+                                },
+                            )
+                        }
                     }
                     "status", "info" -> {
                         val state = extractField(env.data, "state")
                         val message = extractField(env.data, "message") ?: extractText(env.data)
-                        _ui.update {
-                            it.copy(activityLine = listOfNotNull(state, message).joinToString(": ").ifBlank { env.type })
+                        when (state?.lowercase()) {
+                            "thinking" -> updatePhase("thinking", "Thinking through the request")
+                            "executing" -> updatePhase("executing", "Working on your request")
+                            "idle" -> _ui.update { current ->
+                                current.copy(
+                                    isResponding = false,
+                                    activityLine = "complete",
+                                    progressSteps = current.progressSteps.map { step ->
+                                        if (step.status == ProgressStatus.Active) step.copy(status = ProgressStatus.Complete) else step
+                                    },
+                                )
+                            }
+                            else -> _ui.update {
+                                it.copy(activityLine = listOfNotNull(state, message).joinToString(": ").ifBlank { env.type })
+                            }
                         }
                     }
                     "reasoning" -> {
-                        val summary = extractField(env.data, "summary")
-                            ?: extractField(env.data, "content")
-                            ?: extractText(env.data)
-                        if (!summary.isNullOrBlank()) {
-                            _ui.update { it.copy(activityLine = "reasoning · ${summary.take(120)}") }
+                        val stage = extractField(env.data, "stage").orEmpty()
+                        val round = extractField(env.data, "round")?.toIntOrNull()
+                        val suffix = round?.let { " · round $it" }.orEmpty()
+                        val label = when (stage) {
+                            "start" -> "Analyzing the request$suffix"
+                            "continue" -> "Reviewing tool results$suffix"
+                            else -> "Thinking through the next step$suffix"
                         }
+                        updatePhase("reasoning-${round ?: 0}-$stage", label)
                     }
                     else -> {
                         if (env.error != null) {
@@ -197,9 +241,10 @@ class AppViewModel(
         val name = extractToolName(data) ?: "tool"
         val stepId = extractField(data, "step_id").orEmpty()
         val args = extractToolArgs(data)
+        val stepKey = "$currentTurnId:$stepId"
         val id = when {
-            stepId.isNotBlank() -> toolStepIndex[stepId] ?: "tool-$stepId".also { toolStepIndex[stepId] = it }
-            else -> "tool-${System.currentTimeMillis()}"
+            stepId.isNotBlank() -> toolStepIndex[stepKey] ?: "tool-$stepKey".also { toolStepIndex[stepKey] = it }
+            else -> "tool-$currentTurnId-${System.currentTimeMillis()}"
         }
         upsertToolBubble(
             id = id,
@@ -209,6 +254,7 @@ class AppViewModel(
             success = null,
             output = null,
         )
+        upsertProgress(ChatProgressStep("tool-$id", "Using $name", ProgressStatus.Active))
         _ui.update { it.copy(activityLine = "tool · $name") }
     }
 
@@ -229,8 +275,9 @@ class AppViewModel(
             }
             else -> true
         }
+        val stepKey = "$currentTurnId:$stepId"
         val id = when {
-            stepId.isNotBlank() -> toolStepIndex[stepId] ?: "tool-$stepId".also { toolStepIndex[stepId] = it }
+            stepId.isNotBlank() -> toolStepIndex[stepKey] ?: "tool-$stepKey".also { toolStepIndex[stepKey] = it }
             else -> _ui.value.bubbles.lastOrNull { it.role == "tool" && it.toolName == name && !it.toolDone }?.id
                 ?: "tool-${System.currentTimeMillis()}"
         }
@@ -242,9 +289,48 @@ class AppViewModel(
             success = success,
             output = output,
         )
+        upsertProgress(
+            ChatProgressStep(
+                id = "tool-$id",
+                label = if (success) "$name finished" else "$name failed",
+                status = if (success) ProgressStatus.Complete else ProgressStatus.Failed,
+            ),
+        )
         _ui.update {
             it.copy(activityLine = if (success) "tool done · $name" else "tool failed · $name")
         }
+    }
+
+    private fun updatePhase(id: String, label: String) {
+        _ui.update { current ->
+            if (current.progressSteps.any { it.id == "phase-$id" && it.label == label && it.status == ProgressStatus.Active }) {
+                return@update current
+            }
+            val previous = current.progressSteps.map { step ->
+                if (step.id.startsWith("phase-") && step.status == ProgressStatus.Active) {
+                    step.copy(status = ProgressStatus.Complete)
+                } else {
+                    step
+                }
+            }
+            val next = upsertProgressStep(previous, ChatProgressStep("phase-$id", label, ProgressStatus.Active))
+            current.copy(isResponding = true, activityLine = label, progressSteps = next)
+        }
+    }
+
+    private fun upsertProgress(step: ChatProgressStep) {
+        _ui.update { current -> current.copy(progressSteps = upsertProgressStep(current.progressSteps, step)) }
+    }
+
+    private fun upsertProgressStep(
+        steps: List<ChatProgressStep>,
+        step: ChatProgressStep,
+    ): List<ChatProgressStep> {
+        val updated = steps.toMutableList()
+        val index = updated.indexOfFirst { it.id == step.id }
+        if (index >= 0) updated.removeAt(index)
+        updated += step
+        return updated.takeLast(8)
     }
 
     private fun upsertToolBubble(
@@ -363,7 +449,7 @@ class AppViewModel(
             } else {
                 list += ChatBubble(id = id, role = "assistant", content = piece, streaming = true)
             }
-            st.copy(bubbles = list)
+            st.copy(bubbles = list, isResponding = true)
         }
     }
 
@@ -382,7 +468,7 @@ class AppViewModel(
             } else if (!full.isNullOrBlank()) {
                 list += ChatBubble(id = "a-${System.currentTimeMillis()}", role = "assistant", content = full)
             }
-            st.copy(bubbles = list)
+            st.copy(bubbles = list, isResponding = false)
         }
         assistantBufferId = null
     }
@@ -487,6 +573,7 @@ class AppViewModel(
         container.settingsRepository.update { it.copy(sessionId = id) }
         assistantBufferId = null
         toolStepIndex.clear()
+        _ui.update { it.copy(isResponding = false, progressSteps = emptyList()) }
         connectSocket()
         loadHistory(id)
     }
@@ -498,7 +585,14 @@ class AppViewModel(
                 assistantBufferId = null
                 toolStepIndex.clear()
                 val bubbles = history.messages.mapIndexed { idx, msg -> msg.toBubble(idx) }
-                _ui.update { it.copy(bubbles = bubbles, activityLine = "loaded ${bubbles.size} messages") }
+                _ui.update {
+                    it.copy(
+                        bubbles = bubbles,
+                        activityLine = "loaded ${bubbles.size} messages",
+                        isResponding = false,
+                        progressSteps = emptyList(),
+                    )
+                }
             }.onFailure { e ->
                 _ui.update { it.copy(activityLine = "history: ${e.message}") }
             }
@@ -530,8 +624,7 @@ class AppViewModel(
             ChatBubble(
                 id = "h-$idx-${role.hashCode()}",
                 role = role,
-                content = base.ifBlank { reasoningContent.orEmpty() },
-                reasoning = reasoningContent?.takeIf { it.isNotBlank() && base.isNotBlank() },
+                content = base,
             )
         }
     }
@@ -543,8 +636,16 @@ class AppViewModel(
     fun sendComposer() {
         val text = _ui.value.composer.trim()
         if (text.isEmpty()) return
+        currentTurnId = "turn-${System.currentTimeMillis()}"
+        toolStepIndex.clear()
         pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text))
-        _ui.update { it.copy(composer = "") }
+        _ui.update {
+            it.copy(
+                composer = "",
+                isResponding = true,
+                progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
+            )
+        }
         assistantBufferId = null
         val ok = container.wsClient.sendChat(text)
         if (!ok) {
@@ -559,6 +660,14 @@ class AppViewModel(
                             content = "WebSocket not connected. Check API Base / Key / lh serve.",
                         ),
                     )
+                    _ui.update {
+                        it.copy(
+                            isResponding = false,
+                            progressSteps = it.progressSteps.map { step ->
+                                if (step.status == ProgressStatus.Active) step.copy(label = "Connection unavailable", status = ProgressStatus.Failed) else step
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -567,7 +676,15 @@ class AppViewModel(
     fun cancelRun() {
         container.wsClient.cancel()
         finishAssistant(null)
-        _ui.update { it.copy(activityLine = "cancel requested") }
+        _ui.update {
+            it.copy(
+                activityLine = "cancel requested",
+                isResponding = false,
+                progressSteps = it.progressSteps.map { step ->
+                    if (step.status == ProgressStatus.Active) step.copy(label = "Cancelled", status = ProgressStatus.Complete) else step
+                },
+            )
+        }
     }
 
     fun refreshMemory() {

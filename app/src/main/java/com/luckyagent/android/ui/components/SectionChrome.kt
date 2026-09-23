@@ -89,9 +89,9 @@ fun CloverCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(MaterialTheme.shapes.medium)
             .background(CloverSurface)
-            .border(1.dp, CloverLine, RoundedCornerShape(14.dp))
+            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         content = content,
@@ -121,8 +121,8 @@ fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .border(1.dp, CloverLine, RoundedCornerShape(14.dp))
+            .clip(MaterialTheme.shapes.medium)
+            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {

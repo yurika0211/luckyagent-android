@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowForward
@@ -188,7 +187,7 @@ private fun NavigationDrawerContent(
             }
         }
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(CloverSurface).padding(12.dp),
+            Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(CloverSurface).padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
@@ -202,7 +201,7 @@ private fun NavigationDrawerContent(
         Text("WORKSPACE", style = MaterialTheme.typography.labelSmall, color = CloverText3, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 12.dp, top = 20.dp, bottom = 8.dp))
         navItems.forEach { item ->
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
                     .background(if (state.destination == item.dest) CloverSurface2 else CloverBgSide)
                     .clickable { onSelect(item.dest) }
                     .padding(horizontal = 12.dp, vertical = 13.dp),
