@@ -119,12 +119,6 @@ data class AppUiState(
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
     val drawerOpenHint: Boolean = false,
-    val suggestionPrompts: List<String> = listOf(
-        "Summarize the current session trajectory",
-        "What skills are loaded on this runtime?",
-        "Recall project decisions from memory",
-        "Check gateway status and recent errors",
-    ),
 )
 
 class AppViewModel(
@@ -405,16 +399,18 @@ class AppViewModel(
                     stepId = old.stepId,
                 )
             } else {
-                list += ChatBubble(
-                    id = id,
-                    role = "tool",
-                    content = buildToolContent(name, args, output, done, success),
-                    toolName = name,
-                    toolArgs = args,
-                    toolOutput = output,
-                    toolDone = done,
-                    toolSuccess = success,
-                    stepId = id.removePrefix("tool-").takeIf { it != id },
+                list.insertBeforeStreamingAnswer(
+                    ChatBubble(
+                        id = id,
+                        role = "tool",
+                        content = buildToolContent(name, args, output, done, success),
+                        toolName = name,
+                        toolArgs = args,
+                        toolOutput = output,
+                        toolDone = done,
+                        toolSuccess = success,
+                        stepId = id.removePrefix("tool-").takeIf { it != id },
+                    ),
                 )
             }
             st.copy(bubbles = list)
@@ -432,16 +428,23 @@ class AppViewModel(
                     bubbles[index] = old.copy(content = text, reasoningHasContent = hasContent)
                 }
             } else {
-                bubbles += ChatBubble(
-                    id = id,
-                    role = "reasoning",
-                    content = text,
-                    reasoningRound = round,
-                    reasoningHasContent = hasContent,
+                bubbles.insertBeforeStreamingAnswer(
+                    ChatBubble(
+                        id = id,
+                        role = "reasoning",
+                        content = text,
+                        reasoningRound = round,
+                        reasoningHasContent = hasContent,
+                    ),
                 )
             }
             state.copy(bubbles = bubbles)
         }
+    }
+
+    private fun MutableList<ChatBubble>.insertBeforeStreamingAnswer(bubble: ChatBubble) {
+        val answerIndex = assistantBufferId?.let { id -> indexOfLast { it.id == id } } ?: -1
+        if (answerIndex >= 0) add(answerIndex, bubble) else add(bubble)
     }
 
     private fun buildToolContent(
@@ -546,7 +549,8 @@ class AppViewModel(
                 val idx = list.indexOfLast { it.id == id }
                 if (idx >= 0) {
                     val content = full?.takeIf { it.isNotBlank() } ?: list[idx].content + pending
-                    list[idx] = list[idx].copy(content = content, streaming = false)
+                    val answer = list.removeAt(idx)
+                    list += answer.copy(content = content, streaming = false)
                 } else if (!full.isNullOrBlank() || pending.isNotEmpty()) {
                     list += ChatBubble(id = id, role = "assistant", content = full?.takeIf { it.isNotBlank() } ?: pending, streaming = false)
                 }
@@ -943,10 +947,6 @@ class AppViewModel(
                 }
             }
         }
-    }
-
-    fun applySuggestion(text: String) {
-        _ui.update { it.copy(composer = text) }
     }
 
     fun createSession(title: String = "Android session") {
