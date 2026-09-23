@@ -8,7 +8,9 @@ import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.api.MemoryGraphEdge
 import com.luckyagent.android.data.api.MemoryGraphNode
 import com.luckyagent.android.data.api.MemoryStats
+import com.luckyagent.android.data.api.CommandExecution
 import com.luckyagent.android.data.api.ProviderMessage
+import com.luckyagent.android.data.api.RuntimeCommand
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.SessionToolTrace
 import com.luckyagent.android.data.api.GatewayStatus
@@ -30,7 +32,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 enum class AppDestination {
-    Chat, Trajectory, Gateways, Skills, Settings, Memory
+    Chat, Commands, Trajectory, Gateways, Skills, Settings, Memory
 }
 
 enum class TrajectoryFilter { All, Success, Failure }
@@ -94,6 +96,11 @@ data class AppUiState(
     val skillsLoading: Boolean = false,
     val skillsError: String? = null,
     val skillsQuery: String = "",
+    val commands: List<RuntimeCommand> = emptyList(),
+    val commandsLoading: Boolean = false,
+    val commandsError: String? = null,
+    val commandExecuting: Boolean = false,
+    val commandExecution: CommandExecution? = null,
     val activityLine: String? = null,
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
@@ -480,6 +487,7 @@ class AppViewModel(
     fun navigate(dest: AppDestination) {
         _ui.update { it.copy(destination = dest) }
         when (dest) {
+            AppDestination.Commands -> refreshCommands()
             AppDestination.Memory -> refreshMemory()
             AppDestination.Skills -> refreshSkills()
             AppDestination.Gateways -> refreshGateways()
@@ -724,6 +732,51 @@ class AppViewModel(
 
     fun updateSkillsQuery(value: String) {
         _ui.update { it.copy(skillsQuery = value) }
+    }
+
+    fun refreshCommands() {
+        viewModelScope.launch {
+            _ui.update { it.copy(commandsLoading = true, commandsError = null) }
+            val result = container.api.listCommands()
+            _ui.update {
+                if (result.isSuccess) {
+                    it.copy(
+                        commandsLoading = false,
+                        commands = result.getOrDefault(emptyList()),
+                        commandsError = null,
+                    )
+                } else {
+                    it.copy(
+                        commandsLoading = false,
+                        commandsError = result.exceptionOrNull()?.message ?: "Unable to load commands",
+                    )
+                }
+            }
+        }
+    }
+
+    fun runCommand(command: RuntimeCommand, args: String) {
+        viewModelScope.launch {
+            _ui.update { it.copy(commandExecuting = true, commandExecution = null, commandsError = null) }
+            val sessionId = _ui.value.settings.sessionId
+            val result = container.api.runCommand(command.name, args.trim(), sessionId)
+            _ui.update {
+                it.copy(
+                    commandExecuting = false,
+                    commandExecution = result.getOrNull(),
+                    commandsError = result.exceptionOrNull()?.message,
+                    activityLine = result.getOrNull()?.let { execution ->
+                        if (execution.ok) "/${execution.command} completed" else "/${execution.command} returned an error"
+                    } ?: it.activityLine,
+                )
+            }
+            if (result.getOrNull()?.ok == true) {
+                when (command.name) {
+                    "remember", "remember_long", "memdecay", "promote" -> refreshMemory()
+                    "rename" -> refreshSessions()
+                }
+            }
+        }
     }
 
     fun applySuggestion(text: String) {

@@ -249,6 +249,37 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun listCommands(): Result<List<RuntimeCommand>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/commands")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("commands ${resp.code}: $body")
+                json.decodeFromString(CommandCatalogResponse.serializer(), body).commands
+            }
+        }
+    }
+
+    suspend fun runCommand(
+        command: String,
+        args: String,
+        sessionId: String,
+    ): Result<CommandExecution> = withContext(Dispatchers.IO) {
+        runCatching {
+            val payload = json.encodeToString(CommandRequest(command = command, args = args, sessionId = sessionId))
+            val request = Request.Builder()
+                .url(url("/api/v1/commands"))
+                .post(payload.toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("command ${resp.code}: $body")
+                json.decodeFromString(CommandExecution.serializer(), body)
+            }
+        }
+    }
+
     suspend fun getJson(path: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder().url(url(path)).get().build()

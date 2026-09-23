@@ -88,6 +88,34 @@ data class SessionPatchRequest(
 )
 
 @Serializable
+data class CommandCatalogResponse(
+    val commands: List<RuntimeCommand> = emptyList(),
+    val count: Int? = null,
+)
+
+@Serializable
+data class RuntimeCommand(
+    val name: String,
+    val usage: String,
+    val description: String,
+    val group: String = "other",
+)
+
+@Serializable
+data class CommandRequest(
+    val command: String,
+    val args: String = "",
+    @SerialName("session_id") val sessionId: String = "",
+)
+
+@Serializable
+data class CommandExecution(
+    val command: String = "",
+    val ok: Boolean = false,
+    val output: String = "",
+)
+
+@Serializable
 data class MemoryListResponse(
     val entries: List<MemoryEntry> = emptyList(),
     val results: List<MemoryEntry> = emptyList(),
