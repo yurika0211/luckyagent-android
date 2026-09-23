@@ -286,7 +286,7 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
                     drawCircle(if (node.resolved == false) CloverAccent.copy(alpha = alpha) else fill.copy(alpha = alpha), radius, Offset(p.x, p.y), style = androidx.compose.ui.graphics.drawscope.Stroke(if (isSelected) 3f else if (node.resolved == false) 2f else 0f, pathEffect = if (node.resolved == false) androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(5f, 4f)) else null))
                     if (isSelected || isMatch || node.id in standingLabels || revealed[node.id] != null) {
                         drawIntoCanvas { canvas ->
-                            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = CloverText2.toArgb(); textSize = 30f; textAlign = android.graphics.Paint.Align.CENTER; alpha = (alpha * 255).roundToInt() }
+                            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = CloverText2.toArgb(); textSize = 30f; textAlign = android.graphics.Paint.Align.CENTER; this.alpha = (alpha * 255).roundToInt() }
                             val label = (node.title ?: node.id).let { if (it.length > 22) it.take(21) + "…" else it }
                             canvas.nativeCanvas.drawText(label, p.x, p.y + radius + 28f, paint)
                         }
@@ -394,7 +394,7 @@ private fun DetailPanel(node: MemoryGraphNode?, traceNode: MemoryTraceNode?, nei
 @Composable private fun RecallResults(entries: List<MemoryEntry>, query: String, vm: AppViewModel) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = vm::refreshMemory), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("Recall query…", color = CloverText3); inner() })
+            BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("Recall query…", color = CloverText3); inner() })
             IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Search, contentDescription = "Recall") }
             Text("${entries.size} results", style = MaterialTheme.typography.titleSmall, color = CloverText2)
         }
