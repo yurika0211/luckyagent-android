@@ -1,7 +1,10 @@
 package com.luckyagent.android.data.api
 
+import android.app.DownloadManager
 import android.content.ContentResolver
+import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import com.luckyagent.android.data.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -84,8 +87,56 @@ class LuckyAgentApi(
             }
         }
 
+    fun enqueueAttachmentDownload(context: Context, attachment: MediaAttachment): Result<Long> = runCatching {
+        val rawUrl = attachment.fileUrl?.trim().orEmpty()
+        require(rawUrl.isNotBlank()) { "附件没有可下载的 URL" }
+        val downloadUrl = absoluteUrl(rawUrl)
+        require(downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
+            "附件 URL 无效"
+        }
+        val fileName = attachment.fileName
+            ?.trim()
+            ?.replace('/', '_')
+            ?.replace('\\', '_')
+            ?.takeIf { it.isNotBlank() }
+            ?: "luckyagent-attachment"
+        val request = DownloadManager.Request(Uri.parse(downloadUrl))
+            .setTitle(fileName)
+            .setDescription("LuckyAgent attachment")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(true)
+        attachment.mimeType?.takeIf { it.isNotBlank() }?.let(request::setMimeType)
+        if (isApiUrl(downloadUrl)) {
+            val snap = settingsRepository.snapshot()
+            if (snap.apiKey.isNotBlank()) {
+                if (snap.useBearer) request.addRequestHeader("Authorization", "Bearer ${snap.apiKey}")
+                else request.addRequestHeader("X-API-Key", snap.apiKey)
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+        } else {
+            request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
+        }
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+            ?: error("系统下载服务不可用")
+        manager.enqueue(request)
+    }
+
     private fun baseUrl(): String =
         settingsRepository.snapshot().apiBase.trim().trimEnd('/')
+
+    private fun absoluteUrl(raw: String): String = when {
+        raw.startsWith("http://") || raw.startsWith("https://") -> raw
+        else -> baseUrl() + "/" + raw.trimStart('/')
+    }
+
+    private fun isApiUrl(raw: String): Boolean {
+        val target = raw.toHttpUrlOrNull() ?: return false
+        val base = baseUrl().toHttpUrlOrNull() ?: return false
+        return target.scheme == base.scheme && target.host == base.host && target.port == base.port
+    }
 
     private fun url(path: String, query: Map<String, String> = emptyMap()): String {
         val raw = baseUrl().trimEnd('/') + "/" + path.trimStart('/')

@@ -1,5 +1,6 @@
 package com.luckyagent.android.ui.screens
 
+import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Edit
@@ -60,6 +62,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -79,6 +82,19 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
@@ -103,6 +119,7 @@ import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import kotlinx.coroutines.launch
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -290,6 +307,12 @@ private fun ChatConversation(
     onRequestAttachment: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val imageHeaders = remember(state.settings.apiKey, state.settings.useBearer) {
+        if (state.settings.apiKey.isBlank()) emptyMap()
+        else if (state.settings.useBearer) mapOf("Authorization" to "Bearer ${state.settings.apiKey}")
+        else mapOf("X-API-Key" to state.settings.apiKey)
+    }
     Column(
         modifier
             .fillMaxSize()
@@ -326,8 +349,19 @@ private fun ChatConversation(
         ) {
             items(timeline, key = { it.key }) { item ->
                 when (item) {
-                    is ChatTimelineItem.Message -> BubbleRow(item.bubble)
-                    is ChatTimelineItem.Process -> ProcessTimeline(item.steps, state.isResponding)
+                    is ChatTimelineItem.Message -> BubbleRow(
+                        bubble = item.bubble,
+                        imageHeaders = imageHeaders,
+                        imageBaseUrl = state.settings.apiBase,
+                        onDownload = { media -> vm.downloadAttachment(context, media) },
+                    )
+                    is ChatTimelineItem.Process -> ProcessTimeline(
+                        steps = item.steps,
+                        isResponding = state.isResponding,
+                        imageHeaders = imageHeaders,
+                        imageBaseUrl = state.settings.apiBase,
+                        onDownload = { media -> vm.downloadAttachment(context, media) },
+                    )
                 }
             }
             item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
@@ -400,7 +434,12 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
 }
 
 @Composable
-private fun BubbleRow(bubble: ChatBubble) {
+private fun BubbleRow(
+    bubble: ChatBubble,
+    imageHeaders: Map<String, String>,
+    imageBaseUrl: String,
+    onDownload: (ChatMedia) -> Unit,
+) {
     val isUser = bubble.role.equals("user", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
 
@@ -441,14 +480,25 @@ private fun BubbleRow(bubble: ChatBubble) {
                         if (bubble.streaming) {
                             Text(bubble.content, style = MaterialTheme.typography.bodyLarge)
                         } else {
-                            MarkdownText(markdown = bubble.content)
+                            MarkdownText(
+                                markdown = bubble.content,
+                                imageHeaders = imageHeaders,
+                                imageBaseUrl = imageBaseUrl,
+                            )
                         }
                     } else if (bubble.streaming) {
                         Text("…", color = CloverText3)
                     }
                     if (bubble.attachments.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
-                        bubble.attachments.forEach { media -> ChatMediaPreview(media) }
+                        bubble.attachments.forEach { media ->
+                            ChatMediaPreview(
+                                media = media,
+                                imageHeaders = imageHeaders,
+                                imageBaseUrl = imageBaseUrl,
+                                onDownload = onDownload,
+                            )
+                        }
                     }
                     if (bubble.streaming) {
                         Spacer(Modifier.height(4.dp))
@@ -525,7 +575,13 @@ private fun compactTokenCount(tokens: Int): String {
 }
 
 @Composable
-private fun ProcessTimeline(steps: List<ChatBubble>, isResponding: Boolean) {
+private fun ProcessTimeline(
+    steps: List<ChatBubble>,
+    isResponding: Boolean,
+    imageHeaders: Map<String, String>,
+    imageBaseUrl: String,
+    onDownload: (ChatMedia) -> Unit,
+) {
     var expanded by remember(steps.first().id) { mutableStateOf(isResponding) }
     Column(Modifier.fillMaxWidth().padding(start = 14.dp)) {
         Row(
@@ -554,9 +610,9 @@ private fun ProcessTimeline(steps: List<ChatBubble>, isResponding: Boolean) {
             ) {
                 steps.forEach { step ->
                     if (step.role == "reasoning") {
-                        ReasoningPart(step)
+                        ReasoningPart(step, imageHeaders, imageBaseUrl)
                     } else {
-                        ToolPart(step)
+                        ToolPart(step, imageHeaders, imageBaseUrl, onDownload)
                     }
                 }
             }
@@ -565,18 +621,27 @@ private fun ProcessTimeline(steps: List<ChatBubble>, isResponding: Boolean) {
 }
 
 @Composable
-private fun ReasoningPart(bubble: ChatBubble) {
+private fun ReasoningPart(
+    bubble: ChatBubble,
+    imageHeaders: Map<String, String>,
+    imageBaseUrl: String,
+) {
     if (bubble.content.isBlank()) return
     Column(Modifier.fillMaxWidth()) {
         bubble.reasoningRound?.takeIf { it > 1 }?.let { round ->
             Text("第 $round 轮", style = MaterialTheme.typography.labelSmall, color = CloverText3)
         }
-        MarkdownText(markdown = bubble.content)
+        MarkdownText(markdown = bubble.content, imageHeaders = imageHeaders, imageBaseUrl = imageBaseUrl)
     }
 }
 
 @Composable
-private fun ToolPart(bubble: ChatBubble) {
+private fun ToolPart(
+    bubble: ChatBubble,
+    imageHeaders: Map<String, String>,
+    imageBaseUrl: String,
+    onDownload: (ChatMedia) -> Unit,
+) {
     var expanded by remember(bubble.id) { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 2.dp),
@@ -625,6 +690,9 @@ private fun ToolPart(bubble: ChatBubble) {
             bubble.toolOutput?.takeIf { it.isNotBlank() }?.let {
                 Text(if (bubble.toolSuccess == false) "错误" else "结果", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 MonoBlock(it)
+            }
+            bubble.attachments.forEach { media ->
+                ChatMediaPreview(media, imageHeaders, imageBaseUrl, onDownload)
             }
         }
     }
@@ -745,31 +813,274 @@ private fun ComposerBar(
 }
 
 @Composable
-private fun ChatMediaPreview(media: ChatMedia) {
+private fun ChatMediaPreview(
+    media: ChatMedia,
+    imageHeaders: Map<String, String>,
+    imageBaseUrl: String,
+    onDownload: (ChatMedia) -> Unit,
+) {
     val descriptor = media.descriptor
-    if (descriptor.type.equals("image", true) && media.localUri != null) {
-        AsyncImage(
-            model = Uri.parse(media.localUri),
-            contentDescription = descriptor.fileName ?: "图片附件",
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .widthIn(max = 420.dp)
-                .heightIn(max = 280.dp)
-                .clip(RoundedCornerShape(12.dp)),
+    val context = LocalContext.current
+    val remoteUrl = descriptor.fileUrl
+        ?.takeIf { it.isNotBlank() }
+        ?.let { resolveMediaUrl(it, imageBaseUrl) }
+    val sourceUri = media.localUri?.let(Uri::parse) ?: remoteUrl?.let(Uri::parse)
+    val kind = attachmentKind(descriptor)
+    val imageModel = remoteUrl?.let { url ->
+        remember(url, imageHeaders, imageBaseUrl) {
+            ImageRequest.Builder(context)
+                .data(url)
+                .apply {
+                    if (sameMediaOrigin(url, imageBaseUrl)) {
+                        imageHeaders.forEach { (name, value) -> addHeader(name, value) }
+                    }
+                }
+                .build()
+        }
+    }
+    var showImageViewer by remember(sourceUri?.toString(), kind) { mutableStateOf(false) }
+    var playbackError by remember(sourceUri?.toString(), descriptor.mimeType, kind) { mutableStateOf(false) }
+    val player = rememberAttachmentPlayer(
+        context = context,
+        sourceUri = sourceUri,
+        mimeType = descriptor.mimeType,
+        headers = if (remoteUrl != null && sameMediaOrigin(remoteUrl, imageBaseUrl)) imageHeaders else emptyMap(),
+        enabled = (kind == "audio" || kind == "video") && sourceUri != null && !playbackError,
+    )
+    DisposableEffect(player) {
+        if (player == null) {
+            onDispose { }
+        } else {
+            val listener = object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    playbackError = true
+                }
+            }
+            player.addListener(listener)
+            onDispose { player.removeListener(listener) }
+        }
+    }
+
+    LaunchedEffect(player, sourceUri, descriptor.mimeType) {
+        if (player == null || sourceUri == null) return@LaunchedEffect
+        val item = MediaItem.Builder()
+            .setUri(sourceUri)
+            .apply {
+                descriptor.mimeType
+                    ?.takeIf { it.isNotBlank() && !it.equals("application/octet-stream", ignoreCase = true) }
+                    ?.let(::setMimeType)
+            }
+            .build()
+        player.setMediaItem(item)
+        player.prepare()
+    }
+
+    when {
+        kind == "image" && sourceUri != null && imageModel != null -> {
+            Column(Modifier.fillMaxWidth()) {
+                Box(
+                    Modifier
+                        .widthIn(max = 420.dp)
+                        .heightIn(max = 280.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { showImageViewer = true },
+                ) {
+                    AsyncImage(
+                        model = imageModel,
+                        contentDescription = descriptor.fileName ?: "图片附件",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    AttachmentDownloadButton(media, onDownload)
+                }
+            }
+        }
+        kind == "image" && sourceUri != null && media.localUri != null -> {
+            Column(Modifier.fillMaxWidth()) {
+                Box(
+                    Modifier
+                        .widthIn(max = 420.dp)
+                        .heightIn(max = 280.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { showImageViewer = true },
+                ) {
+                    AsyncImage(
+                        model = sourceUri,
+                        contentDescription = descriptor.fileName ?: "图片附件",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    AttachmentDownloadButton(media, onDownload)
+                }
+            }
+        }
+        (kind == "audio" || kind == "video") && player != null -> {
+            AndroidView(
+                factory = { PlayerView(it) },
+                update = { view ->
+                    view.player = player
+                    view.useController = true
+                    view.resizeMode = if (kind == "video") {
+                        AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    } else {
+                        AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (kind == "video") 230.dp else 76.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+            )
+            AttachmentDownloadButton(media, onDownload)
+        }
+        else -> AttachmentFileCard(media, kind, onDownload)
+    }
+
+    if (showImageViewer && sourceUri != null) {
+        FullscreenImagePreview(
+            model = imageModel ?: sourceUri,
+            name = descriptor.fileName ?: "图片附件",
+            onDismiss = { showImageViewer = false },
+            onDownload = if (!descriptor.fileUrl.isNullOrBlank()) {
+                { onDownload(media) }
+            } else {
+                null
+            },
         )
-    } else {
+    }
+}
+
+@Composable
+private fun rememberAttachmentPlayer(
+    context: Context,
+    sourceUri: Uri?,
+    mimeType: String?,
+    headers: Map<String, String>,
+    enabled: Boolean,
+): ExoPlayer? {
+    if (!enabled || sourceUri == null) return null
+    val player = remember(sourceUri.toString(), mimeType, headers) {
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(headers)
+        val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .build()
+            .apply {
+                playWhenReady = false
+                repeatMode = Player.REPEAT_MODE_OFF
+            }
+    }
+    DisposableEffect(player) {
+        onDispose { player.release() }
+    }
+    return player
+}
+
+@Composable
+private fun FullscreenImagePreview(
+    model: Any,
+    name: String,
+    onDismiss: () -> Unit,
+    onDownload: (() -> Unit)?,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+        ) {
+            AsyncImage(
+                model = model,
+                contentDescription = name,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(onClick = onDismiss),
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp),
+            ) {
+                Icon(Icons.Outlined.Close, contentDescription = "关闭预览", tint = Color.White)
+            }
+            if (onDownload != null) {
+                IconButton(
+                    onClick = onDownload,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(12.dp),
+                ) {
+                    Icon(Icons.Outlined.Download, contentDescription = "下载附件", tint = Color.White)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentDownloadButton(media: ChatMedia, onDownload: (ChatMedia) -> Unit) {
+    if (!media.descriptor.fileUrl.isNullOrBlank()) {
+        IconButton(onClick = { onDownload(media) }, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Outlined.Download, contentDescription = "下载附件", tint = CloverText2)
+        }
+    }
+}
+
+@Composable
+private fun AttachmentFileCard(media: ChatMedia, kind: String, onDownload: (ChatMedia) -> Unit) {
+    val descriptor = media.descriptor
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(CloverSurface2)
+            .padding(start = 10.dp, end = 2.dp),
+    ) {
         Text(
-            text = "${mediaTypeLabel(descriptor.type)} · ${descriptor.fileName ?: "附件"}",
+            text = "${mediaTypeLabel(kind)} · ${descriptor.fileName ?: "附件"}",
             style = MaterialTheme.typography.bodySmall,
             color = CloverText2,
-            modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(CloverSurface2)
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+            modifier = Modifier.weight(1f).padding(vertical = 8.dp),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
+        AttachmentDownloadButton(media, onDownload)
     }
+}
+
+private fun attachmentKind(descriptor: com.luckyagent.android.data.api.MediaAttachment): String {
+    val type = descriptor.type.lowercase()
+    val mimeType = descriptor.mimeType.orEmpty().lowercase()
+    return when {
+        type == "image" || type.startsWith("image/") || mimeType.startsWith("image/") -> "image"
+        type == "audio" || type.startsWith("audio/") || mimeType.startsWith("audio/") -> "audio"
+        type == "video" || type.startsWith("video/") || mimeType.startsWith("video/") -> "video"
+        else -> "document"
+    }
+}
+
+private fun resolveMediaUrl(url: String, baseUrl: String): String {
+    if (url.startsWith("http://") || url.startsWith("https://")) return url
+    if (baseUrl.isBlank()) return url
+    return baseUrl.trimEnd('/') + "/" + url.trimStart('/')
+}
+
+private fun sameMediaOrigin(url: String, baseUrl: String): Boolean {
+    val target = Uri.parse(url)
+    val base = Uri.parse(baseUrl)
+    val targetPort = target.port.takeIf { it >= 0 } ?: if (target.scheme.equals("https", true)) 443 else 80
+    val basePort = base.port.takeIf { it >= 0 } ?: if (base.scheme.equals("https", true)) 443 else 80
+    return target.scheme == base.scheme && target.host.equals(base.host, true) && targetPort == basePort
 }
 
 @Composable

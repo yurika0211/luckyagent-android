@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui
 
 import android.content.ContentResolver
+import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
@@ -52,6 +53,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -234,11 +236,13 @@ class AppViewModel(
                     "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
                         if (!completeRun(event)) return@collect
                         val piece = extractFullResponse(env.data) ?: extractText(env.data)
+                        val attachments = extractAttachments(env.data)
                         if (foreground) {
                             finishAssistant(
                                 full = piece,
                                 createdAt = extractField(env.data, "created_at") ?: env.timestamp,
                                 usage = extractUsage(env.data),
+                                attachments = attachments,
                             )
                             _ui.update { it.copy(isResponding = false) }
                             foregroundRunConnectionId = null
@@ -438,6 +442,7 @@ class AppViewModel(
             }
             else -> true
         }
+        val attachments = extractAttachments(data)
         val stepKey = "$currentTurnId:$stepId"
         val id = when {
             stepId.isNotBlank() -> toolStepIndex[stepKey] ?: "tool-$stepKey".also { toolStepIndex[stepKey] = it }
@@ -451,6 +456,7 @@ class AppViewModel(
             done = true,
             success = success,
             output = output,
+            attachments = attachments,
         )
         upsertProgress(
             ChatProgressStep(
@@ -503,6 +509,7 @@ class AppViewModel(
         done: Boolean,
         success: Boolean?,
         output: String?,
+        attachments: List<ChatMedia> = emptyList(),
     ) {
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
@@ -516,6 +523,7 @@ class AppViewModel(
                     toolOutput = output?.takeIf { it.isNotBlank() } ?: old.toolOutput,
                     toolDone = done || old.toolDone,
                     toolSuccess = success ?: old.toolSuccess,
+                    attachments = if (attachments.isNotEmpty()) attachments else old.attachments,
                     content = buildToolContent(
                         name = name,
                         args = args?.takeIf { it.isNotBlank() } ?: old.toolArgs,
@@ -536,6 +544,7 @@ class AppViewModel(
                         toolOutput = output,
                         toolDone = done,
                         toolSuccess = success,
+                        attachments = attachments,
                         stepId = id.removePrefix("tool-").takeIf { it != id },
                     ),
                 )
@@ -615,6 +624,41 @@ class AppViewModel(
         return o[key]?.jsonPrimitive?.contentOrNull
     }
 
+    private fun extractAttachments(data: kotlinx.serialization.json.JsonElement?): List<ChatMedia> {
+        val obj = data as? JsonObject ?: return emptyList()
+        val raw = obj["attachments"] ?: obj["files"] ?: obj["media"] ?: return emptyList()
+        val items = raw as? JsonArray ?: return emptyList()
+        return items.mapNotNull { item ->
+            val attachment = item as? JsonObject ?: return@mapNotNull null
+            val descriptor = MediaAttachment(
+                type = attachment.stringValue("type")?.let(::normalizeMediaType) ?: "document",
+                fileId = attachment.stringValue("file_id"),
+                fileUrl = attachment.stringValue("file_url")
+                    ?: attachment.stringValue("url")
+                    ?: attachment.stringValue("download_url"),
+                filePath = attachment.stringValue("file_path"),
+                fileName = attachment.stringValue("file_name") ?: attachment.stringValue("name"),
+                mimeType = attachment.stringValue("mime_type") ?: attachment.stringValue("content_type"),
+                fileSize = attachment.longValue("file_size") ?: attachment.longValue("size"),
+            )
+            if (descriptor.fileUrl.isNullOrBlank() && descriptor.filePath.isNullOrBlank()) null
+            else ChatMedia(descriptor)
+        }
+    }
+
+    private fun JsonObject.stringValue(key: String): String? =
+        this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+
+    private fun JsonObject.longValue(key: String): Long? =
+        this[key]?.jsonPrimitive?.longOrNull
+
+    private fun normalizeMediaType(type: String): String = when {
+        type.equals("image", ignoreCase = true) || type.startsWith("image/", ignoreCase = true) -> "image"
+        type.equals("audio", ignoreCase = true) || type.startsWith("audio/", ignoreCase = true) -> "audio"
+        type.equals("video", ignoreCase = true) || type.startsWith("video/", ignoreCase = true) -> "video"
+        else -> "document"
+    }
+
     private fun extractUsage(data: kotlinx.serialization.json.JsonElement?): TokenUsage? {
         val o = data as? JsonObject ?: return null
         val usage = o["usage"] as? JsonObject ?: return null
@@ -682,7 +726,12 @@ class AppViewModel(
         }
     }
 
-    private fun finishAssistant(full: String?, createdAt: String? = null, usage: TokenUsage? = null) {
+    private fun finishAssistant(
+        full: String?,
+        createdAt: String? = null,
+        usage: TokenUsage? = null,
+        attachments: List<ChatMedia> = emptyList(),
+    ) {
         assistantFlushJob?.cancel()
         assistantFlushJob = null
         val pending = assistantPending.toString()
@@ -700,8 +749,9 @@ class AppViewModel(
                         streaming = false,
                         createdAt = createdAt ?: answer.createdAt,
                         usage = usage ?: answer.usage,
+                        attachments = if (attachments.isNotEmpty()) attachments else answer.attachments,
                     )
-                } else if (!full.isNullOrBlank() || pending.isNotEmpty()) {
+                } else if (!full.isNullOrBlank() || pending.isNotEmpty() || attachments.isNotEmpty()) {
                     list += ChatBubble(
                         id = id,
                         role = "assistant",
@@ -709,15 +759,17 @@ class AppViewModel(
                         streaming = false,
                         createdAt = createdAt,
                         usage = usage,
+                        attachments = attachments,
                     )
                 }
-            } else if (!full.isNullOrBlank()) {
+            } else if (!full.isNullOrBlank() || attachments.isNotEmpty()) {
                 list += ChatBubble(
                     id = "a-${System.currentTimeMillis()}",
                     role = "assistant",
-                    content = full,
+                    content = full.orEmpty(),
                     createdAt = createdAt,
                     usage = usage,
+                    attachments = attachments,
                 )
             }
             st.copy(bubbles = list, isResponding = false)
@@ -950,6 +1002,7 @@ class AppViewModel(
                     bubbles[callIndex] = call.copy(
                         content = bubble.content,
                         toolOutput = bubble.toolOutput,
+                        attachments = if (bubble.attachments.isNotEmpty()) bubble.attachments else call.attachments,
                     )
                 } else {
                     bubbles += bubble
@@ -962,6 +1015,18 @@ class AppViewModel(
     private fun ProviderMessage.toBubbles(idx: Int): List<ChatBubble> {
         val role = role ?: "assistant"
         val base = content.orEmpty()
+        val messageAttachments = attachments.map(::ChatMedia) + contentParts.mapNotNull { part ->
+            val image = part.image ?: return@mapNotNull null
+            if (image.url.isNullOrBlank() && image.filePath.isNullOrBlank()) return@mapNotNull null
+            ChatMedia(
+                MediaAttachment(
+                    type = "image",
+                    fileUrl = image.url,
+                    filePath = image.filePath,
+                    mimeType = image.mimeType,
+                ),
+            )
+        }
         val result = mutableListOf<ChatBubble>()
         reasoningContent?.takeIf { it.isNotBlank() }?.let { reasoning ->
             result += ChatBubble(
@@ -986,6 +1051,7 @@ class AppViewModel(
                 toolArgs = tool.arguments,
                 toolDone = true,
                 stepId = tool.id,
+                attachments = messageAttachments,
             )
         }
         if (role == "tool") {
@@ -996,6 +1062,7 @@ class AppViewModel(
                 toolName = name ?: "tool",
                 toolOutput = base.takeIf { it.isNotBlank() },
                 toolDone = true,
+                attachments = messageAttachments,
             )
         } else if (base.isNotBlank() || (result.isEmpty() && toolCalls.isEmpty())) {
             result += ChatBubble(
@@ -1004,6 +1071,7 @@ class AppViewModel(
                 content = base,
                 createdAt = createdAt,
                 usage = usage,
+                attachments = messageAttachments,
             )
         }
         return result
@@ -1013,6 +1081,17 @@ class AppViewModel(
         settingsReconnectJob?.cancel()
         settingsReconnectJob = null
         container.wsClient.connect(currentSessionId(), force = force)
+    }
+
+    fun downloadAttachment(context: Context, media: ChatMedia) {
+        val descriptor = media.descriptor
+        if (descriptor.fileUrl.isNullOrBlank()) {
+            _ui.update { it.copy(activityLine = "附件没有可下载的 URL") }
+            return
+        }
+        container.api.enqueueAttachmentDownload(context, descriptor)
+            .onSuccess { _ui.update { it.copy(activityLine = "已开始下载 · ${descriptor.fileName ?: "附件"}") } }
+            .onFailure { error -> _ui.update { it.copy(activityLine = "下载失败 · ${error.message ?: "未知错误"}") } }
     }
 
     fun sendComposer() {
