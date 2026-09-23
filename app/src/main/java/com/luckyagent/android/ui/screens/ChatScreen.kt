@@ -251,8 +251,18 @@ private fun ChatConversation(
 
         val listState = rememberLazyListState()
         val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
+        var lastAutoScrollPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
         LaunchedEffect(timeline.size, state.bubbles.lastOrNull()) {
-            if (timeline.isNotEmpty()) listState.animateScrollToItem(timeline.lastIndex)
+            if (timeline.isEmpty() || listState.isScrollInProgress) return@LaunchedEffect
+            val layout = listState.layoutInfo
+            val lastVisible = layout.visibleItemsInfo.lastOrNull()
+            val atBottom = lastVisible == null ||
+                (lastVisible.index == layout.totalItemsCount - 1 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
+            val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+            if (atBottom || position == lastAutoScrollPosition) {
+                listState.scrollToItem(timeline.size)
+                lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+            }
         }
 
         LazyColumn(
@@ -270,6 +280,7 @@ private fun ChatConversation(
                     is ChatTimelineItem.ToolGroup -> ToolCallGroup(item.calls)
                 }
             }
+            item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
         }
 
         if (state.suggestionPrompts.isNotEmpty() && state.bubbles.isNotEmpty()) {
@@ -425,7 +436,11 @@ private fun BubbleRow(bubble: ChatBubble) {
                         Spacer(Modifier.height(4.dp))
                     }
                     if (bubble.content.isNotBlank()) {
-                        MarkdownText(markdown = bubble.content)
+                        if (bubble.streaming) {
+                            Text(bubble.content, style = MaterialTheme.typography.bodyLarge)
+                        } else {
+                            MarkdownText(markdown = bubble.content)
+                        }
                     } else if (bubble.streaming) {
                         Text("…", color = CloverText3)
                     }

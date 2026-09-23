@@ -21,6 +21,8 @@ import com.luckyagent.android.data.api.SkillsResponse
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.data.settings.ClientSettings
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -130,7 +132,10 @@ class AppViewModel(
     val ui: StateFlow<AppUiState> = _ui.asStateFlow()
 
     private var eventsJob: Job? = null
+    private var settingsReconnectJob: Job? = null
     private var assistantBufferId: String? = null
+    private val assistantPending = StringBuilder()
+    private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
     private val toolStepIndex = mutableMapOf<String, String>()
 
@@ -469,7 +474,23 @@ class AppViewModel(
     }
 
     private fun appendAssistant(piece: String) {
-        val id = assistantBufferId ?: "a-${System.currentTimeMillis()}".also { assistantBufferId = it }
+        if (piece.isEmpty()) return
+        if (assistantBufferId == null) assistantBufferId = "a-${System.currentTimeMillis()}"
+        assistantPending.append(piece)
+        if (assistantFlushJob == null) {
+            assistantFlushJob = viewModelScope.launch {
+                kotlinx.coroutines.delay(40)
+                assistantFlushJob = null
+                flushAssistantPending()
+            }
+        }
+    }
+
+    private fun flushAssistantPending() {
+        val id = assistantBufferId ?: return
+        if (assistantPending.isEmpty()) return
+        val piece = assistantPending.toString()
+        assistantPending.setLength(0)
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
             val idx = list.indexOfLast { it.id == id }
@@ -483,22 +504,33 @@ class AppViewModel(
     }
 
     private fun finishAssistant(full: String?) {
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
+        val pending = assistantPending.toString()
+        assistantPending.setLength(0)
         val id = assistantBufferId
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
             if (id != null) {
                 val idx = list.indexOfLast { it.id == id }
                 if (idx >= 0) {
-                    val content = full?.takeIf { it.isNotBlank() } ?: list[idx].content
+                    val content = full?.takeIf { it.isNotBlank() } ?: list[idx].content + pending
                     list[idx] = list[idx].copy(content = content, streaming = false)
-                } else if (!full.isNullOrBlank()) {
-                    list += ChatBubble(id = id, role = "assistant", content = full, streaming = false)
+                } else if (!full.isNullOrBlank() || pending.isNotEmpty()) {
+                    list += ChatBubble(id = id, role = "assistant", content = full?.takeIf { it.isNotBlank() } ?: pending, streaming = false)
                 }
             } else if (!full.isNullOrBlank()) {
                 list += ChatBubble(id = "a-${System.currentTimeMillis()}", role = "assistant", content = full)
             }
             st.copy(bubbles = list, isResponding = false)
         }
+        assistantBufferId = null
+    }
+
+    private fun resetAssistantStream() {
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
+        assistantPending.setLength(0)
         assistantBufferId = null
     }
 
@@ -561,13 +593,13 @@ class AppViewModel(
                 prev.sessionId != next.sessionId ||
                 prev.apiKey != next.apiKey ||
                 prev.useBearer != next.useBearer
-        if (endpointChanged && (
-                prev.apiBase != next.apiBase ||
-                    prev.wsUrl != next.wsUrl ||
-                    prev.sessionId != next.sessionId
-                )
-        ) {
-            connectSocket()
+        if (endpointChanged) {
+            settingsReconnectJob?.cancel()
+            settingsReconnectJob = viewModelScope.launch {
+                kotlinx.coroutines.delay(450)
+                container.wsClient.connect(container.settingsRepository.snapshot().sessionId)
+                settingsReconnectJob = null
+            }
         }
     }
 
@@ -601,7 +633,7 @@ class AppViewModel(
 
     fun selectSession(id: String) {
         container.settingsRepository.update { it.copy(sessionId = id) }
-        assistantBufferId = null
+        resetAssistantStream()
         toolStepIndex.clear()
         _ui.update { it.copy(isResponding = false, progressSteps = emptyList()) }
         connectSocket()
@@ -612,7 +644,7 @@ class AppViewModel(
         viewModelScope.launch {
             val result = container.api.sessionHistory(sessionId)
             result.onSuccess { history ->
-                assistantBufferId = null
+                resetAssistantStream()
                 toolStepIndex.clear()
                 val bubbles = history.messages.mapIndexed { idx, msg -> msg.toBubble(idx) }
                 _ui.update {
@@ -660,7 +692,9 @@ class AppViewModel(
     }
 
     fun connectSocket() {
-        container.wsClient.connect(_ui.value.settings.sessionId)
+        settingsReconnectJob?.cancel()
+        settingsReconnectJob = null
+        container.wsClient.connect(container.settingsRepository.snapshot().sessionId)
     }
 
     fun sendComposer() {
@@ -676,7 +710,7 @@ class AppViewModel(
                 progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
             )
         }
-        assistantBufferId = null
+        resetAssistantStream()
         val ok = container.wsClient.sendChat(text)
         if (!ok) {
             connectSocket()
@@ -721,9 +755,13 @@ class AppViewModel(
         viewModelScope.launch {
             _ui.update { it.copy(memoryLoading = true, memoryError = null) }
             val q = _ui.value.memoryQuery
-            val stats = container.api.memoryStats()
-            val recall = container.api.recallMemory(q)
-            val graph = container.api.memoryGraph(includeIsolated = _ui.value.memoryGraphIsolated)
+            val includeIsolated = _ui.value.memoryGraphIsolated
+            val (stats, recall, graph) = coroutineScope {
+                val statsRequest = async { container.api.memoryStats() }
+                val recallRequest = async { container.api.recallMemory(q) }
+                val graphRequest = async { container.api.memoryGraph(includeIsolated = includeIsolated) }
+                Triple(statsRequest.await(), recallRequest.await(), graphRequest.await())
+            }
             _ui.update {
                 it.copy(
                     memoryLoading = false,
@@ -846,7 +884,7 @@ class AppViewModel(
             val result = container.api.createSession(title)
             result.onSuccess { session ->
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
-                assistantBufferId = null
+                resetAssistantStream()
                 toolStepIndex.clear()
                 _ui.update {
                     it.copy(
