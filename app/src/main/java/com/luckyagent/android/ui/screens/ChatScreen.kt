@@ -33,7 +33,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Edit
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -76,6 +79,8 @@ import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
+import com.luckyagent.android.ui.ChatProgressStep
+import com.luckyagent.android.ui.ProgressStatus
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
@@ -284,6 +289,10 @@ private fun ChatConversation(
             }
         }
 
+        ChatProgressPanel(
+            steps = state.progressSteps,
+            isResponding = state.isResponding,
+        )
         ComposerBar(state = state, onChange = vm::updateComposer, onSend = vm::sendComposer, onStop = vm::cancelRun)
     }
 }
@@ -294,8 +303,10 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
     Row(
         Modifier
             .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .clip(MaterialTheme.shapes.medium)
             .background(CloverSurface)
-            .border(1.dp, CloverLine)
+            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -315,10 +326,9 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
         }
         val live = state.socketState == SocketState.Connected || state.socketState == SocketState.Running
         MetaChip(if (live) "live" else state.socketState.name.lowercase())
-        val streaming = state.bubbles.any { it.streaming }
-        if (streaming) {
+        if (state.isResponding) {
             Spacer(Modifier.width(6.dp))
-            MetaChip("streaming")
+            MetaChip("working")
         }
         if (openNavigation != null) {
             IconButton(onClick = openNavigation) {
@@ -326,13 +336,15 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
             }
         }
     }
-    state.activityLine?.let {
+    if (state.progressSteps.isEmpty()) state.activityLine?.let {
         Text(
             it,
             color = CloverText2,
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(horizontal = 12.dp)
+                .clip(MaterialTheme.shapes.small)
                 .background(CloverSurface2)
                 .padding(horizontal = 12.dp, vertical = 4.dp),
             maxLines = 1,
@@ -347,8 +359,8 @@ private fun WelcomeBlock(suggestions: List<String>, onPick: (String) -> Unit) {
         Modifier
             .fillMaxWidth()
             .padding(8.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .border(1.dp, CloverLine, RoundedCornerShape(16.dp))
+            .clip(MaterialTheme.shapes.medium)
+            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
             .background(CloverSurface)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -402,9 +414,9 @@ private fun BubbleRow(bubble: ChatBubble) {
                 Column(
                     Modifier
                         .widthIn(max = 520.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(MaterialTheme.shapes.medium)
                         .background(bg)
-                        .border(1.dp, CloverLine, RoundedCornerShape(16.dp))
+                        .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
                     if (!isUser) {
@@ -414,19 +426,6 @@ private fun BubbleRow(bubble: ChatBubble) {
                             color = CloverText3,
                         )
                         Spacer(Modifier.height(4.dp))
-                    }
-                    if (!bubble.reasoning.isNullOrBlank()) {
-                        Text(
-                            bubble.reasoning,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = CloverText2,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(CloverSurface2)
-                                .padding(8.dp),
-                        )
-                        Spacer(Modifier.height(6.dp))
                     }
                     if (bubble.content.isNotBlank()) {
                         MarkdownText(markdown = bubble.content)
@@ -453,9 +452,9 @@ private fun ToolBubble(bubble: ChatBubble) {
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(MaterialTheme.shapes.small)
             .background(CloverToolBg)
-            .border(1.dp, CloverLine, RoundedCornerShape(12.dp))
+            .border(1.dp, CloverLine, MaterialTheme.shapes.small)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -486,15 +485,15 @@ private fun ToolBubble(bubble: ChatBubble) {
 
 @Composable
 private fun ToolCallGroup(calls: List<ChatBubble>) {
-    var expanded by remember(calls.map { it.id }) { mutableStateOf(false) }
+    var expanded by remember(calls.map { it.id }) { mutableStateOf(calls.any { !it.toolDone }) }
     val names = calls.mapNotNull { it.toolName }.distinct()
     val failed = calls.count { it.toolSuccess == false }
     val running = calls.any { !it.toolDone }
     Column(
         Modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(MaterialTheme.shapes.medium)
             .background(CloverToolBg)
-            .border(1.dp, CloverLine, RoundedCornerShape(14.dp)),
+            .border(1.dp, CloverLine, MaterialTheme.shapes.medium),
     ) {
         Row(
             Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -542,6 +541,54 @@ private fun ToolCallGroup(calls: List<ChatBubble>) {
 }
 
 @Composable
+private fun ChatProgressPanel(steps: List<ChatProgressStep>, isResponding: Boolean) {
+    if (steps.isEmpty()) return
+    Column(
+        Modifier.fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .background(CloverSurface)
+            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (isResponding) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = CloverAccent,
+                )
+            } else {
+                Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = CloverAccent, modifier = Modifier.size(16.dp))
+            }
+            Text(
+                if (isResponding) "Working on your request" else "Recent activity",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = CloverText2,
+            )
+        }
+        steps.takeLast(3).forEach { step ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                when (step.status) {
+                    ProgressStatus.Active -> Box(Modifier.size(7.dp).clip(CircleShape).background(CloverAccent))
+                    ProgressStatus.Complete -> Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = CloverLeaf, modifier = Modifier.size(14.dp))
+                    ProgressStatus.Failed -> Icon(Icons.Outlined.ErrorOutline, contentDescription = null, tint = CloverError, modifier = Modifier.size(14.dp))
+                }
+                Text(
+                    step.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (step.status == ProgressStatus.Failed) CloverError else CloverText2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun MonoBlock(text: String) {
     Text(
         text = text,
@@ -566,9 +613,10 @@ private fun ComposerBar(
     Column(
         Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             .background(CloverSurface)
-            .border(1.dp, CloverLine)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .border(1.dp, CloverLine, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
             BasicTextField(
@@ -593,8 +641,8 @@ private fun ComposerBar(
                 },
             )
             Spacer(Modifier.width(6.dp))
-            val streaming = state.bubbles.any { it.streaming }
-            if (streaming) {
+            val working = state.isResponding || state.bubbles.any { it.streaming }
+            if (working) {
                 IconButton(
                     onClick = onStop,
                     modifier = Modifier
