@@ -75,9 +75,10 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
-    # Release APK on main pushes, version tags, or manual runs.
-    # PRs only need debug. Signing is optional via repo secrets.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    # Release only when a version tag is pushed (v*).
+    # PR / main / manual dispatch stay on debug CI only.
+    # Signing is optional via repo secrets.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - name: Checkout
@@ -154,8 +155,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Attach APK to GitHub Release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish GitHub Release with APK
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/*.apk

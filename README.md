@@ -98,9 +98,19 @@ Key 存在 `EncryptedSharedPreferences`，不进 URL / 默认不进 body 日志�
 | 触发 | 行为 |
 |------|------|
 | PR → `main` | `assembleDebug`，上传 debug APK artifact |
-| push → `main` | debug + release APK artifact |
-| tag `v*` | 同上，并把 release APK 挂到 GitHub Release |
-| `workflow_dispatch` | 手动跑 debug + release |
+| push → `main` | `assembleDebug`，上传 debug APK artifact |
+| tag `v*` | `assembleRelease`（可选签名）+ 创建/更新 GitHub Release 并挂 APK |
+| `workflow_dispatch` | 仅 debug 构建（不发 release） |
+
+**Release 策略：只打 `v*` tag 才 release**（例如 `v0.1.0`）。普通 push/PR 只做 debug CI。
+
+### 发版（tag → Release）
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+# Actions: build-release → GitHub Release + APK
+```
 
 ### 本地等价
 
