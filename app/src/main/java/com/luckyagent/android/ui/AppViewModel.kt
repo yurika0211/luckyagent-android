@@ -840,9 +840,9 @@ class AppViewModel(
                 it.copy(
                     memoryLoading = false,
                     memoryStats = stats.getOrNull() ?: it.memoryStats,
-                    memoryEntries = recall.getOrDefault(emptyList()),
-                    memoryGraphNodes = graph.getOrNull()?.nodes.orEmpty(),
-                    memoryGraphEdges = graph.getOrNull()?.edges.orEmpty(),
+                    memoryEntries = recall.getOrNull() ?: it.memoryEntries,
+                    memoryGraphNodes = graph.getOrNull()?.nodes ?: it.memoryGraphNodes,
+                    memoryGraphEdges = graph.getOrNull()?.edges ?: it.memoryGraphEdges,
                     memoryGraphSummary = graph.getOrNull()?.let { g ->
                         "nodes=${g.nodes.size} edges=${g.edges.size} isolated=${g.isolatedCount ?: 0} notes=${g.totalNotes ?: "?"} unresolved=${g.unresolved ?: 0}" +
                             if (g.truncated == true) " truncated" else ""
@@ -883,7 +883,7 @@ class AppViewModel(
         _ui.update { it.copy(memoryTraceQuery = q, memoryTraceLoading = true, memoryTraceError = null) }
         viewModelScope.launch {
             val result = container.api.memoryRecallTrace(q, depth)
-            _ui.update { it.copy(memoryTraceLoading = false, memoryTrace = result.getOrNull(), memoryTraceError = result.exceptionOrNull()?.message) }
+            _ui.update { it.copy(memoryTraceLoading = false, memoryTrace = result.getOrNull() ?: it.memoryTrace, memoryTraceError = result.exceptionOrNull()?.message) }
         }
     }
 
