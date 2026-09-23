@@ -4,7 +4,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,7 +23,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -43,7 +41,6 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -77,8 +74,6 @@ import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
-import com.luckyagent.android.ui.ChatProgressStep
-import com.luckyagent.android.ui.ProgressStatus
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
@@ -103,30 +98,30 @@ private sealed interface ChatTimelineItem {
         override val key = bubble.id
     }
 
-    data class ToolGroup(val calls: List<ChatBubble>) : ChatTimelineItem {
-        override val key = calls.joinToString("-") { it.id }
+    data class Process(val steps: List<ChatBubble>) : ChatTimelineItem {
+        override val key = steps.first().id
     }
 }
 
 private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
     val result = mutableListOf<ChatTimelineItem>()
-    val tools = mutableListOf<ChatBubble>()
-    fun flushTools() {
-        if (tools.isNotEmpty()) {
-            result += ChatTimelineItem.ToolGroup(tools.toList())
-            tools.clear()
+    val steps = mutableListOf<ChatBubble>()
+    fun flushSteps() {
+        if (steps.isNotEmpty()) {
+            result += ChatTimelineItem.Process(steps.toList())
+            steps.clear()
         }
     }
 
     bubbles.forEach { bubble ->
-        if (bubble.role.equals("tool", ignoreCase = true) || bubble.toolName != null) {
-            tools += bubble
+        if (bubble.role == "reasoning" || bubble.role == "tool" || bubble.toolName != null) {
+            steps += bubble
         } else {
-            flushTools()
+            flushSteps()
             result += ChatTimelineItem.Message(bubble)
         }
     }
-    flushTools()
+    flushSteps()
     return result
 }
 
@@ -249,7 +244,7 @@ private fun ChatConversation(
         val listState = rememberLazyListState()
         val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
         var lastAutoScrollPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-        LaunchedEffect(timeline.size, state.bubbles.lastOrNull()) {
+        LaunchedEffect(timeline.size, timeline.lastOrNull()) {
             if (timeline.isEmpty() || listState.isScrollInProgress) return@LaunchedEffect
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()
@@ -268,39 +263,15 @@ private fun ChatConversation(
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (state.bubbles.isEmpty()) {
-                item { WelcomeBlock(suggestions = state.suggestionPrompts, onPick = vm::applySuggestion) }
-            }
             items(timeline, key = { it.key }) { item ->
                 when (item) {
                     is ChatTimelineItem.Message -> BubbleRow(item.bubble)
-                    is ChatTimelineItem.ToolGroup -> ToolCallGroup(item.calls)
+                    is ChatTimelineItem.Process -> ProcessTimeline(item.steps, state.isResponding)
                 }
             }
             item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
         }
 
-        if (state.suggestionPrompts.isNotEmpty() && state.bubbles.isNotEmpty()) {
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                state.suggestionPrompts.take(4).forEach { s ->
-                    Text(
-                        text = s,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CloverAccent,
-                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, CloverLine, RoundedCornerShape(999.dp))
-                            .clickable { vm.applySuggestion(s) }.padding(horizontal = 12.dp, vertical = 8.dp),
-                    )
-                }
-            }
-        }
-
-        ChatProgressPanel(
-            steps = state.progressSteps,
-            isResponding = state.isResponding,
-        )
         ComposerBar(state = state, onChange = vm::updateComposer, onSend = vm::sendComposer, onStop = vm::cancelRun)
     }
 }
@@ -361,41 +332,8 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
 }
 
 @Composable
-private fun WelcomeBlock(suggestions: List<String>, onPick: (String) -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(8.dp)
-            .clip(MaterialTheme.shapes.medium)
-            .background(CloverSurface)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text("LuckyAgent", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        Text(
-            "Thin Android client for your host runtime. Start a session from the drawer, or pick a suggestion.",
-            color = CloverText2,
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        suggestions.forEach { s ->
-            Text(
-                s,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(CloverSurface2)
-                    .clickable { onPick(s) }
-                    .padding(12.dp),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-    }
-}
-
-@Composable
 private fun BubbleRow(bubble: ChatBubble) {
     val isUser = bubble.role.equals("user", ignoreCase = true)
-    val isReasoning = bubble.role.equals("reasoning", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
 
     Row(
@@ -403,7 +341,6 @@ private fun BubbleRow(bubble: ChatBubble) {
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         when {
-            isReasoning -> ReasoningRow(bubble)
             isSystem -> {
                 Text(
                     bubble.content,
@@ -457,111 +394,39 @@ private fun BubbleRow(bubble: ChatBubble) {
 }
 
 @Composable
-private fun ReasoningRow(bubble: ChatBubble) {
-    var expanded by remember(bubble.id) { mutableStateOf(false) }
-    val title = bubble.reasoningRound?.takeIf { it > 0 }?.let { "思考过程 · 第 $it 轮" } ?: "思考过程"
-    Row(
-        Modifier.fillMaxWidth().padding(start = 14.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Box(
-            Modifier.padding(top = 8.dp).size(7.dp).clip(CircleShape).background(CloverText3),
-        )
-        Spacer(Modifier.width(9.dp))
-        Column(
-            Modifier.weight(1f).border(1.dp, CloverLine, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(title, style = MaterialTheme.typography.labelSmall, color = CloverText3, modifier = Modifier.weight(1f))
-                Icon(
-                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = if (expanded) "收起思考过程" else "展开思考过程",
-                    tint = CloverText3,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            if (!expanded) {
-                Text(
-                    bubble.content,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = CloverText2,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            } else {
-                MarkdownText(markdown = bubble.content)
-                Spacer(Modifier.height(6.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun ToolCallGroup(calls: List<ChatBubble>) {
-    var expanded by remember(calls.first().id) { mutableStateOf(false) }
-    val names = calls.mapNotNull { it.toolName }.distinct()
-    val failed = calls.count { it.toolSuccess == false }
-    val running = calls.any { !it.toolDone }
-    val label = if (calls.size == 1) names.firstOrNull() ?: "工具调用" else {
-        "${calls.size} 次工具调用 · ${names.take(2).joinToString(" / ")}"
-    }
-    Column(
-        Modifier.fillMaxWidth().padding(start = 14.dp),
-    ) {
+private fun ProcessTimeline(steps: List<ChatBubble>, isResponding: Boolean) {
+    var expanded by remember(steps.first().id) { mutableStateOf(isResponding) }
+    Column(Modifier.fillMaxWidth().padding(start = 14.dp)) {
         Row(
-            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 5.dp),
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier.size(7.dp).clip(CircleShape).background(
-                    when {
-                        failed > 0 -> CloverError
-                        running -> CloverAccent
-                        else -> CloverLeaf
-                    },
-                ),
-            )
-            Spacer(Modifier.width(9.dp))
             Text(
-                label,
-                style = MaterialTheme.typography.bodySmall,
-                color = CloverText2,
+                if (isResponding && steps.any { !it.toolDone && it.role == "tool" }) "执行中"
+                else "思考过程 · ${steps.size} 步",
+                style = MaterialTheme.typography.labelMedium,
+                color = CloverText3,
                 modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                when {
-                    running -> "运行中"
-                    failed > 0 -> "$failed 失败"
-                    else -> "完成"
-                },
-                color = if (failed > 0) CloverError else CloverText3,
-                style = MaterialTheme.typography.labelSmall,
             )
             Icon(
                 if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = if (expanded) "收起工具详情" else "展开工具详情",
-                tint = CloverText2,
-                modifier = Modifier.padding(start = 6.dp).size(18.dp),
+                contentDescription = if (expanded) "收起思考过程" else "展开思考过程",
+                tint = CloverText3,
+                modifier = Modifier.size(18.dp),
             )
         }
+        HorizontalDivider(color = CloverLine.copy(alpha = .65f))
         AnimatedVisibility(visible = expanded) {
             Column(
-                Modifier.fillMaxWidth().padding(start = 15.dp, bottom = 6.dp)
-                    .border(1.dp, CloverLine, RoundedCornerShape(4.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp),
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                calls.forEachIndexed { index, call ->
-                    if (index > 0) HorizontalDivider(color = CloverLine.copy(alpha = .65f))
-                    Text(call.toolName ?: "tool", style = MaterialTheme.typography.labelMedium, color = CloverText2)
-                    call.toolArgs?.takeIf { it.isNotBlank() }?.let { Text("输入", style = MaterialTheme.typography.labelSmall, color = CloverText3); MonoBlock(it) }
-                    call.toolOutput?.takeIf { it.isNotBlank() }?.let { Text(if (call.toolSuccess == false) "错误" else "结果", style = MaterialTheme.typography.labelSmall, color = CloverText3); MonoBlock(it) }
+                steps.forEach { step ->
+                    if (step.role == "reasoning") {
+                        ReasoningPart(step)
+                    } else {
+                        ToolPart(step)
+                    }
                 }
             }
         }
@@ -569,17 +434,68 @@ private fun ToolCallGroup(calls: List<ChatBubble>) {
 }
 
 @Composable
-private fun ChatProgressPanel(steps: List<ChatProgressStep>, isResponding: Boolean) {
-    if (!isResponding || steps.isEmpty()) return
-    val current = steps.lastOrNull { it.status == ProgressStatus.Active } ?: steps.last()
+private fun ReasoningPart(bubble: ChatBubble) {
+    if (bubble.content.isBlank()) return
+    Column(Modifier.fillMaxWidth()) {
+        bubble.reasoningRound?.takeIf { it > 1 }?.let { round ->
+            Text("第 $round 轮", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        }
+        MarkdownText(markdown = bubble.content)
+    }
+}
+
+@Composable
+private fun ToolPart(bubble: ChatBubble) {
+    var expanded by remember(bubble.id) { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+        Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = CloverAccent)
-        Text(current.label, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Box(
+            Modifier.size(7.dp).clip(CircleShape).background(
+                when {
+                    bubble.toolSuccess == false -> CloverError
+                    !bubble.toolDone -> CloverAccent
+                    else -> CloverLeaf
+                },
+            ),
+        )
+        Spacer(Modifier.width(9.dp))
+        Text(
+            bubble.toolName ?: "工具调用",
+            style = MaterialTheme.typography.bodySmall,
+            color = CloverText2,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            when {
+                !bubble.toolDone -> "运行中"
+                bubble.toolSuccess == false -> "失败"
+                else -> "完成"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (bubble.toolSuccess == false) CloverError else CloverText3,
+        )
+        Icon(
+            if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+            contentDescription = if (expanded) "收起工具详情" else "展开工具详情",
+            tint = CloverText3,
+            modifier = Modifier.padding(start = 6.dp).size(18.dp),
+        )
+    }
+    AnimatedVisibility(visible = expanded) {
+        Column(Modifier.fillMaxWidth().padding(start = 16.dp, bottom = 4.dp)) {
+            bubble.toolArgs?.takeIf { it.isNotBlank() }?.let {
+                Text("输入", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                MonoBlock(it)
+            }
+            bubble.toolOutput?.takeIf { it.isNotBlank() }?.let {
+                Text(if (bubble.toolSuccess == false) "错误" else "结果", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                MonoBlock(it)
+            }
+        }
     }
 }
 
