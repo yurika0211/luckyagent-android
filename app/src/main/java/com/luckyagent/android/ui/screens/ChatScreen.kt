@@ -1,5 +1,9 @@
 package com.luckyagent.android.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -20,6 +24,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -60,6 +66,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,6 +83,8 @@ import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
+import com.luckyagent.android.ui.ChatMedia
+import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
@@ -91,6 +101,7 @@ import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import kotlinx.coroutines.launch
+import coil.compose.AsyncImage
 
 private sealed interface ChatTimelineItem {
     val key: String
@@ -128,12 +139,46 @@ private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
 
 @Composable
 fun ChatScreen(state: AppUiState, vm: AppViewModel) {
+    val context = LocalContext.current
+    var showAttachmentOptions by remember { mutableStateOf(false) }
+    val visualPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
+        if (uris.isNotEmpty()) {
+            uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+            vm.addPickedMedia(context.contentResolver, uris)
+        }
+    }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+            vm.addPickedMedia(context.contentResolver, uris)
+        }
+    }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val usePermanentSessionPane = LocalConfiguration.current.screenWidthDp >= 900
     var sessionPaneExpanded by rememberSaveable { mutableStateOf(true) }
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
+
+    if (showAttachmentOptions) {
+        AlertDialog(
+            onDismissRequest = { showAttachmentOptions = false },
+            title = { Text("添加附件") },
+            text = {
+                Column {
+                    TextButton(onClick = {
+                        showAttachmentOptions = false
+                        visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                    }) { Text("照片和视频") }
+                    TextButton(onClick = {
+                        showAttachmentOptions = false
+                        filePicker.launch(arrayOf("*/*"))
+                    }) { Text("浏览文件") }
+                }
+            },
+            confirmButton = {},
+        )
+    }
 
     val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
         SessionDrawer(
@@ -177,6 +222,7 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
                 vm = vm,
                 showSessionMenu = !sessionPaneExpanded,
                 onOpenSessions = { sessionPaneExpanded = true },
+                onRequestAttachment = { showAttachmentOptions = true },
                 modifier = Modifier.weight(1f),
             )
         }
@@ -197,6 +243,7 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
                 vm = vm,
                 showSessionMenu = true,
                 onOpenSessions = { scope.launch { drawerState.open() } },
+                onRequestAttachment = { showAttachmentOptions = true },
             )
         }
     }
@@ -234,6 +281,7 @@ private fun ChatConversation(
     vm: AppViewModel,
     showSessionMenu: Boolean,
     onOpenSessions: () -> Unit,
+    onRequestAttachment: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -279,7 +327,14 @@ private fun ChatConversation(
             item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
         }
 
-        ComposerBar(state = state, onChange = vm::updateComposer, onSend = vm::sendComposer, onStop = vm::cancelRun)
+        ComposerBar(
+            state = state,
+            onChange = vm::updateComposer,
+            onSend = vm::sendComposer,
+            onStop = vm::cancelRun,
+            onAttach = onRequestAttachment,
+            onRemoveMedia = vm::removePendingMedia,
+        )
     }
 }
 
@@ -384,6 +439,10 @@ private fun BubbleRow(bubble: ChatBubble) {
                         }
                     } else if (bubble.streaming) {
                         Text("…", color = CloverText3)
+                    }
+                    if (bubble.attachments.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        bubble.attachments.forEach { media -> ChatMediaPreview(media) }
                     }
                     if (bubble.streaming) {
                         Spacer(Modifier.height(4.dp))
@@ -525,6 +584,8 @@ private fun ComposerBar(
     onChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onAttach: () -> Unit,
+    onRemoveMedia: (String) -> Unit,
 ) {
     Column(
         Modifier
@@ -533,7 +594,18 @@ private fun ComposerBar(
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
+        if (state.pendingMedia.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                state.pendingMedia.forEach { media -> PendingMediaChip(media, onRemove = { onRemoveMedia(media.id) }) }
+            }
+        }
         Row(verticalAlignment = Alignment.Bottom) {
+            IconButton(onClick = onAttach, modifier = Modifier.padding(end = 2.dp)) {
+                Icon(Icons.Outlined.Add, contentDescription = "添加附件", tint = CloverText2)
+            }
             BasicTextField(
                 value = state.composer,
                 onValueChange = onChange,
@@ -569,21 +641,90 @@ private fun ComposerBar(
             } else {
                 IconButton(
                     onClick = onSend,
-                    enabled = state.composer.isNotBlank(),
+                    enabled = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty(),
                     modifier = Modifier
                         .padding(start = 8.dp)
                         .clip(CircleShape)
-                        .background(if (state.composer.isNotBlank()) CloverAccent else CloverSurface2),
+                        .background(if (state.composer.isNotBlank() || state.pendingMedia.isNotEmpty()) CloverAccent else CloverSurface2),
                 ) {
                     Icon(
                         Icons.Outlined.Send,
                         contentDescription = "Send",
-                        tint = if (state.composer.isNotBlank()) MaterialTheme.colorScheme.onPrimary else CloverText3,
+                        tint = if (state.composer.isNotBlank() || state.pendingMedia.isNotEmpty()) MaterialTheme.colorScheme.onPrimary else CloverText3,
                     )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ChatMediaPreview(media: ChatMedia) {
+    val descriptor = media.descriptor
+    if (descriptor.type.equals("image", true) && media.localUri != null) {
+        AsyncImage(
+            model = Uri.parse(media.localUri),
+            contentDescription = descriptor.fileName ?: "图片附件",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .widthIn(max = 420.dp)
+                .heightIn(max = 280.dp)
+                .clip(RoundedCornerShape(12.dp)),
+        )
+    } else {
+        Text(
+            text = "${mediaTypeLabel(descriptor.type)} · ${descriptor.fileName ?: "附件"}",
+            style = MaterialTheme.typography.bodySmall,
+            color = CloverText2,
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(CloverSurface2)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit) {
+    Row(
+        Modifier
+            .widthIn(max = 190.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(CloverSurface2)
+            .padding(start = 6.dp, end = 2.dp, top = 5.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (media.mimeType.startsWith("image/")) {
+            AsyncImage(
+                model = Uri.parse(media.uri),
+                contentDescription = media.fileName,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)),
+            )
+            Spacer(Modifier.width(7.dp))
+        }
+        Column(Modifier.weight(1f, fill = false)) {
+            Text(media.fileName, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                media.error ?: if (media.descriptor == null) "上传中…" else "已就绪",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (media.error != null) CloverError else CloverText3,
+                maxLines = 1,
+            )
+        }
+        IconButton(onClick = onRemove, modifier = Modifier.size(30.dp)) {
+            Icon(Icons.Outlined.Close, contentDescription = "移除附件", modifier = Modifier.size(16.dp), tint = CloverText3)
+        }
+    }
+}
+
+private fun mediaTypeLabel(type: String): String = when (type.lowercase()) {
+    "image" -> "图片"
+    "video" -> "视频"
+    "audio" -> "音频"
+    else -> "文件"
 }
 
 @Composable

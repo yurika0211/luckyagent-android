@@ -1,8 +1,11 @@
 package com.luckyagent.android.ui.components
 
+import android.graphics.BitmapFactory
+import android.util.Base64
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,9 +15,12 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -25,6 +31,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.luckyagent.android.ui.theme.CloverBgSide
 import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverText
@@ -60,6 +68,25 @@ fun MarkdownText(
                                 .border(1.dp, CloverLine, RoundedCornerShape(8.dp))
                                 .horizontalScroll(rememberScrollState())
                                 .padding(10.dp),
+                        )
+                    }
+                }
+                is MdBlock.Image -> {
+                    val bitmap by produceState<android.graphics.Bitmap?>(null, block.source) {
+                        value = withContext(Dispatchers.IO) { decodeMarkdownImage(block.source) }
+                    }
+                    val imageBitmap = bitmap?.asImageBitmap()
+                    if (imageBitmap != null) {
+                        Image(
+                            bitmap = imageBitmap,
+                            contentDescription = block.alt,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        )
+                    } else if (!block.source.startsWith("data:image/")) {
+                        coil.compose.AsyncImage(
+                            model = block.source,
+                            contentDescription = block.alt,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                         )
                     }
                 }
@@ -101,7 +128,19 @@ private sealed class MdBlock {
     data class Heading(val level: Int, val text: String) : MdBlock()
     data class ListItem(val text: String) : MdBlock()
     data class Code(val body: String) : MdBlock()
+    data class Image(val alt: String, val source: String) : MdBlock()
 }
+
+private fun decodeMarkdownImage(source: String): android.graphics.Bitmap? = runCatching {
+    val payload = source.substringAfter("base64,", "")
+    if (payload.isBlank()) return null
+    val bytes = Base64.decode(payload, Base64.DEFAULT)
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    var sample = 1
+    while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+}.getOrNull()
 
 private fun splitBlocks(src: String): List<MdBlock> {
     val out = mutableListOf<MdBlock>()
@@ -115,6 +154,13 @@ private fun splitBlocks(src: String): List<MdBlock> {
     }
     while (i < lines.size) {
         val line = lines[i]
+        val image = Regex("""^!\[([^]]*)\]\((.+)\)$""").matchEntire(line.trim())
+        if (image != null) {
+            flushPara()
+            out += MdBlock.Image(image.groupValues[1], image.groupValues[2])
+            i++
+            continue
+        }
         if (line.trimStart().startsWith("```")) {
             flushPara()
             i++

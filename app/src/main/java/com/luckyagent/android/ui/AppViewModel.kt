@@ -1,10 +1,14 @@
 package com.luckyagent.android.ui
 
+import android.content.ContentResolver
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.luckyagent.android.data.AppContainer
 import com.luckyagent.android.data.api.MemoryEntry
+import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.MemoryGraphEdge
 import com.luckyagent.android.data.api.MemoryGraphNode
 import com.luckyagent.android.data.api.MemoryStats
@@ -20,6 +24,7 @@ import com.luckyagent.android.data.api.SkillSummary
 import com.luckyagent.android.data.api.SkillsResponse
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.data.settings.ClientSettings
+import com.luckyagent.android.data.settings.RuntimeEndpoint
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -28,6 +33,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.Json
@@ -63,6 +70,21 @@ data class ChatBubble(
     val stepId: String? = null,
     val reasoningRound: Int? = null,
     val reasoningHasContent: Boolean = false,
+    val attachments: List<ChatMedia> = emptyList(),
+)
+
+data class ChatMedia(
+    val descriptor: MediaAttachment,
+    val localUri: String? = null,
+)
+
+data class PendingMedia(
+    val id: String,
+    val uri: String,
+    val fileName: String,
+    val mimeType: String,
+    val descriptor: MediaAttachment? = null,
+    val error: String? = null,
 )
 
 data class AppUiState(
@@ -74,6 +96,7 @@ data class AppUiState(
     val sessionQuery: String = "",
     val bubbles: List<ChatBubble> = emptyList(),
     val composer: String = "",
+    val pendingMedia: List<PendingMedia> = emptyList(),
     val socketState: SocketState = SocketState.Idle,
     val socketError: String? = null,
     val reconnectInfo: String? = null,
@@ -134,6 +157,7 @@ class AppViewModel(
     private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
     private val toolStepIndex = mutableMapOf<String, String>()
+    private val mediaUploadSemaphore = Semaphore(1)
 
     init {
         viewModelScope.launch {
@@ -590,6 +614,32 @@ class AppViewModel(
         _ui.update { it.copy(composer = value) }
     }
 
+    fun addPickedMedia(resolver: ContentResolver, uris: List<Uri>) {
+        uris.forEach { uri ->
+            val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            } ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "attachment"
+            val id = "media-${System.nanoTime()}"
+            val item = PendingMedia(id, uri.toString(), name, resolver.getType(uri) ?: "application/octet-stream")
+            _ui.update { state -> state.copy(pendingMedia = state.pendingMedia + item) }
+            viewModelScope.launch {
+                mediaUploadSemaphore.withPermit { container.api.uploadAttachment(resolver, uri, name) }.onSuccess { descriptor ->
+                    _ui.update { state ->
+                        state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it })
+                    }
+                }.onFailure { error ->
+                    _ui.update { state ->
+                        state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it })
+                    }
+                }
+            }
+        }
+    }
+
+    fun removePendingMedia(id: String) {
+        _ui.update { it.copy(pendingMedia = it.pendingMedia.filterNot { media -> media.id == id }) }
+    }
+
     fun updateSessionQuery(value: String) {
         _ui.update { it.copy(sessionQuery = value) }
     }
@@ -616,6 +666,46 @@ class AppViewModel(
         }
         connectSocket()
         refreshSessions()
+    }
+
+    fun saveRuntimeEndpoint(endpoint: RuntimeEndpoint) {
+        val normalized = endpoint.copy(
+            name = endpoint.name.trim().ifBlank { "Runtime" },
+            apiBase = endpoint.apiBase.trim().trimEnd('/'),
+            apiKey = endpoint.apiKey.trim(),
+            wsUrl = endpoint.wsUrl.trim(),
+        )
+        if (normalized.apiBase.isBlank()) {
+            _ui.update { it.copy(activityLine = "API base URL is required") }
+            return
+        }
+        updateSettings { settings ->
+            val exists = settings.runtimeEndpoints.any { it.id == normalized.id }
+            val endpoints = if (exists) {
+                settings.runtimeEndpoints.map { if (it.id == normalized.id) normalized else it }
+            } else {
+                settings.runtimeEndpoints + normalized
+            }
+            settings.copy(runtimeEndpoints = endpoints)
+        }
+    }
+
+    fun activateRuntimeEndpoint(id: String) {
+        val endpoint = container.settingsRepository.snapshot().runtimeEndpoints.firstOrNull { it.id == id } ?: return
+        updateSettings { it.copy(activeRuntimeEndpointId = endpoint.id) }
+        refreshSessions()
+    }
+
+    fun deleteRuntimeEndpoint(id: String) {
+        val settings = container.settingsRepository.snapshot()
+        if (settings.runtimeEndpoints.size <= 1) {
+            _ui.update { it.copy(activityLine = "Keep at least one runtime endpoint") }
+            return
+        }
+        val endpoints = settings.runtimeEndpoints.filterNot { it.id == id }
+        val activeId = if (settings.activeRuntimeEndpointId == id) endpoints.first().id else settings.activeRuntimeEndpointId
+        updateSettings { it.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = activeId) }
+        if (settings.activeRuntimeEndpointId == id) refreshSessions()
     }
 
     fun updateSettings(transform: (com.luckyagent.android.data.settings.ClientSettings) -> com.luckyagent.android.data.settings.ClientSettings) {
@@ -773,24 +863,33 @@ class AppViewModel(
 
     fun sendComposer() {
         val text = _ui.value.composer.trim()
-        if (text.isEmpty()) return
+        val pending = _ui.value.pendingMedia
+        if (text.isEmpty() && pending.isEmpty()) return
+        if (pending.any { it.descriptor == null }) {
+            _ui.update { it.copy(activityLine = if (pending.any { media -> media.error != null }) "请移除上传失败的附件" else "附件仍在上传中") }
+            return
+        }
+        val message = text.ifBlank { if (pending.isNotEmpty()) "请查看附件" else "" }
+        val descriptors = pending.mapNotNull { it.descriptor }
+        val media = pending.mapNotNull { item -> item.descriptor?.let { ChatMedia(it, item.uri) } }
         currentTurnId = "turn-${System.currentTimeMillis()}"
         toolStepIndex.clear()
-        pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text))
+        pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text, attachments = media))
         _ui.update {
             it.copy(
                 composer = "",
+                pendingMedia = emptyList(),
                 isResponding = true,
                 progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
             )
         }
         resetAssistantStream()
-        val ok = container.wsClient.sendChat(text)
+        val ok = container.wsClient.sendChat(message, attachments = descriptors)
         if (!ok) {
             connectSocket()
             viewModelScope.launch {
                 kotlinx.coroutines.delay(450)
-                if (!container.wsClient.sendChat(text)) {
+                if (!container.wsClient.sendChat(message, attachments = descriptors)) {
                     pushBubble(
                         ChatBubble(
                             id = "err-${System.currentTimeMillis()}",

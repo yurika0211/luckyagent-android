@@ -1,5 +1,7 @@
 package com.luckyagent.android.data.api
 
+import android.content.ContentResolver
+import android.net.Uri
 import com.luckyagent.android.data.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -7,6 +9,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -48,6 +51,38 @@ class LuckyAgentApi(
         .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+
+    suspend fun uploadAttachment(resolver: ContentResolver, uri: Uri, fileName: String): Result<MediaAttachment> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = resolver.openInputStream(uri)?.use { input ->
+                    val output = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(16 * 1024)
+                    var total = 0
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        total += read
+                        require(total <= 31 * 1024 * 1024) { "文件不能超过 31 MB" }
+                        output.write(buffer, 0, read)
+                    }
+                    output.toByteArray()
+                } ?: error("无法读取所选文件")
+                val mime = resolver.getType(uri) ?: "application/octet-stream"
+                val fileBody = bytes.toRequestBody(mime.toMediaType())
+                val multipart = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("file", fileName, fileBody)
+                    .build()
+                val request = Request.Builder().url(url("/api/v1/uploads")).post(multipart).build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("upload ${resp.code}: $body")
+                    json.decodeFromString(UploadResponse.serializer(), body).attachments.firstOrNull()
+                        ?: error("服务器没有返回附件信息")
+                }
+            }
+        }
 
     private fun baseUrl(): String =
         settingsRepository.snapshot().apiBase.trim().trimEnd('/')
