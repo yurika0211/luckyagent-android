@@ -38,6 +38,10 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Default packages include obsolete "tools" (removed from SDK repo).
+          # Keep platform-tools only; platforms/build-tools installed below.
+          packages: platform-tools
 
       - name: Accept Android licenses
         run: yes | sdkmanager --licenses >/dev/null || true
@@ -95,6 +99,10 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Default packages include obsolete "tools" (removed from SDK repo).
+          # Keep platform-tools only; platforms/build-tools installed below.
+          packages: platform-tools
 
       - name: Accept Android licenses
         run: yes | sdkmanager --licenses >/dev/null || true
