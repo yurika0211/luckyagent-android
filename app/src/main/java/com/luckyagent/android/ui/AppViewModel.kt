@@ -869,6 +869,11 @@ class AppViewModel(
             _ui.update { it.copy(activityLine = if (pending.any { media -> media.error != null }) "请移除上传失败的附件" else "附件仍在上传中") }
             return
         }
+        val runtimeCommand = if (pending.isEmpty()) parseRuntimeCommand(text) else null
+        if (runtimeCommand != null) {
+            sendRuntimeCommand(text, runtimeCommand)
+            return
+        }
         val message = text.ifBlank { if (pending.isNotEmpty()) "请查看附件" else "" }
         val descriptors = pending.mapNotNull { it.descriptor }
         val media = pending.mapNotNull { item -> item.descriptor?.let { ChatMedia(it, item.uri) } }
@@ -907,6 +912,117 @@ class AppViewModel(
                     }
                 }
             }
+        }
+    }
+
+    private data class ParsedRuntimeCommand(val name: String, val args: String)
+
+    private fun parseRuntimeCommand(text: String): ParsedRuntimeCommand? {
+        val input = text.trim()
+        if (!input.startsWith("/") || input.startsWith("//")) return null
+        val commandText = input.drop(1)
+        val separator = commandText.indexOfFirst(Char::isWhitespace)
+        val name = if (separator < 0) commandText else commandText.substring(0, separator)
+        if (!name.matches(Regex("[A-Za-z][A-Za-z0-9_-]*"))) return null
+        val args = if (separator < 0) "" else commandText.substring(separator).trim()
+        return ParsedRuntimeCommand(name, args)
+    }
+
+    private fun sendRuntimeCommand(rawText: String, command: ParsedRuntimeCommand) {
+        if (_ui.value.isResponding || _ui.value.commandExecuting) return
+        val startedAt = System.currentTimeMillis()
+        resetAssistantStream()
+        pushBubble(ChatBubble(id = "u-$startedAt", role = "user", content = rawText))
+        _ui.update {
+            it.copy(
+                composer = "",
+                isResponding = false,
+                commandExecuting = true,
+                commandExecution = null,
+                commandsError = null,
+                activityLine = "Running /${command.name}",
+                progressSteps = emptyList(),
+            )
+        }
+
+        viewModelScope.launch {
+            val catalogResult = container.api.listCommands()
+            val commands = catalogResult.getOrNull()
+            if (commands == null) {
+                val error = catalogResult.exceptionOrNull()?.message ?: "无法读取 Runtime 命令列表"
+                finishRuntimeCommand(
+                    command = command.name,
+                    output = "无法读取 Runtime 命令列表：$error",
+                    success = false,
+                    error = error,
+                )
+                return@launch
+            }
+            _ui.update { it.copy(commands = commands, commandsError = null) }
+
+            val runtimeCommand = commands.firstOrNull { it.name == command.name }
+            if (runtimeCommand == null) {
+                finishRuntimeCommand(
+                    command = command.name,
+                    output = "未找到 Runtime 命令 /${command.name}。请在 Runtime → Commands 查看当前服务支持的命令。",
+                    success = false,
+                )
+                return@launch
+            }
+
+            val result = container.api.runCommand(runtimeCommand.name, command.args, _ui.value.settings.sessionId)
+            val execution = result.getOrNull()
+            if (execution == null) {
+                val error = result.exceptionOrNull()?.message ?: "命令执行失败"
+                finishRuntimeCommand(
+                    command = runtimeCommand.name,
+                    output = "执行 /${runtimeCommand.name} 失败：$error",
+                    success = false,
+                    error = error,
+                )
+                return@launch
+            }
+
+            val success = execution.ok
+            val status = if (success) "执行完成" else "执行失败"
+            finishRuntimeCommand(
+                command = runtimeCommand.name,
+                output = buildString {
+                    append("/${runtimeCommand.name} · $status")
+                    if (execution.output.isNotBlank()) append("\n\n${execution.output}")
+                },
+                success = success,
+                execution = execution,
+            )
+            if (success) refreshAfterCommand(runtimeCommand.name)
+        }
+    }
+
+    private fun finishRuntimeCommand(
+        command: String,
+        output: String,
+        success: Boolean,
+        error: String? = null,
+        execution: CommandExecution? = null,
+    ) {
+        val now = System.currentTimeMillis()
+        pushBubble(ChatBubble(id = "runtime-command-$now", role = "assistant", content = output))
+        _ui.update {
+            it.copy(
+                isResponding = false,
+                commandExecuting = false,
+                commandExecution = execution,
+                commandsError = error,
+                activityLine = if (success) "/$command completed" else "/$command failed",
+                progressSteps = emptyList(),
+            )
+        }
+    }
+
+    private fun refreshAfterCommand(command: String) {
+        when (command) {
+            "remember", "remember_long", "memdecay", "promote" -> refreshMemory()
+            "rename" -> refreshSessions()
         }
     }
 
@@ -1040,10 +1156,7 @@ class AppViewModel(
                 )
             }
             if (result.getOrNull()?.ok == true) {
-                when (command.name) {
-                    "remember", "remember_long", "memdecay", "promote" -> refreshMemory()
-                    "rename" -> refreshSessions()
-                }
+                refreshAfterCommand(command.name)
             }
         }
     }
