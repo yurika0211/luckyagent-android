@@ -47,6 +47,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -366,7 +367,7 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
         }
         val live = state.socketState == SocketState.Connected || state.socketState == SocketState.Running
         MetaChip(if (live) "live" else state.socketState.name.lowercase())
-        if (state.isResponding) {
+        if (state.isResponding || state.commandExecuting) {
             Spacer(Modifier.width(6.dp))
             MetaChip("working")
         }
@@ -621,14 +622,14 @@ private fun ComposerBar(
                     .padding(horizontal = 16.dp, vertical = 13.dp),
                 decorationBox = { inner ->
                     if (state.composer.isEmpty()) {
-                        Text("Message LuckyAgent…", color = CloverText3)
+                        Text("Message or /command", color = CloverText3)
                     }
                     inner()
                 },
             )
             Spacer(Modifier.width(6.dp))
-            val working = state.isResponding || state.bubbles.any { it.streaming }
-            if (working) {
+            val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
+            if (chatWorking) {
                 IconButton(
                     onClick = onStop,
                     modifier = Modifier
@@ -637,6 +638,10 @@ private fun ComposerBar(
                         .background(CloverSurface2),
                 ) {
                     Icon(Icons.Outlined.Stop, contentDescription = "Stop", tint = CloverError)
+                }
+            } else if (state.commandExecuting) {
+                IconButton(onClick = {}, enabled = false, modifier = Modifier.padding(start = 8.dp)) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 }
             } else {
                 IconButton(
