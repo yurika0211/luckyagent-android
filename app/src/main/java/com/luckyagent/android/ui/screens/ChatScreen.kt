@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -129,14 +130,18 @@ private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
 fun ChatScreen(state: AppUiState, vm: AppViewModel) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val usePermanentSessionPane = LocalConfiguration.current.screenWidthDp >= 1100
+    val usePermanentSessionPane = LocalConfiguration.current.screenWidthDp >= 900
+    var sessionPaneExpanded by rememberSaveable { mutableStateOf(true) }
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
 
     val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
         SessionDrawer(
             state = state,
-            onClose = { scope.launch { drawerState.close() } },
+            onClose = {
+                if (usePermanentSessionPane) sessionPaneExpanded = false
+                else scope.launch { drawerState.close() }
+            },
             onSelect = { id ->
                 vm.selectSession(id)
                 if (!usePermanentSessionPane) scope.launch { drawerState.close() }
@@ -157,19 +162,21 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
 
     if (usePermanentSessionPane) {
         Row(Modifier.fillMaxSize().background(CloverBg)) {
-            Column(
-                Modifier
-                    .width(304.dp)
-                    .fillMaxHeight()
-                    .background(CloverBgSide),
-            ) {
-                sessionDrawer(false)
+            if (sessionPaneExpanded) {
+                Column(
+                    Modifier
+                        .width(304.dp)
+                        .fillMaxHeight()
+                        .background(CloverBgSide),
+                ) {
+                    sessionDrawer(true)
+                }
             }
             ChatConversation(
                 state = state,
                 vm = vm,
-                showSessionMenu = false,
-                onOpenSessions = {},
+                showSessionMenu = !sessionPaneExpanded,
+                onOpenSessions = { sessionPaneExpanded = true },
                 modifier = Modifier.weight(1f),
             )
         }
