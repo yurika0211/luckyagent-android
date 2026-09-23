@@ -25,8 +25,6 @@ import com.luckyagent.android.data.api.SkillSummary
 import com.luckyagent.android.data.api.SkillsResponse
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.data.api.TaskDetail
-import com.luckyagent.android.data.api.TaskEvent
-import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.TaskOrigin
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.isTerminalTaskStatus
@@ -1377,7 +1375,7 @@ class AppViewModel(
         _ui.update {
             it.copy(
                 selectedTaskId = id,
-                selectedTask = null,
+                selectedTask = if (it.selectedTaskId == id) it.selectedTask else null,
                 taskDetailLoading = true,
                 taskDetailError = null,
             )

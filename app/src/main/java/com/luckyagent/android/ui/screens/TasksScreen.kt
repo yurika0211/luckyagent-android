@@ -10,11 +10,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,7 +32,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +50,7 @@ import com.luckyagent.android.data.api.TaskEvent
 import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.TaskOrigin
 import com.luckyagent.android.data.api.TaskSummary
+import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.TaskFilter
@@ -131,21 +131,21 @@ fun TasksScreen(state: AppUiState, vm: AppViewModel) {
 
 @Composable
 private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: AppViewModel) {
-    if (state.tasksError != null) ErrorLine(state.tasksError)
+    state.tasksError?.let { ErrorLine(it) }
 
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+    val filters = listOf(
+        TaskFilter.All to "All",
+        TaskFilter.Active to "Active",
+        TaskFilter.Completed to "Done",
+        TaskFilter.Failed to "Failed",
+        TaskFilter.Cancelled to "Cancelled",
+    )
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        listOf(
-            TaskFilter.All to "All",
-            TaskFilter.Active to "Active",
-            TaskFilter.Completed to "Done",
-            TaskFilter.Failed to "Failed",
-            TaskFilter.Cancelled to "Cancelled",
-        ).forEach { (filter, label) ->
+        items(filters, key = { it.first.name }) { (filter, label) ->
             FilterChip(
                 selected = state.taskFilter == filter,
                 onClick = { vm.setTaskFilter(filter) },
@@ -284,10 +284,7 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                     TaskMetric("Done", summary.completedChildren.toString())
                     TaskMetric("Failed", summary.failedChildren.toString(), CloverError)
                 }
-                if (!summary.status.equals("completed", ignoreCase = true) &&
-                    !summary.status.equals("failed", ignoreCase = true) &&
-                    !summary.status.equals("cancelled", ignoreCase = true)
-                ) {
+                if (!summary.status.isTerminalTaskStatus()) {
                     Button(onClick = { vm.cancelTask(summary) }) {
                         Icon(Icons.Outlined.Close, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
@@ -323,9 +320,6 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                     body = "This legacy task exposes child state and output, but not persisted task events.",
                 )
             }
-        }
-        state.taskDetailError?.let { error ->
-            item { Text(error, color = CloverError, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }
