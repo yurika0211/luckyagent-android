@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,10 +30,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
@@ -62,7 +62,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardActions
+import androidx.compose.ui.text.input.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.SocketState
@@ -90,103 +94,67 @@ import kotlinx.coroutines.launch
 fun ChatScreen(state: AppUiState, vm: AppViewModel) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val usePermanentSessionPane = LocalConfiguration.current.screenWidthDp >= 1100
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet(
-                drawerContainerColor = CloverBgSide,
-                modifier = Modifier.width(320.dp),
+    val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
+        SessionDrawer(
+            state = state,
+            onClose = { scope.launch { drawerState.close() } },
+            onSelect = { id ->
+                vm.selectSession(id)
+                if (!usePermanentSessionPane) scope.launch { drawerState.close() }
+            },
+            onCreate = {
+                vm.createSession()
+                if (!usePermanentSessionPane) scope.launch { drawerState.close() }
+            },
+            onQueryChange = vm::updateSessionQuery,
+            onRename = { session ->
+                renameTarget = session
+                renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
+            },
+            onRefresh = vm::refreshSessions,
+            showClose = showClose,
+        )
+    }
+
+    if (usePermanentSessionPane) {
+        Row(Modifier.fillMaxSize().background(CloverBg)) {
+            Column(
+                Modifier
+                    .width(304.dp)
+                    .fillMaxHeight()
+                    .background(CloverBgSide),
             ) {
-                SessionDrawer(
-                    state = state,
-                    onClose = { scope.launch { drawerState.close() } },
-                    onSelect = { id ->
-                        vm.selectSession(id)
-                        scope.launch { drawerState.close() }
-                    },
-                    onCreate = {
-                        vm.createSession()
-                        scope.launch { drawerState.close() }
-                    },
-                    onRename = { session ->
-                        renameTarget = session
-                        renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
-                    },
-                    onRefresh = vm::refreshSessions,
-                )
+                sessionDrawer(false)
             }
-        },
-    ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(CloverBg)
-                .imePadding(),
-        ) {
-            ChatTopBar(
+            ChatConversation(
                 state = state,
-                onMenu = { scope.launch { drawerState.open() } },
+                vm = vm,
+                showSessionMenu = false,
+                onOpenSessions = {},
+                modifier = Modifier.weight(1f),
             )
-
-            val listState = rememberLazyListState()
-            LaunchedEffect(state.bubbles.size, state.bubbles.lastOrNull()?.content) {
-                if (state.bubbles.isNotEmpty()) {
-                    listState.animateScrollToItem(state.bubbles.lastIndex)
-                }
-            }
-
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (state.bubbles.isEmpty()) {
-                    item {
-                        WelcomeBlock(
-                            suggestions = state.suggestionPrompts,
-                            onPick = vm::applySuggestion,
-                        )
-                    }
-                }
-                items(state.bubbles, key = { it.id }) { bubble ->
-                    BubbleRow(bubble)
-                }
-            }
-
-            if (state.suggestionPrompts.isNotEmpty() && state.bubbles.isNotEmpty()) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+        }
+    } else {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet(
+                    drawerContainerColor = CloverBgSide,
+                    modifier = Modifier.width(320.dp),
                 ) {
-                    state.suggestionPrompts.take(4).forEach { s ->
-                        Text(
-                            text = s,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = CloverAccent,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .border(1.dp, CloverLine, RoundedCornerShape(999.dp))
-                                .clickable { vm.applySuggestion(s) }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                        )
-                    }
+                    sessionDrawer(true)
                 }
-            }
-
-            ComposerBar(
+            },
+        ) {
+            ChatConversation(
                 state = state,
-                onChange = vm::updateComposer,
-                onSend = vm::sendComposer,
-                onStop = vm::cancelRun,
+                vm = vm,
+                showSessionMenu = true,
+                onOpenSessions = { scope.launch { drawerState.open() } },
             )
         }
     }
@@ -219,7 +187,65 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
 }
 
 @Composable
-private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit) {
+private fun ChatConversation(
+    state: AppUiState,
+    vm: AppViewModel,
+    showSessionMenu: Boolean,
+    onOpenSessions: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(CloverBg)
+            .imePadding(),
+    ) {
+        ChatTopBar(
+            state = state,
+            onMenu = onOpenSessions,
+            showMenu = showSessionMenu,
+        )
+
+        val listState = rememberLazyListState()
+        LaunchedEffect(state.bubbles.size, state.bubbles.lastOrNull()?.content) {
+            if (state.bubbles.isNotEmpty()) listState.animateScrollToItem(state.bubbles.lastIndex)
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (state.bubbles.isEmpty()) {
+                item { WelcomeBlock(suggestions = state.suggestionPrompts, onPick = vm::applySuggestion) }
+            }
+            items(state.bubbles, key = { it.id }) { bubble -> BubbleRow(bubble) }
+        }
+
+        if (state.suggestionPrompts.isNotEmpty() && state.bubbles.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                state.suggestionPrompts.take(4).forEach { s ->
+                    Text(
+                        text = s,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = CloverAccent,
+                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, CloverLine, RoundedCornerShape(999.dp))
+                            .clickable { vm.applySuggestion(s) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                }
+            }
+        }
+
+        ComposerBar(state = state, onChange = vm::updateComposer, onSend = vm::sendComposer, onStop = vm::cancelRun)
+    }
+}
+
+@Composable
+private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -228,8 +254,10 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit) {
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = onMenu) {
-            Icon(Icons.Outlined.Menu, contentDescription = "Sessions")
+        if (showMenu) {
+            IconButton(onClick = onMenu) {
+                Icon(Icons.Outlined.Menu, contentDescription = "Sessions")
+            }
         }
         Column(Modifier.weight(1f)) {
             Text("Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -433,17 +461,9 @@ private fun ComposerBar(
             .fillMaxWidth()
             .background(CloverSurface)
             .border(1.dp, CloverLine)
-            .navigationBarsPadding()
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
-            IconButton(onClick = { /* attachment entry degraded — no upload API on phone */ }) {
-                Icon(
-                    Icons.Outlined.AttachFile,
-                    contentDescription = "Attachments (host-side only)",
-                    tint = CloverText3,
-                )
-            }
             BasicTextField(
                 value = state.composer,
                 onValueChange = onChange,
@@ -453,11 +473,11 @@ private fun ComposerBar(
                 ),
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = 44.dp, max = 140.dp)
-                    .clip(RoundedCornerShape(14.dp))
+                    .heightIn(min = 48.dp, max = 140.dp)
+                    .clip(RoundedCornerShape(22.dp))
                     .background(CloverBg)
-                    .border(1.dp, CloverLine, RoundedCornerShape(14.dp))
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                    .border(1.dp, CloverLine, RoundedCornerShape(22.dp))
+                    .padding(horizontal = 16.dp, vertical = 13.dp),
                 decorationBox = { inner ->
                     if (state.composer.isEmpty()) {
                         Text("Message LuckyAgent…", color = CloverText3)
@@ -468,28 +488,32 @@ private fun ComposerBar(
             Spacer(Modifier.width(6.dp))
             val streaming = state.bubbles.any { it.streaming }
             if (streaming) {
-                IconButton(onClick = onStop) {
+                IconButton(
+                    onClick = onStop,
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .clip(CircleShape)
+                        .background(CloverSurface2),
+                ) {
                     Icon(Icons.Outlined.Stop, contentDescription = "Stop", tint = CloverError)
                 }
             } else {
                 IconButton(
                     onClick = onSend,
                     enabled = state.composer.isNotBlank(),
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .clip(CircleShape)
+                        .background(if (state.composer.isNotBlank()) CloverAccent else CloverSurface2),
                 ) {
                     Icon(
                         Icons.Outlined.Send,
                         contentDescription = "Send",
-                        tint = if (state.composer.isNotBlank()) CloverAccent else CloverText3,
+                        tint = if (state.composer.isNotBlank()) MaterialTheme.colorScheme.onPrimary else CloverText3,
                     )
                 }
             }
         }
-        Text(
-            "Attachments upload is not wired on Android yet — use host GUI if needed.",
-            style = MaterialTheme.typography.labelSmall,
-            color = CloverText3,
-            modifier = Modifier.padding(start = 48.dp, top = 4.dp),
-        )
     }
 }
 
@@ -499,8 +523,10 @@ private fun SessionDrawer(
     onClose: () -> Unit,
     onSelect: (String) -> Unit,
     onCreate: () -> Unit,
+    onQueryChange: (String) -> Unit,
     onRename: (RuntimeSession) -> Unit,
     onRefresh: () -> Unit,
+    showClose: Boolean,
 ) {
     Column(Modifier.fillMaxHeight()) {
         Row(
@@ -513,14 +539,30 @@ private fun SessionDrawer(
             IconButton(onClick = onCreate) {
                 Icon(Icons.Outlined.Add, contentDescription = "New session")
             }
-            IconButton(onClick = onClose) {
-                Icon(Icons.Outlined.Close, contentDescription = "Close")
+            if (showClose) {
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Close")
+                }
             }
         }
         HorizontalDivider(color = CloverLine)
-        TextButton(onClick = onRefresh, modifier = Modifier.padding(horizontal = 8.dp)) {
-            Text("Refresh list")
-        }
+        OutlinedTextField(
+            value = state.sessionQuery,
+            onValueChange = onQueryChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onRefresh() }),
+            placeholder = { Text("Search sessions") },
+            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+            trailingIcon = {
+                IconButton(onClick = onRefresh) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = "Refresh sessions")
+                }
+            },
+        )
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(8.dp),
