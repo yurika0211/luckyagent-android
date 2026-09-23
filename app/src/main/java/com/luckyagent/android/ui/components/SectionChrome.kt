@@ -13,6 +13,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -25,6 +30,8 @@ import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 
+val LocalOpenNavigationDrawer = compositionLocalOf<(() -> Unit)?> { null }
+
 @Composable
 fun ScreenHeader(
     eyebrow: String,
@@ -32,6 +39,7 @@ fun ScreenHeader(
     subtitle: String? = null,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
+    val openNavigation = LocalOpenNavigationDrawer.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -65,6 +73,11 @@ fun ScreenHeader(
             verticalAlignment = Alignment.CenterVertically,
             content = actions,
         )
+        if (openNavigation != null) {
+            IconButton(onClick = openNavigation) {
+                Icon(Icons.Outlined.Menu, contentDescription = "Open navigation")
+            }
+        }
     }
 }
 

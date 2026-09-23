@@ -6,7 +6,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-// GUI uses system UI stack ~15/14/12 with tight hierarchy
 val CloverTypography = Typography(
     headlineSmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
