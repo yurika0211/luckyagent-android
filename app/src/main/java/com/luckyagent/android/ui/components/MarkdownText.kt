@@ -31,6 +31,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.luckyagent.android.ui.theme.CloverBgSide
@@ -47,7 +49,10 @@ fun MarkdownText(
     markdown: String,
     color: Color = CloverText,
     modifier: Modifier = Modifier,
+    imageHeaders: Map<String, String> = emptyMap(),
+    imageBaseUrl: String = "",
 ) {
+    val context = LocalContext.current
     val blocks = remember(markdown) { splitBlocks(markdown) }
     Column(modifier = modifier) {
         blocks.forEach { block ->
@@ -72,6 +77,9 @@ fun MarkdownText(
                     }
                 }
                 is MdBlock.Image -> {
+                    val imageSource = remember(block.source, imageBaseUrl) {
+                        resolveImageSource(block.source, imageBaseUrl)
+                    }
                     val bitmap by produceState<android.graphics.Bitmap?>(null, block.source) {
                         value = withContext(Dispatchers.IO) { decodeMarkdownImage(block.source) }
                     }
@@ -84,7 +92,16 @@ fun MarkdownText(
                         )
                     } else if (!block.source.startsWith("data:image/")) {
                         coil.compose.AsyncImage(
-                            model = block.source,
+                            model = remember(imageSource, imageBaseUrl, imageHeaders) {
+                                ImageRequest.Builder(context)
+                                    .data(imageSource)
+                                    .apply {
+                                        if (sameOrigin(imageSource, imageBaseUrl)) {
+                                            imageHeaders.forEach { (name, value) -> addHeader(name, value) }
+                                        }
+                                    }
+                                    .build()
+                            },
                             contentDescription = block.alt,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                         )
@@ -142,6 +159,23 @@ private fun decodeMarkdownImage(source: String): android.graphics.Bitmap? = runC
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
 }.getOrNull()
 
+private fun resolveImageSource(source: String, baseUrl: String): String {
+    if (source.startsWith("http://") || source.startsWith("https://") || source.startsWith("data:")) return source
+    if (baseUrl.isBlank()) return source
+    return baseUrl.trimEnd('/') + "/" + source.trimStart('/')
+}
+
+private fun sameOrigin(source: String, baseUrl: String): Boolean {
+    val imageUri = runCatching { android.net.Uri.parse(source) }.getOrNull() ?: return false
+    val baseUri = runCatching { android.net.Uri.parse(baseUrl) }.getOrNull() ?: return false
+    return imageUri.scheme == baseUri.scheme &&
+        imageUri.host.equals(baseUri.host, ignoreCase = true) &&
+        (imageUri.port.takeIf { it >= 0 } ?: defaultPort(imageUri.scheme)) ==
+        (baseUri.port.takeIf { it >= 0 } ?: defaultPort(baseUri.scheme))
+}
+
+private fun defaultPort(scheme: String?): Int = if (scheme.equals("https", true)) 443 else 80
+
 private fun splitBlocks(src: String): List<MdBlock> {
     val out = mutableListOf<MdBlock>()
     val lines = src.replace("\r\n", "\n").split('\n')
@@ -158,6 +192,13 @@ private fun splitBlocks(src: String): List<MdBlock> {
         if (image != null) {
             flushPara()
             out += MdBlock.Image(image.groupValues[1], image.groupValues[2])
+            i++
+            continue
+        }
+        val bareImage = Regex("""^\s*(https?://\S+)\s*$""").matchEntire(line)
+        if (bareImage != null && looksLikeImageUrl(bareImage.groupValues[1])) {
+            flushPara()
+            out += MdBlock.Image("图片", bareImage.groupValues[1])
             i++
             continue
         }
@@ -199,6 +240,13 @@ private fun splitBlocks(src: String): List<MdBlock> {
     }
     flushPara()
     return out
+}
+
+private fun looksLikeImageUrl(source: String): Boolean {
+    val path = runCatching { android.net.Uri.parse(source).path.orEmpty().lowercase() }.getOrDefault("")
+    return path.matches(Regex(".*\\.(png|jpe?g|gif|webp|bmp|svg|avif|heic)$")) ||
+        source.contains("format=", ignoreCase = true) ||
+        source.contains("image", ignoreCase = true)
 }
 
 private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {

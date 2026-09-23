@@ -36,11 +36,27 @@ data class ProviderMessage(
     val role: String? = null,
     val content: String? = null,
     @SerialName("reasoning_content") val reasoningContent: String? = null,
+    @SerialName("content_parts") val contentParts: List<ProviderContentPart> = emptyList(),
+    val attachments: List<MediaAttachment> = emptyList(),
     @SerialName("created_at") val createdAt: String? = null,
     val usage: TokenUsage? = null,
     val name: String? = null,
     @SerialName("tool_call_id") val toolCallId: String? = null,
     @SerialName("tool_calls") val toolCalls: List<HistoryToolCall> = emptyList(),
+)
+
+@Serializable
+data class ProviderContentPart(
+    val type: String? = null,
+    val text: String? = null,
+    val image: ProviderImagePart? = null,
+)
+
+@Serializable
+data class ProviderImagePart(
+    val url: String? = null,
+    @SerialName("file_path") val filePath: String? = null,
+    @SerialName("mime_type") val mimeType: String? = null,
 )
 
 @Serializable
