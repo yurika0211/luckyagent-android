@@ -10,6 +10,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -19,10 +23,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -36,6 +44,9 @@ import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverBg
+import com.luckyagent.android.ui.theme.CloverAccent
+import com.luckyagent.android.ui.theme.CloverLine
+import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 
@@ -91,36 +102,10 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             color = CloverText2,
             style = MaterialTheme.typography.bodyMedium,
         )
-        OutlinedTextField(
-            value = s.apiBase,
-            onValueChange = { v -> vm.updateSettings { it.copy(apiBase = v) } },
-            label = { Text("API base URL") },
-            placeholder = { Text("http://192.168.x.x:18789") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = s.wsUrl,
-            onValueChange = { v -> vm.updateSettings { it.copy(wsUrl = v) } },
-            label = { Text("WebSocket URL (optional override)") },
-            placeholder = { Text("auto from API base → /api/v1/ws") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = s.sessionId,
-            onValueChange = { v -> vm.updateSettings { it.copy(sessionId = v) } },
-            label = { Text("Session ID") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = s.apiKey,
-            onValueChange = { v -> vm.updateSettings { it.copy(apiKey = v) } },
-            label = { Text("API token / key") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        SettingsField("API base URL", s.apiBase, { v -> vm.updateSettings { it.copy(apiBase = v) } }, "http://192.168.x.x:18789")
+        SettingsField("WebSocket URL · optional override", s.wsUrl, { v -> vm.updateSettings { it.copy(wsUrl = v) } }, "Auto from API base → /api/v1/ws")
+        SettingsField("Session ID", s.sessionId, { v -> vm.updateSettings { it.copy(sessionId = v) } })
+        SettingsField("API token / key", s.apiKey, { v -> vm.updateSettings { it.copy(apiKey = v) } })
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Send as Bearer", style = MaterialTheme.typography.bodyLarge)
@@ -131,6 +116,28 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
                 onCheckedChange = { checked -> vm.updateSettings { it.copy(useBearer = checked) } },
             )
         }
+    }
+}
+
+@Composable
+private fun SettingsField(label: String, value: String, onValueChange: (String) -> Unit, placeholder: String = "") {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = if (focused) CloverAccent else CloverText3)
+        Box(Modifier.fillMaxWidth().height(38.dp), contentAlignment = Alignment.CenterStart) {
+            if (value.isEmpty() && placeholder.isNotEmpty()) Text(placeholder, color = CloverText3, style = MaterialTheme.typography.bodyMedium)
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                interactionSource = interaction,
+                cursorBrush = SolidColor(CloverAccent),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = CloverText),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Box(Modifier.fillMaxWidth().height(if (focused) 2.dp else 1.dp).background(if (focused) CloverAccent else CloverLine, RoundedCornerShape(2.dp)))
     }
 }
 

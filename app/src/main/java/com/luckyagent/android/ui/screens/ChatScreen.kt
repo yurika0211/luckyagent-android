@@ -306,7 +306,6 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .clip(MaterialTheme.shapes.medium)
             .background(CloverSurface)
-            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -360,7 +359,6 @@ private fun WelcomeBlock(suggestions: List<String>, onPick: (String) -> Unit) {
             .fillMaxWidth()
             .padding(8.dp)
             .clip(MaterialTheme.shapes.medium)
-            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
             .background(CloverSurface)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -416,7 +414,6 @@ private fun BubbleRow(bubble: ChatBubble) {
                         .widthIn(max = 520.dp)
                         .clip(MaterialTheme.shapes.medium)
                         .background(bg)
-                        .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
                     if (!isUser) {
@@ -448,13 +445,11 @@ private fun BubbleRow(bubble: ChatBubble) {
 }
 
 @Composable
-private fun ToolBubble(bubble: ChatBubble) {
+private fun ToolBubble(bubble: ChatBubble, inGroup: Boolean = false) {
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(MaterialTheme.shapes.small)
-            .background(CloverToolBg)
-            .border(1.dp, CloverLine, MaterialTheme.shapes.small)
+            .then(if (inGroup) Modifier else Modifier.clip(MaterialTheme.shapes.small).background(CloverToolBg))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -493,7 +488,6 @@ private fun ToolCallGroup(calls: List<ChatBubble>) {
         Modifier.fillMaxWidth()
             .clip(MaterialTheme.shapes.medium)
             .background(CloverToolBg)
-            .border(1.dp, CloverLine, MaterialTheme.shapes.medium),
     ) {
         Row(
             Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -531,10 +525,13 @@ private fun ToolCallGroup(calls: List<ChatBubble>) {
         )
         AnimatedVisibility(visible = expanded) {
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(bottom = 8.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp).padding(bottom = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                calls.forEach { call -> ToolBubble(call) }
+                calls.forEachIndexed { index, call ->
+                    if (index > 0) HorizontalDivider(color = CloverLine.copy(alpha = .65f), modifier = Modifier.padding(horizontal = 12.dp))
+                    ToolBubble(call, inGroup = true)
+                }
             }
         }
     }
@@ -548,7 +545,6 @@ private fun ChatProgressPanel(steps: List<ChatProgressStep>, isResponding: Boole
             .padding(horizontal = 12.dp, vertical = 4.dp)
             .clip(MaterialTheme.shapes.medium)
             .background(CloverSurface)
-            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -595,9 +591,7 @@ private fun MonoBlock(text: String) {
         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(CloverSurface)
-            .padding(8.dp),
+            .padding(horizontal = 2.dp, vertical = 4.dp),
         maxLines = 12,
         overflow = TextOverflow.Ellipsis,
     )
@@ -613,11 +607,10 @@ private fun ComposerBar(
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-            .background(CloverSurface)
-            .border(1.dp, CloverLine, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            .background(CloverBg)
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
+        HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
         Row(verticalAlignment = Alignment.Bottom) {
             BasicTextField(
                 value = state.composer,
@@ -630,8 +623,7 @@ private fun ComposerBar(
                     .weight(1f)
                     .heightIn(min = 48.dp, max = 140.dp)
                     .clip(RoundedCornerShape(22.dp))
-                    .background(CloverBg)
-                    .border(1.dp, CloverLine, RoundedCornerShape(22.dp))
+                    .background(CloverSurface)
                     .padding(horizontal = 16.dp, vertical = 13.dp),
                 decorationBox = { inner ->
                     if (state.composer.isEmpty()) {

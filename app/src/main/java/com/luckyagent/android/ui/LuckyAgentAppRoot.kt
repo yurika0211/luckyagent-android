@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
@@ -54,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
+import com.luckyagent.android.ui.screens.CommandsScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
 import com.luckyagent.android.ui.screens.MemoryScreen
 import com.luckyagent.android.ui.screens.SettingsScreen
@@ -63,7 +65,6 @@ import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverBgSide
 import com.luckyagent.android.ui.theme.CloverLine
-import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
@@ -77,6 +78,7 @@ private data class NavSpec(
 
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "Chat", Icons.Outlined.ChatBubbleOutline),
+    NavSpec(AppDestination.Commands, "Commands", Icons.Outlined.Code),
     NavSpec(AppDestination.Trajectory, "Trace", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
     NavSpec(AppDestination.Skills, "Skills", Icons.Outlined.Extension),
@@ -150,6 +152,7 @@ private fun AppScaffold(state: AppUiState, vm: AppViewModel, useRail: Boolean) {
                 Box(Modifier.widthIn(max = 1440.dp).fillMaxSize()) {
                     when (state.destination) {
                         AppDestination.Chat -> ChatScreen(state = state, vm = vm)
+                        AppDestination.Commands -> CommandsScreen(state = state, vm = vm)
                         AppDestination.Trajectory -> TrajectoryScreen(state = state, vm = vm)
                         AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)
                         AppDestination.Skills -> SkillsScreen(state = state, vm = vm)
@@ -187,12 +190,13 @@ private fun NavigationDrawerContent(
             }
         }
         Row(
-            Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(CloverSurface).padding(12.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(if (state.socketState == com.luckyagent.android.data.api.SocketState.Connected || state.socketState == com.luckyagent.android.data.api.SocketState.Running) CloverAccent else CloverText3))
             Column(Modifier.weight(1f)) {
-                Text("Connection", style = MaterialTheme.typography.labelMedium, color = CloverText3)
-                Text(state.settings.apiBase.ifBlank { "Set runtime endpoint" }, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 2)
+                Text("Connection", style = MaterialTheme.typography.labelMedium, color = CloverText3, modifier = Modifier.padding(start = 10.dp))
+                Text(state.settings.apiBase.ifBlank { "Set runtime endpoint" }, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 2, modifier = Modifier.padding(start = 10.dp))
             }
             Text(state.socketState.name.lowercase(), style = MaterialTheme.typography.labelSmall, color = CloverAccent)
         }

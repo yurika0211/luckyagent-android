@@ -1,7 +1,6 @@
 package com.luckyagent.android.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,8 +47,6 @@ import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverError
 import com.luckyagent.android.ui.theme.CloverLeaf
-import com.luckyagent.android.ui.theme.CloverLine
-import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
@@ -152,8 +149,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(CloverSurface)
-                .border(1.dp, CloverLine, RoundedCornerShape(12.dp))
+                .background(CloverSurface2)
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             decorationBox = { inner ->
                 if (state.trajectoryQuery.isEmpty()) {
@@ -203,11 +199,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
 @Composable
 private fun SummaryStat(label: String, value: String, modifier: Modifier = Modifier) {
     Column(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(CloverSurface)
-            .border(1.dp, CloverLine, RoundedCornerShape(12.dp))
-            .padding(horizontal = 10.dp, vertical = 10.dp),
+        modifier.padding(horizontal = 8.dp, vertical = 10.dp),
     ) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
         Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -256,9 +248,7 @@ private fun PayloadBlock(label: String, value: String?) {
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(CloverSurface2)
-            .padding(10.dp),
+            .padding(vertical = 5.dp),
     ) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
         Text(
