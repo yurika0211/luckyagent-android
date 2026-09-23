@@ -229,7 +229,7 @@ private fun TaskSummaryCard(task: TaskSummary, onClick: () -> Unit) {
             if (task.origin == TaskOrigin.Legacy) MetaChip("legacy")
         }
         LinearProgressIndicator(
-            progress = { task.progress.coerceIn(0f, 1f).toFloat() },
+            progress = { task.progress.coerceIn(0.0, 1.0).toFloat() },
             modifier = Modifier.fillMaxWidth(),
             color = if (task.status.equals("failed", ignoreCase = true)) CloverError else CloverAccent,
         )
