@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -56,6 +57,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.net.URLEncoder
 
 enum class AppDestination {
     Chat, Tasks, Commands, Trajectory, Gateways, Skills, Settings, Memory
@@ -236,7 +238,9 @@ class AppViewModel(
                     "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
                         if (!completeRun(event)) return@collect
                         val piece = extractFullResponse(env.data) ?: extractText(env.data)
-                        val attachments = extractAttachments(env.data)
+                        val attachments = distinctMedia(
+                            extractAttachments(env.data) + extractArtifactAttachments(piece.orEmpty()),
+                        )
                         if (foreground) {
                             finishAssistant(
                                 full = piece,
@@ -442,7 +446,7 @@ class AppViewModel(
             }
             else -> true
         }
-        val attachments = extractAttachments(data)
+        val attachments = distinctMedia(extractAttachments(data) + extractArtifactAttachments(output))
         val stepKey = "$currentTurnId:$stepId"
         val id = when {
             stepId.isNotBlank() -> toolStepIndex[stepKey] ?: "tool-$stepKey".also { toolStepIndex[stepKey] = it }
@@ -645,6 +649,62 @@ class AppViewModel(
             else ChatMedia(descriptor)
         }
     }
+
+    private fun extractArtifactAttachments(text: String): List<ChatMedia> {
+        if (text.isBlank()) return emptyList()
+        val result = mutableListOf<ChatMedia>()
+        artifactPathPattern.findAll(text).forEach { match ->
+            artifactDescriptor(cleanArtifactPath(match.value))?.let { result += ChatMedia(it) }
+        }
+        return distinctMedia(result)
+    }
+
+    private fun artifactDescriptor(path: String): MediaAttachment? {
+        val normalized = path.replace('\\', '/')
+        val roots = listOf(
+            "~/.luckyagent/workspace/" to "workspace/",
+            "~/.luckyagent/uploads/" to "uploads/",
+        )
+        val configuredRoot = roots.firstOrNull { normalized.startsWith(it.first) }
+        val relative = if (configuredRoot != null) {
+            configuredRoot.second + normalized.removePrefix(configuredRoot.first)
+        } else {
+            val workspaceMarker = "/.luckyagent/workspace/"
+            val uploadsMarker = "/.luckyagent/uploads/"
+            when {
+                normalized.contains(workspaceMarker) -> "workspace/" + normalized.substringAfter(workspaceMarker)
+                normalized.contains(uploadsMarker) -> "uploads/" + normalized.substringAfter(uploadsMarker)
+                else -> return null
+            }
+        }
+        val fileName = relative.substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
+        val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(
+            fileName.substringAfterLast('.', "").lowercase(),
+        ) ?: "application/octet-stream"
+        val base = container.settingsRepository.snapshot().apiBase.trimEnd('/')
+        if (base.isBlank()) return null
+        val encodedPath = URLEncoder.encode(relative, Charsets.UTF_8.name())
+        return MediaAttachment(
+            type = normalizeMediaType(mimeType),
+            fileUrl = "$base/api/v1/artifacts?path=$encodedPath",
+            fileName = fileName,
+            mimeType = mimeType,
+        )
+    }
+
+    private fun distinctMedia(items: List<ChatMedia>): List<ChatMedia> {
+        val seen = mutableSetOf<String>()
+        return items.filter { media ->
+            val key = media.descriptor.fileUrl
+                ?: media.descriptor.filePath
+                ?: media.localUri
+                ?: return@filter false
+            seen.add(key)
+        }
+    }
+
+    private fun cleanArtifactPath(value: String): String =
+        value.trim().trim('`', '"', '\'', ',', '.', ';', ':', ')', ']', '}')
 
     private fun JsonObject.stringValue(key: String): String? =
         this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
@@ -1015,7 +1075,7 @@ class AppViewModel(
     private fun ProviderMessage.toBubbles(idx: Int): List<ChatBubble> {
         val role = role ?: "assistant"
         val base = content.orEmpty()
-        val messageAttachments = attachments.map(::ChatMedia) + contentParts.mapNotNull { part ->
+        val messageAttachments = distinctMedia(attachments.map(::ChatMedia) + contentParts.mapNotNull { part ->
             val image = part.image ?: return@mapNotNull null
             if (image.url.isNullOrBlank() && image.filePath.isNullOrBlank()) return@mapNotNull null
             ChatMedia(
@@ -1026,7 +1086,7 @@ class AppViewModel(
                     mimeType = image.mimeType,
                 ),
             )
-        }
+        } + extractArtifactAttachments(base))
         val result = mutableListOf<ChatBubble>()
         reasoningContent?.takeIf { it.isNotBlank() }?.let { reasoning ->
             result += ChatBubble(
@@ -1703,6 +1763,9 @@ class AppViewModel(
 
     private companion object {
         const val TASK_POLL_INTERVAL_MS = 3_000L
+        val artifactPathPattern = Regex(
+            """(?i)(?:MEDIA:\s*)?(?:~[/\\]\.luckyagent[/\\](?:workspace|uploads)[/\\][^\s`"'<>]+|/[^\s`"'<>/]+(?:/[^\s`"'<>/]+)*/\.luckyagent/(?:workspace|uploads)/[^\s`"'<>]+)""",
+        )
     }
 
     override fun onCleared() {
