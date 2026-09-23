@@ -47,8 +47,8 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 - 会话历史分页 / 向上加载更多
 - Memory graph 真正可视化（力导向或列表关系图）
 - 附件上传（图片等多模态）
-- 证书 pinning / 正式 release 签名与 CI APK
-- Trajectory 结构化时间线 UI（现为 JSON）
+- 证书 pinning / 正式 release 签名密钥（CI 已支持可选 secrets 签名）
+- Trajectory 结构化时间线 UI（部分已卡片化，细节可继续对齐 GUI）
 
 ## UI 对照 GUI
 
@@ -89,6 +89,43 @@ Key 存在 `EncryptedSharedPreferences`，不进 URL / 默认不进 body 日志�
 6. 点「保存并探测」看 Health；点「重连 WS」
 7. 回 **Chat** 发一条消息；侧栏可搜 session / 切历史
 8. **Memory** 可 recall；工具调用应出现卡片
+
+
+## CI / CD（GitHub Actions）
+
+工作流：`.github/workflows/android.yml`
+
+| 触发 | 行为 |
+|------|------|
+| PR → `main` | `assembleDebug`，上传 debug APK artifact |
+| push → `main` | debug + release APK artifact |
+| tag `v*` | 同上，并把 release APK 挂到 GitHub Release |
+| `workflow_dispatch` | 手动跑 debug + release |
+
+### 本地等价
+
+```bash
+./gradlew :app:assembleDebug
+./gradlew :app:assembleRelease
+```
+
+### 可选：Release 签名 secrets
+
+未配置时 CI 产出 **unsigned release APK**（仍可作构建门禁）。配置后自动签名：
+
+| Secret | 含义 |
+|--------|------|
+| `ANDROID_KEYSTORE_BASE64` | keystore 文件的 base64 |
+| `ANDROID_KEYSTORE_PASSWORD` | store 密码 |
+| `ANDROID_KEY_ALIAS` | key alias |
+| `ANDROID_KEY_PASSWORD` | key 密码 |
+
+```bash
+base64 -w0 release.jks > keystore.b64   # macOS: base64 -i release.jks
+# 把内容粘到 repo Secret: ANDROID_KEYSTORE_BASE64
+```
+
+Artifact 在 Actions  run 页面下载；保留 debug 14 天 / release 30 天。
 
 ## 本地构建
 
