@@ -31,6 +31,7 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
   - 工具调用卡片（名称、参数摘要、结果、running/done/failed）
   - 连接状态条 + 断线有限次自动重连（最多 8 次，指数退避）
   - 发送 / 停止（cancel）
+  - Agent 运行期间普通消息、命令、页面操作、切换会话和修改连接配置不会中断当前任务；只有 Stop 或 `/stop` 会取消
 - **Sessions**
   - 抽屉搜索、切换 session、加载历史（含历史 tool_calls）
 - **Settings**

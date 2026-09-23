@@ -16,6 +16,7 @@ import com.luckyagent.android.data.api.MemorySearchTrace
 import com.luckyagent.android.data.api.ReceivedMemoryTrace
 import com.luckyagent.android.data.api.CommandExecution
 import com.luckyagent.android.data.api.ProviderMessage
+import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.data.api.RuntimeCommand
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.SessionToolTrace
@@ -23,15 +24,27 @@ import com.luckyagent.android.data.api.GatewayStatus
 import com.luckyagent.android.data.api.SkillSummary
 import com.luckyagent.android.data.api.SkillsResponse
 import com.luckyagent.android.data.api.SocketState
+import com.luckyagent.android.data.api.TaskDetail
+import com.luckyagent.android.data.api.TaskEvent
+import com.luckyagent.android.data.api.TaskNode
+import com.luckyagent.android.data.api.TaskOrigin
+import com.luckyagent.android.data.api.TaskSummary
+import com.luckyagent.android.data.api.isTerminalTaskStatus
+import com.luckyagent.android.data.api.toTaskNode
+import com.luckyagent.android.data.api.toTaskSummary
+import com.luckyagent.android.data.api.WsChatHandle
+import com.luckyagent.android.data.api.WsEvent
 import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.RuntimeEndpoint
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -40,14 +53,17 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 enum class AppDestination {
-    Chat, Commands, Trajectory, Gateways, Skills, Settings, Memory
+    Chat, Tasks, Commands, Trajectory, Gateways, Skills, Settings, Memory
 }
 
 enum class TrajectoryFilter { All, Success, Failure }
+
+enum class TaskFilter { All, Active, Completed, Failed, Cancelled }
 
 enum class ProgressStatus { Active, Complete, Failed }
 
@@ -62,6 +78,8 @@ data class ChatBubble(
     val role: String,
     val content: String,
     val streaming: Boolean = false,
+    val createdAt: String? = null,
+    val usage: TokenUsage? = null,
     val toolName: String? = null,
     val toolArgs: String? = null,
     val toolOutput: String? = null,
@@ -142,6 +160,16 @@ data class AppUiState(
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
     val drawerOpenHint: Boolean = false,
+    val tasks: List<TaskSummary> = emptyList(),
+    val tasksLoading: Boolean = false,
+    val tasksError: String? = null,
+    val taskFilter: TaskFilter = TaskFilter.All,
+    val taskQuery: String = "",
+    val selectedTaskId: String? = null,
+    val selectedTask: TaskDetail? = null,
+    val taskDetailLoading: Boolean = false,
+    val taskDetailError: String? = null,
+    val taskPolling: Boolean = false,
 )
 
 class AppViewModel(
@@ -152,12 +180,19 @@ class AppViewModel(
 
     private var eventsJob: Job? = null
     private var settingsReconnectJob: Job? = null
+    private var taskPollingJob: Job? = null
     private var assistantBufferId: String? = null
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
     private val toolStepIndex = mutableMapOf<String, String>()
     private val mediaUploadSemaphore = Semaphore(1)
+    private data class ActiveRun(
+        val handle: WsChatHandle,
+    )
+
+    private val activeRuns = mutableMapOf<String, ActiveRun>()
+    private var foregroundRunConnectionId: String? = null
 
     init {
         viewModelScope.launch {
@@ -188,77 +223,112 @@ class AppViewModel(
     private fun observeWs() {
         eventsJob?.cancel()
         eventsJob = viewModelScope.launch {
-            container.wsClient.events.collect { env ->
+            container.wsClient.events.collect { event ->
+                val env = event.envelope
+                val foreground = isForegroundEvent(event)
                 when (env.type) {
                     "stream_chunk", "assistant_delta", "delta", "chunk" -> {
+                        if (!foreground) return@collect
                         val piece = extractText(env.data) ?: return@collect
                         updatePhase("response", "Preparing response")
                         appendAssistant(piece)
                     }
                     "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
+                        if (!completeRun(event)) return@collect
                         val piece = extractFullResponse(env.data) ?: extractText(env.data)
-                        finishAssistant(piece)
-                        _ui.update { it.copy(isResponding = false) }
+                        if (foreground) {
+                            finishAssistant(
+                                full = piece,
+                                createdAt = extractField(env.data, "created_at") ?: env.timestamp,
+                                usage = extractUsage(env.data),
+                            )
+                            _ui.update { it.copy(isResponding = false) }
+                            foregroundRunConnectionId = null
+                        } else {
+                            finishBackgroundRun(event.sessionId)
+                        }
                         refreshSessions()
                     }
-                    "tool_call", "tool" -> handleToolCall(env.data)
-                    "tool_result" -> handleToolResult(env.data)
+                    "tool_call", "tool" -> if (foreground) handleToolCall(env.data)
+                    "tool_result" -> if (foreground) handleToolResult(env.data)
                     "cancel", "cancelled" -> {
-                        finishAssistant(null)
-                        _ui.update {
-                            it.copy(
-                                isResponding = false,
-                                activityLine = "cancelled",
-                                progressSteps = it.progressSteps.map { step ->
-                                    if (step.status == ProgressStatus.Active) step.copy(label = "Cancelled", status = ProgressStatus.Complete) else step
-                                },
-                            )
+                        if (!completeRun(event)) return@collect
+                        if (foreground) {
+                            finishAssistant(null)
+                            _ui.update {
+                                it.copy(
+                                    isResponding = false,
+                                    activityLine = "cancelled",
+                                    progressSteps = it.progressSteps.map { step ->
+                                        if (step.status == ProgressStatus.Active) step.copy(label = "Cancelled", status = ProgressStatus.Complete) else step
+                                    },
+                                )
+                            }
+                            foregroundRunConnectionId = null
+                        } else {
+                            finishBackgroundRun(event.sessionId)
                         }
                     }
                     "error" -> {
+                        if (!completeRun(event)) return@collect
                         val msg = env.error
                             ?: extractField(env.data, "message")
                             ?: extractText(env.data)
                             ?: "Unknown error"
-                        finishAssistant(null)
-                        pushBubble(
-                            ChatBubble(
-                                id = "err-${System.currentTimeMillis()}",
-                                role = "error",
-                                content = msg,
-                            ),
-                        )
-                        _ui.update {
-                            it.copy(
-                                activityLine = "error · $msg",
-                                isResponding = false,
-                                progressSteps = it.progressSteps.map { step ->
-                                    if (step.status == ProgressStatus.Active) step.copy(label = "Request failed", status = ProgressStatus.Failed) else step
-                                },
+                        if (foreground) {
+                            finishAssistant(null)
+                            pushBubble(
+                                ChatBubble(
+                                    id = "err-${System.currentTimeMillis()}",
+                                    role = "error",
+                                    content = msg,
+                                ),
                             )
+                            _ui.update {
+                                it.copy(
+                                    activityLine = "error · $msg",
+                                    isResponding = false,
+                                    progressSteps = it.progressSteps.map { step ->
+                                        if (step.status == ProgressStatus.Active) step.copy(label = "Request failed", status = ProgressStatus.Failed) else step
+                                    },
+                                )
+                            }
+                            foregroundRunConnectionId = null
+                        } else {
+                            finishBackgroundRun(event.sessionId)
                         }
                     }
                     "status", "info" -> {
                         val state = extractField(env.data, "state")
                         val message = extractField(env.data, "message") ?: extractText(env.data)
                         when (state?.lowercase()) {
-                            "thinking" -> updatePhase("thinking", "Thinking through the request")
-                            "executing" -> updatePhase("executing", "Working on your request")
-                            "idle" -> _ui.update { current ->
-                                current.copy(
-                                    isResponding = false,
-                                    activityLine = "complete",
-                                    progressSteps = current.progressSteps.map { step ->
-                                        if (step.status == ProgressStatus.Active) step.copy(status = ProgressStatus.Complete) else step
-                                    },
-                                )
+                            "thinking" -> if (foreground) updatePhase("thinking", "Thinking through the request")
+                            "executing" -> if (foreground) updatePhase("executing", "Working on your request")
+                            "idle" -> {
+                                if (!completeRun(event)) return@collect
+                                if (foreground) {
+                                    finishAssistant(null)
+                                    _ui.update { current ->
+                                        current.copy(
+                                            isResponding = false,
+                                            activityLine = "complete",
+                                            progressSteps = current.progressSteps.map { step ->
+                                                if (step.status == ProgressStatus.Active) step.copy(status = ProgressStatus.Complete) else step
+                                            },
+                                        )
+                                    }
+                                    foregroundRunConnectionId = null
+                                } else {
+                                    finishBackgroundRun(event.sessionId)
+                                }
                             }
-                            else -> _ui.update {
+                            else -> if (foreground) _ui.update {
                                 it.copy(activityLine = listOfNotNull(state, message).joinToString(": ").ifBlank { env.type })
                             }
                         }
                     }
                     "reasoning" -> {
+                        if (!foreground) return@collect
                         val stage = extractField(env.data, "stage").orEmpty()
                         val round = extractField(env.data, "round")?.toIntOrNull()
                         val summary = extractField(env.data, "summary")?.trim().orEmpty()
@@ -276,13 +346,48 @@ class AppViewModel(
                         }
                     }
                     else -> {
-                        if (env.error != null) {
+                        if (foreground && env.error != null) {
                             _ui.update { it.copy(activityLine = env.error) }
                         }
                     }
                 }
             }
         }
+    }
+
+    private fun currentSessionId(): String =
+        container.settingsRepository.snapshot().sessionId.ifBlank { "android-main" }
+
+    private fun isCurrentSessionRunActive(): Boolean = activeRuns.containsKey(currentSessionId())
+
+    private fun registerRun(handle: WsChatHandle) {
+        activeRuns[handle.sessionId] = ActiveRun(handle)
+        foregroundRunConnectionId = handle.connectionId
+    }
+
+    private fun isForegroundEvent(event: WsEvent): Boolean =
+        event.sessionId == currentSessionId() && foregroundRunConnectionId == event.connectionId
+
+    private fun completeRun(event: WsEvent): Boolean {
+        val run = activeRuns[event.sessionId] ?: return false
+        if (run.handle.connectionId != event.connectionId) return false
+        releaseRun(event.sessionId)
+        return true
+    }
+
+    private fun releaseRun(sessionId: String) {
+        val run = activeRuns.remove(sessionId) ?: return
+        container.wsClient.release(run.handle.connectionId)
+        if (foregroundRunConnectionId == run.handle.connectionId) {
+            foregroundRunConnectionId = null
+        }
+    }
+
+    private fun finishBackgroundRun(sessionId: String) {
+        if (sessionId != currentSessionId()) return
+        foregroundRunConnectionId = null
+        resetAssistantStream()
+        loadHistory(sessionId)
     }
 
     private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
@@ -512,6 +617,24 @@ class AppViewModel(
         return o[key]?.jsonPrimitive?.contentOrNull
     }
 
+    private fun extractUsage(data: kotlinx.serialization.json.JsonElement?): TokenUsage? {
+        val o = data as? JsonObject ?: return null
+        val usage = o["usage"] as? JsonObject ?: return null
+        fun int(key: String): Int = usage[key]?.jsonPrimitive?.intOrNull ?: 0
+        val result = TokenUsage(
+            inputTokens = int("input_tokens"),
+            outputTokens = int("output_tokens"),
+            totalTokens = int("total_tokens"),
+            cachedInputTokens = int("cached_input_tokens"),
+            model = usage["model"]?.jsonPrimitive?.contentOrNull,
+        )
+        return result.takeIf {
+            it.totalTokens > 0 || it.inputTokens > 0 || it.outputTokens > 0 || !it.model.isNullOrBlank()
+        }
+    }
+
+    private fun nowIsoTimestamp(): String = java.time.Instant.now().toString()
+
     private fun extractToolName(data: kotlinx.serialization.json.JsonElement?): String? {
         val o = data as? JsonObject ?: return null
         return o["name"]?.jsonPrimitive?.contentOrNull
@@ -561,7 +684,7 @@ class AppViewModel(
         }
     }
 
-    private fun finishAssistant(full: String?) {
+    private fun finishAssistant(full: String?, createdAt: String? = null, usage: TokenUsage? = null) {
         assistantFlushJob?.cancel()
         assistantFlushJob = null
         val pending = assistantPending.toString()
@@ -574,12 +697,30 @@ class AppViewModel(
                 if (idx >= 0) {
                     val content = full?.takeIf { it.isNotBlank() } ?: list[idx].content + pending
                     val answer = list.removeAt(idx)
-                    list += answer.copy(content = content, streaming = false)
+                    list += answer.copy(
+                        content = content,
+                        streaming = false,
+                        createdAt = createdAt ?: answer.createdAt,
+                        usage = usage ?: answer.usage,
+                    )
                 } else if (!full.isNullOrBlank() || pending.isNotEmpty()) {
-                    list += ChatBubble(id = id, role = "assistant", content = full?.takeIf { it.isNotBlank() } ?: pending, streaming = false)
+                    list += ChatBubble(
+                        id = id,
+                        role = "assistant",
+                        content = full?.takeIf { it.isNotBlank() } ?: pending,
+                        streaming = false,
+                        createdAt = createdAt,
+                        usage = usage,
+                    )
                 }
             } else if (!full.isNullOrBlank()) {
-                list += ChatBubble(id = "a-${System.currentTimeMillis()}", role = "assistant", content = full)
+                list += ChatBubble(
+                    id = "a-${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = full,
+                    createdAt = createdAt,
+                    usage = usage,
+                )
             }
             st.copy(bubbles = list, isResponding = false)
         }
@@ -599,7 +740,11 @@ class AppViewModel(
 
     fun navigate(dest: AppDestination) {
         _ui.update { it.copy(destination = dest) }
+        if (dest != AppDestination.Tasks) stopTaskPolling()
         when (dest) {
+            AppDestination.Tasks -> {
+                startTaskPolling()
+            }
             AppDestination.Commands -> refreshCommands()
             AppDestination.Memory -> refreshMemory()
             AppDestination.Skills -> refreshSkills()
@@ -655,7 +800,7 @@ class AppViewModel(
         useBearer: Boolean,
         wsUrl: String = container.settingsRepository.snapshot().wsUrl,
     ) {
-        container.settingsRepository.update {
+        updateSettings {
             it.copy(
                 apiBase = apiBase,
                 apiKey = apiKey,
@@ -664,7 +809,6 @@ class AppViewModel(
                 wsUrl = wsUrl,
             )
         }
-        connectSocket()
         refreshSessions()
     }
 
@@ -712,17 +856,17 @@ class AppViewModel(
         val prev = container.settingsRepository.snapshot()
         container.settingsRepository.update(transform)
         val next = container.settingsRepository.snapshot()
-        val endpointChanged =
+        val settingsChanged =
             prev.apiBase != next.apiBase ||
                 prev.wsUrl != next.wsUrl ||
                 prev.sessionId != next.sessionId ||
                 prev.apiKey != next.apiKey ||
                 prev.useBearer != next.useBearer
-        if (endpointChanged) {
+        if (settingsChanged) {
             settingsReconnectJob?.cancel()
             settingsReconnectJob = viewModelScope.launch {
                 kotlinx.coroutines.delay(450)
-                container.wsClient.connect(container.settingsRepository.snapshot().sessionId)
+                connectSocket()
                 settingsReconnectJob = null
             }
         }
@@ -757,26 +901,36 @@ class AppViewModel(
     }
 
     fun selectSession(id: String) {
-        container.settingsRepository.update { it.copy(sessionId = id) }
+        val target = id.ifBlank { "android-main" }
+        container.settingsRepository.update { it.copy(sessionId = target) }
+        foregroundRunConnectionId = null
         resetAssistantStream()
         toolStepIndex.clear()
-        _ui.update { it.copy(isResponding = false, progressSteps = emptyList()) }
+        _ui.update {
+            it.copy(
+                bubbles = emptyList(),
+                isResponding = activeRuns.containsKey(target),
+                progressSteps = emptyList(),
+            )
+        }
         connectSocket()
-        loadHistory(id)
+        loadHistory(target)
     }
 
-    fun loadHistory(sessionId: String = _ui.value.settings.sessionId) {
+    fun loadHistory(sessionId: String = currentSessionId()) {
         viewModelScope.launch {
             val result = container.api.sessionHistory(sessionId)
             result.onSuccess { history ->
+                if (currentSessionId() != sessionId) return@onSuccess
                 resetAssistantStream()
                 toolStepIndex.clear()
                 val bubbles = historyToBubbles(history.messages)
+                val running = activeRuns.containsKey(sessionId)
                 _ui.update {
                     it.copy(
                         bubbles = bubbles,
-                        activityLine = "loaded ${bubbles.size} messages",
-                        isResponding = false,
+                        activityLine = if (running) "Agent running · history loaded" else "loaded ${bubbles.size} messages",
+                        isResponding = running,
                         progressSteps = emptyList(),
                     )
                 }
@@ -850,26 +1004,40 @@ class AppViewModel(
                 id = "h-$idx-${role.hashCode()}",
                 role = role,
                 content = base,
+                createdAt = createdAt,
+                usage = usage,
             )
         }
         return result
     }
 
-    fun connectSocket() {
+    fun connectSocket(force: Boolean = false) {
         settingsReconnectJob?.cancel()
         settingsReconnectJob = null
-        container.wsClient.connect(container.settingsRepository.snapshot().sessionId)
+        container.wsClient.connect(currentSessionId(), force = force)
     }
 
     fun sendComposer() {
         val text = _ui.value.composer.trim()
         val pending = _ui.value.pendingMedia
         if (text.isEmpty() && pending.isEmpty()) return
+        val parsedCommand = parseRuntimeCommand(text)
+        val runtimeCommand = if (pending.isEmpty()) parsedCommand else null
+        if (parsedCommand?.name?.equals("stop", ignoreCase = true) == true) {
+            pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text, createdAt = nowIsoTimestamp()))
+            _ui.update { it.copy(composer = "", pendingMedia = emptyList()) }
+            cancelRun()
+            return
+        }
         if (pending.any { it.descriptor == null }) {
             _ui.update { it.copy(activityLine = if (pending.any { media -> media.error != null }) "请移除上传失败的附件" else "附件仍在上传中") }
             return
         }
-        val runtimeCommand = if (pending.isEmpty()) parseRuntimeCommand(text) else null
+        val sessionId = currentSessionId()
+        if (isCurrentSessionRunActive()) {
+            _ui.update { it.copy(activityLine = "Agent 正在运行，请等待完成或发送 /stop") }
+            return
+        }
         if (runtimeCommand != null) {
             sendRuntimeCommand(text, runtimeCommand)
             return
@@ -879,7 +1047,7 @@ class AppViewModel(
         val media = pending.mapNotNull { item -> item.descriptor?.let { ChatMedia(it, item.uri) } }
         currentTurnId = "turn-${System.currentTimeMillis()}"
         toolStepIndex.clear()
-        pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text, attachments = media))
+        pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text, createdAt = nowIsoTimestamp(), attachments = media))
         _ui.update {
             it.copy(
                 composer = "",
@@ -889,12 +1057,19 @@ class AppViewModel(
             )
         }
         resetAssistantStream()
-        val ok = container.wsClient.sendChat(message, attachments = descriptors)
-        if (!ok) {
-            connectSocket()
+        val handle = container.wsClient.sendChat(message, attachments = descriptors)
+        if (handle != null) {
+            registerRun(handle)
+        } else {
+            connectSocket(force = true)
             viewModelScope.launch {
                 kotlinx.coroutines.delay(450)
-                if (!container.wsClient.sendChat(message, attachments = descriptors)) {
+                if (currentSessionId() != sessionId) {
+                    _ui.update { it.copy(isResponding = false) }
+                    return@launch
+                }
+                val retryHandle = container.wsClient.sendChat(message, attachments = descriptors)
+                if (retryHandle == null) {
                     pushBubble(
                         ChatBubble(
                             id = "err-${System.currentTimeMillis()}",
@@ -910,6 +1085,8 @@ class AppViewModel(
                             },
                         )
                     }
+                } else {
+                    registerRun(retryHandle)
                 }
             }
         }
@@ -929,10 +1106,14 @@ class AppViewModel(
     }
 
     private fun sendRuntimeCommand(rawText: String, command: ParsedRuntimeCommand) {
-        if (_ui.value.isResponding || _ui.value.commandExecuting) return
+        if (isCurrentSessionRunActive()) {
+            _ui.update { it.copy(activityLine = "Agent 正在运行，请等待完成或发送 /stop") }
+            return
+        }
+        if (_ui.value.commandExecuting) return
         val startedAt = System.currentTimeMillis()
         resetAssistantStream()
-        pushBubble(ChatBubble(id = "u-$startedAt", role = "user", content = rawText))
+        pushBubble(ChatBubble(id = "u-$startedAt", role = "user", content = rawText, createdAt = nowIsoTimestamp()))
         _ui.update {
             it.copy(
                 composer = "",
@@ -1006,7 +1187,7 @@ class AppViewModel(
         execution: CommandExecution? = null,
     ) {
         val now = System.currentTimeMillis()
-        pushBubble(ChatBubble(id = "runtime-command-$now", role = "assistant", content = output))
+        pushBubble(ChatBubble(id = "runtime-command-$now", role = "assistant", content = output, createdAt = nowIsoTimestamp()))
         _ui.update {
             it.copy(
                 isResponding = false,
@@ -1027,7 +1208,11 @@ class AppViewModel(
     }
 
     fun cancelRun() {
-        container.wsClient.cancel()
+        val sessionId = currentSessionId()
+        activeRuns[sessionId]?.let { run ->
+            container.wsClient.cancel(run.handle)
+            releaseRun(sessionId)
+        }
         finishAssistant(null)
         _ui.update {
             it.copy(
@@ -1115,6 +1300,156 @@ class AppViewModel(
         _ui.update { it.copy(trajectoryFilter = filter) }
     }
 
+    fun updateTaskQuery(value: String) {
+        _ui.update { it.copy(taskQuery = value) }
+    }
+
+    fun setTaskFilter(filter: TaskFilter) {
+        _ui.update { it.copy(taskFilter = filter) }
+    }
+
+    fun refreshTasks() {
+        viewModelScope.launch { refreshTasksNow() }
+    }
+
+    private suspend fun refreshTasksNow() {
+        _ui.update { it.copy(tasksLoading = true, tasksError = null) }
+        val (unified, legacy) = coroutineScope {
+            val unifiedRequest = async { container.api.listTaskRecords() }
+            val legacyRequest = async { container.api.listLegacyTasks() }
+            unifiedRequest.await() to legacyRequest.await()
+        }
+        val unifiedRecords = unified.getOrNull().orEmpty()
+        val unifiedIds = unifiedRecords.mapTo(mutableSetOf()) { it.id }
+        val unifiedSummaries = unifiedRecords.map { it.toTaskSummary() }
+        val legacySummaries = legacy.getOrNull()
+            .orEmpty()
+            .filterNot { it.id in unifiedIds }
+            .map { it.toTaskNode().summary }
+        val merged = addChildCounts((unifiedSummaries + legacySummaries)
+            .sortedByDescending { it.lastActivityAt.orEmpty() })
+        val errors = listOfNotNull(
+            unified.exceptionOrNull()?.message?.let { "tasks: $it" },
+            legacy.exceptionOrNull()?.message?.let { "legacy: $it" },
+        )
+        val hasData = unified.isSuccess || legacy.isSuccess
+        val selectedId = _ui.value.selectedTaskId
+        _ui.update {
+            it.copy(
+                tasksLoading = false,
+                tasks = if (hasData) merged else it.tasks,
+                tasksError = errors.takeIf { messages -> messages.isNotEmpty() }?.joinToString(" · "),
+            )
+        }
+        if (selectedId != null && merged.any { it.id == selectedId }) {
+            loadTaskDetailNow(selectedId, showLoading = false)
+        }
+    }
+
+    private fun addChildCounts(tasks: List<TaskSummary>): List<TaskSummary> {
+        val counts = tasks.mapNotNull { it.parentId?.takeIf(String::isNotBlank) }
+            .groupingBy { it }
+            .eachCount()
+        return tasks.map { task ->
+            task.copy(childCount = maxOf(task.childCount, counts[task.id] ?: 0))
+        }
+    }
+
+    private fun startTaskPolling() {
+        if (taskPollingJob?.isActive == true) return
+        taskPollingJob = viewModelScope.launch {
+            _ui.update { it.copy(taskPolling = true) }
+            while (isActive && _ui.value.destination == AppDestination.Tasks) {
+                refreshTasksNow()
+                delay(TASK_POLL_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopTaskPolling() {
+        taskPollingJob?.cancel()
+        taskPollingJob = null
+        _ui.update { it.copy(taskPolling = false) }
+    }
+
+    fun selectTask(id: String) {
+        if (id.isBlank()) return
+        _ui.update {
+            it.copy(
+                selectedTaskId = id,
+                selectedTask = null,
+                taskDetailLoading = true,
+                taskDetailError = null,
+            )
+        }
+        viewModelScope.launch { loadTaskDetailNow(id, showLoading = false) }
+    }
+
+    fun clearSelectedTask() {
+        _ui.update {
+            it.copy(
+                selectedTaskId = null,
+                selectedTask = null,
+                taskDetailLoading = false,
+                taskDetailError = null,
+            )
+        }
+    }
+
+    private suspend fun loadTaskDetailNow(id: String, showLoading: Boolean) {
+        if (showLoading) _ui.update { it.copy(taskDetailLoading = true, taskDetailError = null) }
+        val summary = _ui.value.tasks.firstOrNull { it.id == id }
+        if (summary == null) {
+            _ui.update { it.copy(taskDetailLoading = false, taskDetailError = "Task not found") }
+            return
+        }
+        val detailResult = if (summary.origin == TaskOrigin.Legacy) {
+            container.api.getLegacyTask(id).map { legacy ->
+                TaskDetail(
+                    root = legacy.toTaskNode(),
+                    result = legacy.result,
+                    origin = TaskOrigin.Legacy,
+                )
+            }
+        } else {
+            val tree = container.api.getTaskTree(id)
+            if (tree.isFailure) {
+                tree.map { node -> TaskDetail(root = node.toTaskNode(), origin = TaskOrigin.Unified) }
+            } else {
+                val events = container.api.getTaskEvents(id).getOrDefault(emptyList())
+                val result = container.api.getTaskResult(id).getOrNull()
+                tree.map { node ->
+                    TaskDetail(
+                        root = node.toTaskNode(result),
+                        events = events,
+                        result = result,
+                        origin = TaskOrigin.Unified,
+                    )
+                }
+            }
+        }
+        _ui.update { current ->
+            if (current.selectedTaskId != id) current else current.copy(
+                selectedTask = detailResult.getOrNull() ?: current.selectedTask,
+                taskDetailLoading = false,
+                taskDetailError = detailResult.exceptionOrNull()?.message,
+            )
+        }
+    }
+
+    fun cancelTask(task: TaskSummary) {
+        if (task.status.isTerminalTaskStatus()) return
+        viewModelScope.launch {
+            _ui.update { it.copy(taskDetailError = null) }
+            val result = container.api.cancelTask(task.id, task.origin)
+            if (result.isSuccess) {
+                refreshTasksNow()
+            } else {
+                _ui.update { it.copy(taskDetailError = result.exceptionOrNull()?.message ?: "Cancel request failed") }
+            }
+        }
+    }
+
     fun updateSkillsQuery(value: String) {
         _ui.update { it.copy(skillsQuery = value) }
     }
@@ -1166,11 +1501,13 @@ class AppViewModel(
             val result = container.api.createSession(title)
             result.onSuccess { session ->
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
+                foregroundRunConnectionId = null
                 resetAssistantStream()
                 toolStepIndex.clear()
                 _ui.update {
                     it.copy(
                         bubbles = emptyList(),
+                        isResponding = activeRuns.containsKey(session.id),
                         activityLine = "new session · ${session.id}",
                     )
                 }
@@ -1287,7 +1624,12 @@ class AppViewModel(
         }
     }
 
+    private companion object {
+        const val TASK_POLL_INTERVAL_MS = 3_000L
+    }
+
     override fun onCleared() {
+        stopTaskPolling()
         container.wsClient.disconnect()
         super.onCleared()
     }

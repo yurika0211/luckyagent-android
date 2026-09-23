@@ -36,9 +36,20 @@ data class ProviderMessage(
     val role: String? = null,
     val content: String? = null,
     @SerialName("reasoning_content") val reasoningContent: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    val usage: TokenUsage? = null,
     val name: String? = null,
     @SerialName("tool_call_id") val toolCallId: String? = null,
     @SerialName("tool_calls") val toolCalls: List<HistoryToolCall> = emptyList(),
+)
+
+@Serializable
+data class TokenUsage(
+    @SerialName("input_tokens") val inputTokens: Int = 0,
+    @SerialName("output_tokens") val outputTokens: Int = 0,
+    @SerialName("total_tokens") val totalTokens: Int = 0,
+    @SerialName("cached_input_tokens") val cachedInputTokens: Int = 0,
+    val model: String? = null,
 )
 
 @Serializable
@@ -60,8 +71,20 @@ data class WsEnvelope(
     @SerialName("session_id") val sessionId: String? = null,
     val id: String? = null,
     @SerialName("parent_id") val parentId: String? = null,
+    val timestamp: String? = null,
     val data: JsonElement? = null,
     val error: String? = null,
+)
+
+data class WsEvent(
+    val connectionId: String,
+    val sessionId: String,
+    val envelope: WsEnvelope,
+)
+
+data class WsChatHandle(
+    val connectionId: String,
+    val sessionId: String,
 )
 
 @Serializable

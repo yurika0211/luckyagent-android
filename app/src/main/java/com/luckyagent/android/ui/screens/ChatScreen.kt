@@ -103,6 +103,11 @@ import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import kotlinx.coroutines.launch
 import coil.compose.AsyncImage
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 private sealed interface ChatTimelineItem {
     val key: String
@@ -451,13 +456,72 @@ private fun BubbleRow(bubble: ChatBubble) {
                             Modifier
                                 .size(6.dp)
                                 .clip(CircleShape)
-                                .background(CloverLeaf),
+                            .background(CloverLeaf),
                         )
+                    }
+                    if (bubble.createdAt != null || bubble.usage != null) {
+                        MessageMetadata(bubble)
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun MessageMetadata(bubble: ChatBubble) {
+    var expanded by remember(bubble.id) { mutableStateOf(false) }
+    val usage = bubble.usage
+    val summary = listOfNotNull(
+        bubble.createdAt?.let(::formatMessageTime),
+        usage?.totalTokens?.takeIf { it > 0 }?.let { "${compactTokenCount(it)} tokens" },
+    ).joinToString(" · ")
+    if (summary.isBlank()) return
+
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(enabled = usage != null) { expanded = !expanded },
+            horizontalArrangement = Arrangement.End,
+        ) {
+            Text(summary, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        }
+        if (expanded && usage != null) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                Text("输入 ${usage.inputTokens}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                Text("输出 ${usage.outputTokens}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                Text("总计 ${usage.totalTokens}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                usage.model?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+private fun formatMessageTime(raw: String): String {
+    return runCatching {
+        val zone = ZoneId.systemDefault()
+        val local = Instant.parse(raw).atZone(zone)
+        val today = LocalDate.now(zone)
+        if (local.toLocalDate() == today) {
+            local.format(DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()))
+        } else {
+            local.format(DateTimeFormatter.ofPattern("MM-dd HH:mm", Locale.getDefault()))
+        }
+    }.getOrElse { raw.take(16).replace('T', ' ') }
+}
+
+private fun compactTokenCount(tokens: Int): String {
+    if (tokens < 1000) return tokens.toString()
+    val value = tokens / 1000.0
+    return String.format(Locale.US, "%.1fk", value).removeSuffix(".0k")
 }
 
 @Composable
@@ -629,7 +693,24 @@ private fun ComposerBar(
             )
             Spacer(Modifier.width(6.dp))
             val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
+            val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty()
+            val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
             if (chatWorking) {
+                if (isStopCommand) {
+                    IconButton(
+                        onClick = onSend,
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .clip(CircleShape)
+                            .background(CloverAccent),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Send,
+                            contentDescription = "Stop current run",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    }
+                }
                 IconButton(
                     onClick = onStop,
                     modifier = Modifier
@@ -646,16 +727,16 @@ private fun ComposerBar(
             } else {
                 IconButton(
                     onClick = onSend,
-                    enabled = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty(),
+                    enabled = hasInput,
                     modifier = Modifier
                         .padding(start = 8.dp)
                         .clip(CircleShape)
-                        .background(if (state.composer.isNotBlank() || state.pendingMedia.isNotEmpty()) CloverAccent else CloverSurface2),
+                        .background(if (hasInput) CloverAccent else CloverSurface2),
                 ) {
                     Icon(
                         Icons.Outlined.Send,
                         contentDescription = "Send",
-                        tint = if (state.composer.isNotBlank() || state.pendingMedia.isNotEmpty()) MaterialTheme.colorScheme.onPrimary else CloverText3,
+                        tint = if (hasInput) MaterialTheme.colorScheme.onPrimary else CloverText3,
                     )
                 }
             }

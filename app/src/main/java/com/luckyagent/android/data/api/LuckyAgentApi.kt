@@ -335,6 +335,119 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun listTaskRecords(limit: Int = 200): Result<List<TaskRecord>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(url("/api/v1/tasks", mapOf("limit" to limit.coerceIn(1, 200).toString())))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("tasks ${resp.code}: $body")
+                json.decodeFromString(TaskListResponse.serializer(), body).tasks
+            }
+        }
+    }
+
+    suspend fun getTaskRecord(id: String): Result<TaskRecord> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task ${resp.code}: $body")
+                json.decodeFromString(TaskRecord.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun getTaskTree(id: String): Result<TaskTreeNode> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id/tree")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task tree ${resp.code}: $body")
+                json.decodeFromString(TaskTreeNode.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun getTaskEvents(id: String): Result<List<TaskEvent>> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id/events")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task events ${resp.code}: $body")
+                json.decodeFromString(TaskEventsResponse.serializer(), body).events
+            }
+        }
+    }
+
+    suspend fun getTaskResult(id: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder().url(url("/api/v1/tasks/$id/result")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("task result ${resp.code}: $body")
+                json.decodeFromString(TaskResultResponse.serializer(), body).result
+            }
+        }
+    }
+
+    suspend fun listLegacyTasks(): Result<List<LegacyCollabTask>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/agents/tasks")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("legacy tasks ${resp.code}: $body")
+                json.decodeFromString(LegacyTasksResponse.serializer(), body).tasks
+            }
+        }
+    }
+
+    suspend fun getLegacyTask(id: String): Result<LegacyCollabTask> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "task id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/agents/task", mapOf("id" to id)))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("legacy task ${resp.code}: $body")
+                json.decodeFromString(LegacyCollabTask.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun cancelTask(id: String, origin: TaskOrigin, reason: String = "cancelled by user"): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                require(id.isNotBlank()) { "task id required" }
+                val request = if (origin == TaskOrigin.Legacy) {
+                    Request.Builder()
+                        .url(url("/api/v1/agents/cancel", mapOf("id" to id)))
+                        .post("".toRequestBody(jsonMedia))
+                        .header("Content-Type", "application/json")
+                        .build()
+                } else {
+                    val payload = "{\"reason\":${json.encodeToString(reason)}}"
+                    Request.Builder()
+                        .url(url("/api/v1/tasks/$id/cancel"))
+                        .post(payload.toRequestBody(jsonMedia))
+                        .header("Content-Type", "application/json")
+                        .build()
+                }
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("cancel task ${resp.code}: $body")
+                }
+            }
+        }
+
     suspend fun getJson(path: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder().url(url(path)).get().build()

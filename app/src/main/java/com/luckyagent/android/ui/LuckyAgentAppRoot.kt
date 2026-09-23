@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.Assignment
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
@@ -60,6 +61,7 @@ import com.luckyagent.android.ui.screens.GatewaysScreen
 import com.luckyagent.android.ui.screens.MemoryScreen
 import com.luckyagent.android.ui.screens.SettingsScreen
 import com.luckyagent.android.ui.screens.SkillsScreen
+import com.luckyagent.android.ui.screens.TasksScreen
 import com.luckyagent.android.ui.screens.TrajectoryScreen
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
@@ -78,6 +80,7 @@ private data class NavSpec(
 
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "Chat", Icons.Outlined.ChatBubbleOutline),
+    NavSpec(AppDestination.Tasks, "Tasks", Icons.Outlined.Assignment),
     NavSpec(AppDestination.Commands, "Commands", Icons.Outlined.Code),
     NavSpec(AppDestination.Trajectory, "Trace", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
@@ -152,6 +155,7 @@ private fun AppScaffold(state: AppUiState, vm: AppViewModel, useRail: Boolean) {
                 Box(Modifier.widthIn(max = 1440.dp).fillMaxSize()) {
                     when (state.destination) {
                         AppDestination.Chat -> ChatScreen(state = state, vm = vm)
+                        AppDestination.Tasks -> TasksScreen(state = state, vm = vm)
                         AppDestination.Commands -> CommandsScreen(state = state, vm = vm)
                         AppDestination.Trajectory -> TrajectoryScreen(state = state, vm = vm)
                         AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)
