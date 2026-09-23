@@ -214,7 +214,7 @@ class LuckyAgentWsClient(
         }
     }
 
-    fun sendChat(message: String, maxIterations: Int = 8): Boolean {
+    fun sendChat(message: String, maxIterations: Int = 8, attachments: List<MediaAttachment> = emptyList()): Boolean {
         val ws = socketRef.get() ?: return false
         if (_state.value != SocketState.Connected && _state.value != SocketState.Running) return false
         val payload = json.encodeToString(
@@ -224,6 +224,7 @@ class LuckyAgentWsClient(
                     message = message,
                     stream = true,
                     maxIterations = maxIterations,
+                    attachments = attachments,
                 ),
             ),
         )

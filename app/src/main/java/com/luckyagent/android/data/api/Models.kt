@@ -69,7 +69,22 @@ data class ChatOutboundData(
     val message: String,
     val stream: Boolean = true,
     @SerialName("max_iterations") val maxIterations: Int = 8,
+    val attachments: List<MediaAttachment> = emptyList(),
 )
+
+@Serializable
+data class MediaAttachment(
+    val type: String = "document",
+    @SerialName("file_id") val fileId: String? = null,
+    @SerialName("file_url") val fileUrl: String? = null,
+    @SerialName("file_path") val filePath: String? = null,
+    @SerialName("file_name") val fileName: String? = null,
+    @SerialName("mime_type") val mimeType: String? = null,
+    @SerialName("file_size") val fileSize: Long? = null,
+)
+
+@Serializable
+data class UploadResponse(val attachments: List<MediaAttachment> = emptyList())
 
 @Serializable
 data class ChatOutbound(
