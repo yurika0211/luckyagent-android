@@ -61,6 +61,8 @@ data class ChatBubble(
     val toolDone: Boolean = false,
     val toolSuccess: Boolean? = null,
     val stepId: String? = null,
+    val reasoningRound: Int? = null,
+    val reasoningHasContent: Boolean = false,
 )
 
 data class AppUiState(
@@ -241,13 +243,19 @@ class AppViewModel(
                     "reasoning" -> {
                         val stage = extractField(env.data, "stage").orEmpty()
                         val round = extractField(env.data, "round")?.toIntOrNull()
-                        val suffix = round?.let { " · round $it" }.orEmpty()
-                        val label = when (stage) {
-                            "start" -> "Analyzing the request$suffix"
-                            "continue" -> "Reviewing tool results$suffix"
-                            else -> "Thinking through the next step$suffix"
+                        val summary = extractField(env.data, "summary")?.trim().orEmpty()
+                        val content = extractField(env.data, "content")?.trim().orEmpty()
+                        val label = when {
+                            summary.isNotEmpty() -> summary
+                            stage == "continue" -> "Reviewing tool results"
+                            else -> "Analyzing the request"
                         }
-                        updatePhase("reasoning-${round ?: 0}-$stage", label)
+                        if (stage == "content") {
+                            if (content.isNotEmpty()) upsertReasoningBubble(round, content, true)
+                        } else {
+                            upsertReasoningBubble(round, label, false)
+                            updatePhase("reasoning-${round ?: 0}", label)
+                        }
                     }
                     else -> {
                         if (env.error != null) {
@@ -410,6 +418,29 @@ class AppViewModel(
                 )
             }
             st.copy(bubbles = list)
+        }
+    }
+
+    private fun upsertReasoningBubble(round: Int?, text: String, hasContent: Boolean) {
+        val id = "reasoning-$currentTurnId-${round ?: 0}"
+        _ui.update { state ->
+            val bubbles = state.bubbles.toMutableList()
+            val index = bubbles.indexOfLast { it.id == id }
+            if (index >= 0) {
+                val old = bubbles[index]
+                if (!old.reasoningHasContent || hasContent) {
+                    bubbles[index] = old.copy(content = text, reasoningHasContent = hasContent)
+                }
+            } else {
+                bubbles += ChatBubble(
+                    id = id,
+                    role = "reasoning",
+                    content = text,
+                    reasoningRound = round,
+                    reasoningHasContent = hasContent,
+                )
+            }
+            state.copy(bubbles = bubbles)
         }
     }
 
@@ -646,7 +677,7 @@ class AppViewModel(
             result.onSuccess { history ->
                 resetAssistantStream()
                 toolStepIndex.clear()
-                val bubbles = history.messages.mapIndexed { idx, msg -> msg.toBubble(idx) }
+                val bubbles = historyToBubbles(history.messages)
                 _ui.update {
                     it.copy(
                         bubbles = bubbles,
@@ -661,34 +692,73 @@ class AppViewModel(
         }
     }
 
-    private fun ProviderMessage.toBubble(idx: Int): ChatBubble {
+    private fun historyToBubbles(messages: List<ProviderMessage>): List<ChatBubble> {
+        val bubbles = mutableListOf<ChatBubble>()
+        messages.forEachIndexed { index, message ->
+            message.toBubbles(index).forEach { bubble ->
+                val callIndex = if (message.role == "tool" && bubble.role == "tool" && !message.toolCallId.isNullOrBlank()) {
+                    bubbles.indexOfLast { it.role == "tool" && it.stepId == message.toolCallId }
+                } else -1
+                if (callIndex >= 0) {
+                    val call = bubbles[callIndex]
+                    bubbles[callIndex] = call.copy(
+                        content = bubble.content,
+                        toolOutput = bubble.toolOutput,
+                    )
+                } else {
+                    bubbles += bubble
+                }
+            }
+        }
+        return bubbles
+    }
+
+    private fun ProviderMessage.toBubbles(idx: Int): List<ChatBubble> {
         val role = role ?: "assistant"
         val base = content.orEmpty()
-        val tool = toolCalls.firstOrNull()
-        return if (tool != null && (role == "assistant" || role == "tool")) {
-            ChatBubble(
-                id = "h-$idx-tool",
+        val result = mutableListOf<ChatBubble>()
+        reasoningContent?.takeIf { it.isNotBlank() }?.let { reasoning ->
+            result += ChatBubble(
+                id = "h-$idx-reasoning",
+                role = "reasoning",
+                content = reasoning,
+                reasoningHasContent = true,
+            )
+        }
+        toolCalls.forEachIndexed { toolIndex, tool ->
+            result += ChatBubble(
+                id = "h-$idx-tool-$toolIndex",
                 role = "tool",
                 content = buildToolContent(
                     name = tool.name ?: "tool",
                     args = tool.arguments,
-                    output = base.takeIf { it.isNotBlank() },
+                    output = null,
                     done = true,
-                    success = true,
+                    success = null,
                 ),
                 toolName = tool.name,
                 toolArgs = tool.arguments,
+                toolDone = true,
+                stepId = tool.id,
+            )
+        }
+        if (role == "tool") {
+            result += ChatBubble(
+                id = "h-$idx-tool-result",
+                role = "tool",
+                content = base,
+                toolName = name ?: "tool",
                 toolOutput = base.takeIf { it.isNotBlank() },
                 toolDone = true,
-                toolSuccess = true,
             )
-        } else {
-            ChatBubble(
+        } else if (base.isNotBlank() || (result.isEmpty() && toolCalls.isEmpty())) {
+            result += ChatBubble(
                 id = "h-$idx-${role.hashCode()}",
                 role = role,
                 content = base,
             )
         }
+        return result
     }
 
     fun connectSocket() {
