@@ -32,7 +32,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Refresh
@@ -75,6 +78,7 @@ import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverAssistantBubble
 import com.luckyagent.android.ui.theme.CloverBg
@@ -89,6 +93,40 @@ import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverToolBg
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import kotlinx.coroutines.launch
+
+private sealed interface ChatTimelineItem {
+    val key: String
+
+    data class Message(val bubble: ChatBubble) : ChatTimelineItem {
+        override val key = bubble.id
+    }
+
+    data class ToolGroup(val calls: List<ChatBubble>) : ChatTimelineItem {
+        override val key = calls.joinToString("-") { it.id }
+    }
+}
+
+private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
+    val result = mutableListOf<ChatTimelineItem>()
+    val tools = mutableListOf<ChatBubble>()
+    fun flushTools() {
+        if (tools.isNotEmpty()) {
+            result += ChatTimelineItem.ToolGroup(tools.toList())
+            tools.clear()
+        }
+    }
+
+    bubbles.forEach { bubble ->
+        if (bubble.role.equals("tool", ignoreCase = true) || bubble.toolName != null) {
+            tools += bubble
+        } else {
+            flushTools()
+            result += ChatTimelineItem.Message(bubble)
+        }
+    }
+    flushTools()
+    return result
+}
 
 @Composable
 fun ChatScreen(state: AppUiState, vm: AppViewModel) {
@@ -207,8 +245,9 @@ private fun ChatConversation(
         )
 
         val listState = rememberLazyListState()
-        LaunchedEffect(state.bubbles.size, state.bubbles.lastOrNull()?.content) {
-            if (state.bubbles.isNotEmpty()) listState.animateScrollToItem(state.bubbles.lastIndex)
+        val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
+        LaunchedEffect(timeline.size, state.bubbles.lastOrNull()) {
+            if (timeline.isNotEmpty()) listState.animateScrollToItem(timeline.lastIndex)
         }
 
         LazyColumn(
@@ -220,7 +259,12 @@ private fun ChatConversation(
             if (state.bubbles.isEmpty()) {
                 item { WelcomeBlock(suggestions = state.suggestionPrompts, onPick = vm::applySuggestion) }
             }
-            items(state.bubbles, key = { it.id }) { bubble -> BubbleRow(bubble) }
+            items(timeline, key = { it.key }) { item ->
+                when (item) {
+                    is ChatTimelineItem.Message -> BubbleRow(item.bubble)
+                    is ChatTimelineItem.ToolGroup -> ToolCallGroup(item.calls)
+                }
+            }
         }
 
         if (state.suggestionPrompts.isNotEmpty() && state.bubbles.isNotEmpty()) {
@@ -246,6 +290,7 @@ private fun ChatConversation(
 
 @Composable
 private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean) {
+    val openNavigation = LocalOpenNavigationDrawer.current
     Row(
         Modifier
             .fillMaxWidth()
@@ -274,6 +319,11 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
         if (streaming) {
             Spacer(Modifier.width(6.dp))
             MetaChip("streaming")
+        }
+        if (openNavigation != null) {
+            IconButton(onClick = openNavigation) {
+                Icon(Icons.Outlined.AccountCircle, contentDescription = "Profile and navigation")
+            }
         }
     }
     state.activityLine?.let {
@@ -430,6 +480,63 @@ private fun ToolBubble(bubble: ChatBubble) {
         }
         if (bubble.content.isNotBlank() && bubble.toolOutput.isNullOrBlank()) {
             Text(bubble.content, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun ToolCallGroup(calls: List<ChatBubble>) {
+    var expanded by remember(calls.map { it.id }) { mutableStateOf(false) }
+    val names = calls.mapNotNull { it.toolName }.distinct()
+    val failed = calls.count { it.toolSuccess == false }
+    val running = calls.any { !it.toolDone }
+    Column(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(CloverToolBg)
+            .border(1.dp, CloverLine, RoundedCornerShape(14.dp)),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (calls.size == 1) calls.first().toolName ?: "Tool call" else "${calls.size} tool calls",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                when {
+                    running -> "Running"
+                    failed > 0 -> "$failed failed"
+                    else -> "Completed"
+                },
+                color = if (failed > 0) CloverError else CloverText3,
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "Collapse tool calls" else "Expand tool calls",
+                tint = CloverText2,
+                modifier = Modifier.padding(start = 6.dp),
+            )
+        }
+        Text(
+            names.joinToString(" · ").ifBlank { "Tool activity" },
+            style = MaterialTheme.typography.bodySmall,
+            color = CloverText2,
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        AnimatedVisibility(visible = expanded) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                calls.forEach { call -> ToolBubble(call) }
+            }
         }
     }
 }

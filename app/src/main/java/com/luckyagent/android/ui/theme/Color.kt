@@ -2,7 +2,6 @@ package com.luckyagent.android.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Sampled from UI/GUI/src/styles.css (four-leaf-clover palette)
 // Light
 val CloverBg = Color(0xFFF9FAF4)
 val CloverBgSide = Color(0xFFEEF1E5)
