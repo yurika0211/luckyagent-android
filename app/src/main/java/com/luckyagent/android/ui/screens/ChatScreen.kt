@@ -33,9 +33,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AccountCircle
-import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Edit
@@ -95,7 +93,6 @@ import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
-import com.luckyagent.android.ui.theme.CloverToolBg
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import kotlinx.coroutines.launch
 
@@ -398,7 +395,7 @@ private fun WelcomeBlock(suggestions: List<String>, onPick: (String) -> Unit) {
 @Composable
 private fun BubbleRow(bubble: ChatBubble) {
     val isUser = bubble.role.equals("user", ignoreCase = true)
-    val isTool = bubble.role.equals("tool", ignoreCase = true) || bubble.toolName != null
+    val isReasoning = bubble.role.equals("reasoning", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
 
     Row(
@@ -406,7 +403,7 @@ private fun BubbleRow(bubble: ChatBubble) {
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         when {
-            isTool -> ToolBubble(bubble)
+            isReasoning -> ReasoningRow(bubble)
             isSystem -> {
                 Text(
                     bubble.content,
@@ -460,92 +457,111 @@ private fun BubbleRow(bubble: ChatBubble) {
 }
 
 @Composable
-private fun ToolBubble(bubble: ChatBubble, inGroup: Boolean = false) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .then(if (inGroup) Modifier else Modifier.clip(MaterialTheme.shapes.small).background(CloverToolBg))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+private fun ReasoningRow(bubble: ChatBubble) {
+    var expanded by remember(bubble.id) { mutableStateOf(false) }
+    val title = bubble.reasoningRound?.takeIf { it > 0 }?.let { "思考过程 · 第 $it 轮" } ?: "思考过程"
+    Row(
+        Modifier.fillMaxWidth().padding(start = 14.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                bubble.toolName ?: "tool",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-            )
-            when (bubble.toolSuccess) {
-                true -> MetaChip("ok")
-                false -> MetaChip("fail")
-                null -> if (!bubble.toolDone) MetaChip("running")
+        Box(
+            Modifier.padding(top = 8.dp).size(7.dp).clip(CircleShape).background(CloverText3),
+        )
+        Spacer(Modifier.width(9.dp))
+        Column(
+            Modifier.weight(1f).border(1.dp, CloverLine, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = MaterialTheme.typography.labelSmall, color = CloverText3, modifier = Modifier.weight(1f))
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = if (expanded) "收起思考过程" else "展开思考过程",
+                    tint = CloverText3,
+                    modifier = Modifier.size(18.dp),
+                )
             }
-        }
-        bubble.toolArgs?.takeIf { it.isNotBlank() }?.let {
-            MonoBlock(it)
-        }
-        bubble.toolOutput?.takeIf { it.isNotBlank() }?.let {
-            MonoBlock(it)
-        }
-        if (bubble.content.isNotBlank() && bubble.toolOutput.isNullOrBlank()) {
-            Text(bubble.content, style = MaterialTheme.typography.bodyMedium)
+            if (!expanded) {
+                Text(
+                    bubble.content,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CloverText2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            } else {
+                MarkdownText(markdown = bubble.content)
+                Spacer(Modifier.height(6.dp))
+            }
         }
     }
 }
 
 @Composable
 private fun ToolCallGroup(calls: List<ChatBubble>) {
-    var expanded by remember(calls.map { it.id }) { mutableStateOf(calls.any { !it.toolDone }) }
+    var expanded by remember(calls.first().id) { mutableStateOf(false) }
     val names = calls.mapNotNull { it.toolName }.distinct()
     val failed = calls.count { it.toolSuccess == false }
     val running = calls.any { !it.toolDone }
+    val label = if (calls.size == 1) names.firstOrNull() ?: "工具调用" else {
+        "${calls.size} 次工具调用 · ${names.take(2).joinToString(" / ")}"
+    }
     Column(
-        Modifier.fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .background(CloverToolBg)
+        Modifier.fillMaxWidth().padding(start = 14.dp),
     ) {
         Row(
-            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 12.dp, vertical = 10.dp),
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Box(
+                Modifier.size(7.dp).clip(CircleShape).background(
+                    when {
+                        failed > 0 -> CloverError
+                        running -> CloverAccent
+                        else -> CloverLeaf
+                    },
+                ),
+            )
+            Spacer(Modifier.width(9.dp))
             Text(
-                if (calls.size == 1) calls.first().toolName ?: "Tool call" else "${calls.size} tool calls",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
+                label,
+                style = MaterialTheme.typography.bodySmall,
+                color = CloverText2,
                 modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 when {
-                    running -> "Running"
-                    failed > 0 -> "$failed failed"
-                    else -> "Completed"
+                    running -> "运行中"
+                    failed > 0 -> "$failed 失败"
+                    else -> "完成"
                 },
                 color = if (failed > 0) CloverError else CloverText3,
                 style = MaterialTheme.typography.labelSmall,
             )
             Icon(
                 if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = if (expanded) "Collapse tool calls" else "Expand tool calls",
+                contentDescription = if (expanded) "收起工具详情" else "展开工具详情",
                 tint = CloverText2,
-                modifier = Modifier.padding(start = 6.dp),
+                modifier = Modifier.padding(start = 6.dp).size(18.dp),
             )
         }
-        Text(
-            names.joinToString(" · ").ifBlank { "Tool activity" },
-            style = MaterialTheme.typography.bodySmall,
-            color = CloverText2,
-            modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
         AnimatedVisibility(visible = expanded) {
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 4.dp).padding(bottom = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                Modifier.fillMaxWidth().padding(start = 15.dp, bottom = 6.dp)
+                    .border(1.dp, CloverLine, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 calls.forEachIndexed { index, call ->
-                    if (index > 0) HorizontalDivider(color = CloverLine.copy(alpha = .65f), modifier = Modifier.padding(horizontal = 12.dp))
-                    ToolBubble(call, inGroup = true)
+                    if (index > 0) HorizontalDivider(color = CloverLine.copy(alpha = .65f))
+                    Text(call.toolName ?: "tool", style = MaterialTheme.typography.labelMedium, color = CloverText2)
+                    call.toolArgs?.takeIf { it.isNotBlank() }?.let { Text("输入", style = MaterialTheme.typography.labelSmall, color = CloverText3); MonoBlock(it) }
+                    call.toolOutput?.takeIf { it.isNotBlank() }?.let { Text(if (call.toolSuccess == false) "错误" else "结果", style = MaterialTheme.typography.labelSmall, color = CloverText3); MonoBlock(it) }
                 }
             }
         }
@@ -554,48 +570,16 @@ private fun ToolCallGroup(calls: List<ChatBubble>) {
 
 @Composable
 private fun ChatProgressPanel(steps: List<ChatProgressStep>, isResponding: Boolean) {
-    if (steps.isEmpty()) return
-    Column(
+    if (!isResponding || steps.isEmpty()) return
+    val current = steps.lastOrNull { it.status == ProgressStatus.Active } ?: steps.last()
+    Row(
         Modifier.fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(MaterialTheme.shapes.medium)
-            .background(CloverSurface)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (isResponding) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
-                    color = CloverAccent,
-                )
-            } else {
-                Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = CloverAccent, modifier = Modifier.size(16.dp))
-            }
-            Text(
-                if (isResponding) "Working on your request" else "Recent activity",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = CloverText2,
-            )
-        }
-        steps.takeLast(3).forEach { step ->
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (step.status) {
-                    ProgressStatus.Active -> Box(Modifier.size(7.dp).clip(CircleShape).background(CloverAccent))
-                    ProgressStatus.Complete -> Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = CloverLeaf, modifier = Modifier.size(14.dp))
-                    ProgressStatus.Failed -> Icon(Icons.Outlined.ErrorOutline, contentDescription = null, tint = CloverError, modifier = Modifier.size(14.dp))
-                }
-                Text(
-                    step.label,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (step.status == ProgressStatus.Failed) CloverError else CloverText2,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
+        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = CloverAccent)
+        Text(current.label, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
