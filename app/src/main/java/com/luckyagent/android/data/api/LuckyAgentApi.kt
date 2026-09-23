@@ -182,16 +182,36 @@ class LuckyAgentApi(
             }
         }
 
-    suspend fun memoryGraph(limit: Int = 120): Result<MemoryGraphResponse> = withContext(Dispatchers.IO) {
+    suspend fun memoryGraph(limit: Int = 300, includeIsolated: Boolean = false): Result<MemoryGraphResponse> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder()
-                .url(url("/api/v1/memory/graph", mapOf("limit" to limit.toString())))
+                .url(url("/api/v1/memory/graph", buildMap {
+                    put("limit", limit.toString())
+                    if (includeIsolated) put("isolated", "1")
+                }))
                 .get()
                 .build()
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) error("memory graph ${resp.code}: $body")
                 json.decodeFromString(MemoryGraphResponse.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun memoryRecallTrace(query: String, graphDepth: Int): Result<MemorySearchTrace> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(url("/api/v1/memory/recall/trace", mapOf(
+                    "q" to query.trim(),
+                    "graph_depth" to graphDepth.coerceIn(1, 3).toString(),
+                )))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("memory trace ${resp.code}: $body")
+                json.decodeFromString(MemorySearchTrace.serializer(), body)
             }
         }
     }

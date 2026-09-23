@@ -8,6 +8,8 @@ import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.api.MemoryGraphEdge
 import com.luckyagent.android.data.api.MemoryGraphNode
 import com.luckyagent.android.data.api.MemoryStats
+import com.luckyagent.android.data.api.MemorySearchTrace
+import com.luckyagent.android.data.api.ReceivedMemoryTrace
 import com.luckyagent.android.data.api.CommandExecution
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.RuntimeCommand
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -77,6 +80,13 @@ data class AppUiState(
     val memoryGraphNodes: List<MemoryGraphNode> = emptyList(),
     val memoryGraphEdges: List<MemoryGraphEdge> = emptyList(),
     val memoryGraphSummary: String? = null,
+    val memoryGraphIsolated: Boolean = false,
+    val memoryTraceQuery: String = "",
+    val memoryTraceDepth: Int = 1,
+    val memoryTrace: MemorySearchTrace? = null,
+    val memoryTraceLoading: Boolean = false,
+    val memoryTraceError: String? = null,
+    val memoryLiveTraces: List<ReceivedMemoryTrace> = emptyList(),
     val memoryQuery: String = "project",
     val memoryLoading: Boolean = false,
     val memoryError: String? = null,
@@ -267,7 +277,19 @@ class AppViewModel(
 
     private fun handleToolResult(data: kotlinx.serialization.json.JsonElement?) {
         val name = extractToolName(data) ?: "tool"
-        if (name == "__memory_trace") return
+        if (name == "__memory_trace") {
+            val rawElement = (data as? JsonObject)?.get("output") ?: (data as? JsonObject)?.get("display")
+            val raw = when (rawElement) {
+                is JsonPrimitive -> rawElement.contentOrNull
+                is JsonObject, is JsonArray -> rawElement.toString()
+                else -> extractText(data)
+            }
+            val trace = raw?.let { runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(MemorySearchTrace.serializer(), it) }.getOrNull() }
+            if (trace != null) {
+                _ui.update { it.copy(memoryLiveTraces = (listOf(ReceivedMemoryTrace(trace, System.currentTimeMillis())) + it.memoryLiveTraces).take(20)) }
+            }
+            return
+        }
         val stepId = extractField(data, "step_id").orEmpty()
         val output = extractField(data, "output")
             ?: extractField(data, "display")
@@ -701,7 +723,7 @@ class AppViewModel(
             val q = _ui.value.memoryQuery
             val stats = container.api.memoryStats()
             val recall = container.api.recallMemory(q)
-            val graph = container.api.memoryGraph()
+            val graph = container.api.memoryGraph(includeIsolated = _ui.value.memoryGraphIsolated)
             _ui.update {
                 it.copy(
                     memoryLoading = false,
@@ -710,7 +732,7 @@ class AppViewModel(
                     memoryGraphNodes = graph.getOrNull()?.nodes.orEmpty(),
                     memoryGraphEdges = graph.getOrNull()?.edges.orEmpty(),
                     memoryGraphSummary = graph.getOrNull()?.let { g ->
-                        "nodes=${g.nodes.size} edges=${g.edges.size} notes=${g.totalNotes ?: "?"} unresolved=${g.unresolved ?: 0}" +
+                        "nodes=${g.nodes.size} edges=${g.edges.size} isolated=${g.isolatedCount ?: 0} notes=${g.totalNotes ?: "?"} unresolved=${g.unresolved ?: 0}" +
                             if (g.truncated == true) " truncated" else ""
                     },
                     memoryError = recall.exceptionOrNull()?.message
@@ -719,6 +741,42 @@ class AppViewModel(
                 )
             }
         }
+    }
+
+    fun updateMemoryTraceQuery(value: String) { _ui.update { it.copy(memoryTraceQuery = value) } }
+
+    fun setMemoryTraceDepth(value: Int) { _ui.update { it.copy(memoryTraceDepth = value.coerceIn(1, 3)) } }
+
+    fun setMemoryGraphIsolated(value: Boolean) {
+        _ui.update { it.copy(memoryGraphIsolated = value, memoryLoading = true, memoryError = null) }
+        viewModelScope.launch {
+            val graph = container.api.memoryGraph(includeIsolated = value)
+            _ui.update { current ->
+                val result = graph.getOrNull()
+                current.copy(
+                    memoryLoading = false,
+                    memoryGraphNodes = result?.nodes ?: current.memoryGraphNodes,
+                    memoryGraphEdges = result?.edges ?: current.memoryGraphEdges,
+                    memoryGraphSummary = result?.let { "nodes=${it.nodes.size} edges=${it.edges.size} isolated=${it.isolatedCount ?: 0} notes=${it.totalNotes ?: "?"} unresolved=${it.unresolved ?: 0}" + if (it.truncated == true) " truncated" else "" },
+                    memoryError = graph.exceptionOrNull()?.message,
+                )
+            }
+        }
+    }
+
+    fun runMemoryTrace(query: String = _ui.value.memoryTraceQuery) {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        val depth = _ui.value.memoryTraceDepth
+        _ui.update { it.copy(memoryTraceQuery = q, memoryTraceLoading = true, memoryTraceError = null) }
+        viewModelScope.launch {
+            val result = container.api.memoryRecallTrace(q, depth)
+            _ui.update { it.copy(memoryTraceLoading = false, memoryTrace = result.getOrNull(), memoryTraceError = result.exceptionOrNull()?.message) }
+        }
+    }
+
+    fun selectMemoryTrace(trace: MemorySearchTrace?) {
+        _ui.update { it.copy(memoryTrace = trace, memoryTraceError = null) }
     }
 
 

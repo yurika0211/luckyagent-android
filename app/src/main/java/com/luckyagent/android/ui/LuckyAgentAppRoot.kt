@@ -65,7 +65,6 @@ import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverBgSide
 import com.luckyagent.android.ui.theme.CloverLine
-import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
@@ -191,12 +190,13 @@ private fun NavigationDrawerContent(
             }
         }
         Row(
-            Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(CloverSurface).padding(12.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(if (state.socketState == com.luckyagent.android.data.api.SocketState.Connected || state.socketState == com.luckyagent.android.data.api.SocketState.Running) CloverAccent else CloverText3))
             Column(Modifier.weight(1f)) {
-                Text("Connection", style = MaterialTheme.typography.labelMedium, color = CloverText3)
-                Text(state.settings.apiBase.ifBlank { "Set runtime endpoint" }, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 2)
+                Text("Connection", style = MaterialTheme.typography.labelMedium, color = CloverText3, modifier = Modifier.padding(start = 10.dp))
+                Text(state.settings.apiBase.ifBlank { "Set runtime endpoint" }, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 2, modifier = Modifier.padding(start = 10.dp))
             }
             Text(state.socketState.name.lowercase(), style = MaterialTheme.typography.labelSmall, color = CloverAccent)
         }

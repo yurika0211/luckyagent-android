@@ -1,7 +1,5 @@
 package com.luckyagent.android.ui.components
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -21,10 +19,10 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
-import com.luckyagent.android.ui.theme.CloverLine
+import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
@@ -43,7 +41,7 @@ fun ScreenHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 24.dp, vertical = 20.dp),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
@@ -51,12 +49,13 @@ fun ScreenHeader(
             Text(
                 text = eyebrow.uppercase(),
                 style = MaterialTheme.typography.labelSmall,
-                color = CloverText3,
+                color = CloverAccent,
                 fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.2.sp,
             )
             Text(
                 text = title,
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp, lineHeight = 34.sp),
                 color = MaterialTheme.colorScheme.onBackground,
             )
             if (!subtitle.isNullOrBlank()) {
@@ -87,22 +86,29 @@ fun CloverCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .background(CloverSurface)
-            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        content = content,
-    )
+        modifier = modifier,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.large,
+            color = CloverSurface,
+            tonalElevation = 0.dp,
+            shadowElevation = 2.dp,
+        ) {
+            Column(
+                Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                content = content,
+            )
+        }
+    }
 }
 
 @Composable
 fun MetaChip(text: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
-        color = CloverSurface2,
+        color = CloverSurface2.copy(alpha = 0.82f),
         shape = RoundedCornerShape(999.dp),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
@@ -121,9 +127,7 @@ fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .border(1.dp, CloverLine, MaterialTheme.shapes.medium)
-            .padding(20.dp),
+            .padding(horizontal = 8.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(title, style = MaterialTheme.typography.titleMedium)

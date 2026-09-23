@@ -183,6 +183,61 @@ data class MemoryGraphEdge(
 )
 
 @Serializable
+data class MemoryTraceNode(
+    val id: String,
+    val ref: String? = null,
+    val category: String? = null,
+    val tier: String? = null,
+    val score: Double? = null,
+    @SerialName("direct_score") val directScore: Double? = null,
+    @SerialName("graph_score") val graphScore: Double? = null,
+    @SerialName("content_preview") val contentPreview: String? = null,
+    val rank: Int? = null,
+)
+
+@Serializable
+data class MemoryTraceHop(
+    val depth: Int,
+    @SerialName("from_id") val fromId: String,
+    @SerialName("from_ref") val fromRef: String? = null,
+    @SerialName("to_id") val toId: String,
+    @SerialName("to_ref") val toRef: String? = null,
+    val via: String? = null,
+    val kind: String? = null,
+    val weight: Double? = null,
+    val boost: Double? = null,
+    @SerialName("source_score") val sourceScore: Double? = null,
+    @SerialName("target_score") val targetScore: Double? = null,
+)
+
+@Serializable
+data class MemoryTraceFilters(
+    val category: String? = null,
+    val tier: String? = null,
+    @SerialName("include_inactive") val includeInactive: Boolean? = null,
+    @SerialName("include_expired") val includeExpired: Boolean? = null,
+    @SerialName("as_of") val asOf: String? = null,
+)
+
+@Serializable
+data class MemorySearchTrace(
+    val query: String = "",
+    val mode: String? = null,
+    val source: String? = null,
+    val limit: Int? = null,
+    @SerialName("graph_depth") val graphDepth: Int = 1,
+    val filters: MemoryTraceFilters? = null,
+    val seeds: List<MemoryTraceNode> = emptyList(),
+    val hops: List<MemoryTraceHop> = emptyList(),
+    val results: List<MemoryTraceNode> = emptyList(),
+    @SerialName("temporal_notes") val temporalNotes: List<String> = emptyList(),
+    val warnings: List<String> = emptyList(),
+    @SerialName("duration_ms") val durationMs: Long? = null,
+)
+
+data class ReceivedMemoryTrace(val trace: MemorySearchTrace, val receivedAt: Long)
+
+@Serializable
 data class ToolTraceRecord(
     val name: String = "",
     val arguments: String? = null,
