@@ -8,7 +8,6 @@ import com.luckyagent.android.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 
 data class ClientSettings(
     val apiBase: String = BuildConfig.DEFAULT_API_BASE,
@@ -48,15 +47,24 @@ class SettingsRepository(context: Context) {
     )
 
     fun update(transform: (ClientSettings) -> ClientSettings) {
-        val next = transform(_settings.value)
-        prefs.edit()
-            .putString(KEY_API_BASE, next.apiBase.trim().trimEnd('/'))
-            .putString(KEY_API_KEY, next.apiKey.trim())
-            .putString(KEY_SESSION, next.sessionId.trim().ifEmpty { "android-main" })
-            .putBoolean(KEY_USE_BEARER, next.useBearer)
-            .putString(KEY_WS_URL, next.wsUrl.trim())
-            .apply()
-        _settings.update { read() }
+        val previous = _settings.value
+        val next = transform(previous).let {
+            it.copy(
+                apiBase = it.apiBase.trim().trimEnd('/'),
+                apiKey = it.apiKey.trim(),
+                sessionId = it.sessionId.trim().ifEmpty { "android-main" },
+                wsUrl = it.wsUrl.trim(),
+            )
+        }
+        if (next == previous) return
+        prefs.edit().apply {
+            if (next.apiBase != previous.apiBase) putString(KEY_API_BASE, next.apiBase)
+            if (next.apiKey != previous.apiKey) putString(KEY_API_KEY, next.apiKey)
+            if (next.sessionId != previous.sessionId) putString(KEY_SESSION, next.sessionId)
+            if (next.useBearer != previous.useBearer) putBoolean(KEY_USE_BEARER, next.useBearer)
+            if (next.wsUrl != previous.wsUrl) putString(KEY_WS_URL, next.wsUrl)
+        }.apply()
+        _settings.value = next
     }
 
     fun snapshot(): ClientSettings = _settings.value

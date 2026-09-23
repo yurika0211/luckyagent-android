@@ -6,7 +6,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,11 +59,15 @@ import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.math.*
 
 private data class GraphPoint(val x: Float, val y: Float)
+private data class PositionedNode(val node: MemoryGraphNode, val center: Offset, val radius: Float, val label: String)
+private data class PositionedEdge(val edge: MemoryGraphEdge, val index: Int, val from: Offset, val to: Offset)
 
 @Composable
 fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
@@ -185,12 +191,12 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
                         DetailPanel(selectedNode, traceInfo[selectedId], neighbors, onSelect = { selectedId = it }, modifier = Modifier.weight(1f).fillMaxHeight())
                     }
                 }
-                item { RecallResults(state.memoryEntries, state.memoryQuery, vm) }
+                memoryRecallItems(state, vm)
             }
             else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 item { GraphPanel(nodes, state.memoryGraphEdges, graphSearch, revealedDepth, revealedEdges, selectedId, onSelect = { selectedId = if (selectedId == it) null else it }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(370.dp)) }
                 item { DetailPanel(selectedNode, traceInfo[selectedId], neighbors, onSelect = { selectedId = it }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
-                item { RecallResults(state.memoryEntries, state.memoryQuery, vm) }
+                memoryRecallItems(state, vm)
             }
         }
     }
@@ -226,6 +232,44 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
         val cap = if (nodes.size > 120) 14 else if (nodes.size > 40) 20 else nodes.size
         nodes.sortedByDescending { it.degree ?: 0 }.take(cap).filter { (it.degree ?: 0) > 0 }.mapTo(hashSetOf()) { it.id }
     }
+    val positionedNodes = remember(nodes, positions) {
+        nodes.mapNotNull { node ->
+            positions[node.id]?.let { point ->
+                val radius = (6f + sqrt((node.degree ?: 0).toFloat()) * 3.4f).coerceAtMost(26f)
+                val title = node.title ?: node.id
+                PositionedNode(node, Offset(point.x, point.y), radius, if (title.length > 22) title.take(21) + "…" else title)
+            }
+        }
+    }
+    val positionedEdges = remember(edges, positions) {
+        edges.mapIndexedNotNull { index, edge ->
+            val from = positions[edge.source] ?: return@mapIndexedNotNull null
+            val to = positions[edge.target] ?: return@mapIndexedNotNull null
+            PositionedEdge(edge, index, Offset(from.x, from.y), Offset(to.x, to.y))
+        }
+    }
+    val traceEdgeDepths = remember(edges, revealedEdges) {
+        IntArray(edges.size) { index ->
+            val edge = edges[index]
+            revealedEdges["${edge.source}|${edge.target}"] ?: revealedEdges["${edge.target}|${edge.source}"] ?: -1
+        }
+    }
+    val searchTerm = remember(search) { search.trim().lowercase() }
+    val searchMatches = remember(nodes, searchTerm) {
+        if (searchTerm.isEmpty()) emptySet() else nodes.filter { node ->
+            sequenceOf(node.title.orEmpty(), node.category.orEmpty()).any { it.contains(searchTerm, ignoreCase = true) } ||
+                node.tags.any { it.contains(searchTerm, ignoreCase = true) }
+        }.mapTo(hashSetOf()) { it.id }
+    }
+    val labelPaint = remember {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 30f
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+    }
+    val unresolvedStroke = remember { androidx.compose.ui.graphics.drawscope.Stroke(2f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(5f, 4f))) }
+    val selectedUnresolvedStroke = remember { androidx.compose.ui.graphics.drawscope.Stroke(3f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(5f, 4f))) }
+    val selectedStroke = remember { androidx.compose.ui.graphics.drawscope.Stroke(3f) }
     LaunchedEffect(nodes, edges) { positions = withContext(Dispatchers.Default) { forceLayout(nodes, edges) } }
     Column(modifier.shadow(2.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(CloverSurface)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -236,42 +280,51 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
         }
         val zoomState = rememberUpdatedState(zoom)
         val panState = rememberUpdatedState(pan)
-        Canvas(Modifier.weight(1f).fillMaxWidth().pointerInput(nodes, positions) {
+        val onSelectState = rememberUpdatedState(onSelect)
+        Canvas(Modifier.weight(1f).fillMaxWidth().pointerInput(Unit) {
             detectTransformGestures { centroid, gesturePan, gestureZoom, _ ->
                 val next = (zoomState.value * gestureZoom).coerceIn(.35f, 4f)
                 pan = (panState.value - centroid) * (next / zoomState.value) + centroid + gesturePan
                 zoom = next
             }
-        }.pointerInput(nodes, positions, zoom, pan) {
+        }.pointerInput(positionedNodes) {
             detectTapGestures { tap ->
-                val scale = min(size.width / 1200f, size.height / 820f) * zoom
-                val x = (tap.x - size.width / 2f - pan.x) / scale + 600f
-                val y = (tap.y - size.height / 2f - pan.y) / scale + 410f
-                val hit = nodes.minByOrNull { n -> positions[n.id]?.let { hypot(it.x - x, it.y - y) } ?: Float.MAX_VALUE }
-                val hitDistance = hit?.let { positions[it.id]?.let { point -> hypot(point.x - x, point.y - y) } } ?: 999f
-                if (hit != null && hitDistance < 36f) onSelect(hit.id)
+                val scale = min(size.width / 1200f, size.height / 820f) * zoomState.value
+                val x = (tap.x - size.width / 2f - panState.value.x) / scale + 600f
+                val y = (tap.y - size.height / 2f - panState.value.y) / scale + 410f
+                val hit = positionedNodes.minByOrNull { hypot(it.center.x - x, it.center.y - y) }
+                if (hit != null && hypot(hit.center.x - x, hit.center.y - y) < 36f) onSelectState.value(hit.node.id)
             }
         }) {
             val scaleFactor = min(size.width / 1200f, size.height / 820f) * zoom
-            val found = search.trim().lowercase()
+            val left = 600f - (size.width / 2f + pan.x) / scaleFactor
+            val right = 600f + (size.width / 2f - pan.x) / scaleFactor
+            val top = 410f - (size.height / 2f + pan.y) / scaleFactor
+            val bottom = 410f + (size.height / 2f - pan.y) / scaleFactor
             withTransform({ translate(size.width / 2f + pan.x - 600f * scaleFactor, size.height / 2f + pan.y - 410f * scaleFactor); scale(scaleFactor, scaleFactor, Offset.Zero) }) {
-                edges.forEach { edge ->
-                    val a = positions[edge.source] ?: return@forEach
-                    val b = positions[edge.target] ?: return@forEach
-                    val traceHopDepth = revealedEdges["${edge.source}|${edge.target}"] ?: revealedEdges["${edge.target}|${edge.source}"]
+                positionedEdges.forEach { item ->
+                    val edge = item.edge
+                    val a = item.from
+                    val b = item.to
+                    if ((a.x < left && b.x < left) || (a.x > right && b.x > right) ||
+                        (a.y < top && b.y < top) || (a.y > bottom && b.y > bottom)) return@forEach
+                    val traceHopDepth = traceEdgeDepths[item.index]
                     val color = when {
-                        revealed.isNotEmpty() && traceHopDepth == null -> CloverLine.copy(alpha = .22f)
-                        traceHopDepth != null -> traceColor(traceHopDepth)
+                        revealed.isNotEmpty() && traceHopDepth < 0 -> CloverLine.copy(alpha = .22f)
+                        traceHopDepth >= 0 -> traceColor(traceHopDepth)
                         focusIds.isNotEmpty() && (edge.source !in focusIds || edge.target !in focusIds) -> CloverLine.copy(alpha = .22f)
                         else -> CloverLine.copy(alpha = .75f)
                     }
-                    drawLine(color, Offset(a.x, a.y), Offset(b.x, b.y), strokeWidth = (edge.weight ?: 1).toFloat().coerceIn(1f, 4f))
+                    drawLine(color, a, b, strokeWidth = (edge.weight ?: 1).toFloat().coerceIn(1f, 4f))
                 }
-                nodes.forEach { node ->
-                    val p = positions[node.id] ?: return@forEach
+                positionedNodes.forEach { item ->
+                    val node = item.node
+                    val p = item.center
+                    val radius = item.radius
+                    if (p.x + radius + 30f < left || p.x - radius - 30f > right ||
+                        p.y + radius + 30f < top || p.y - radius - 30f > bottom) return@forEach
                     val degree = node.degree ?: 0
-                    val radius = (6f + sqrt(degree.toFloat()) * 3.4f).coerceAtMost(26f)
-                    val isMatch = found.isNotBlank() && (node.title.orEmpty() + " " + node.category.orEmpty() + " " + node.tags.joinToString(" ")).lowercase().contains(found)
+                    val isMatch = node.id in searchMatches
                     val isSelected = selected == node.id
                     val fill = when {
                         revealed[node.id] == 0 -> Color(0xFF70D7BD)
@@ -281,14 +334,21 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
                         degree >= 3 -> CloverAccent
                         else -> Color(0xFF74839B)
                     }
-                    val alpha = if ((found.isNotBlank() && !isMatch) || (focusIds.isNotEmpty() && node.id !in focusIds)) .28f else 1f
-                    drawCircle(if (node.resolved == false) Color.Transparent else fill.copy(alpha = alpha), radius, Offset(p.x, p.y))
-                    drawCircle(if (node.resolved == false) CloverAccent.copy(alpha = alpha) else fill.copy(alpha = alpha), radius, Offset(p.x, p.y), style = androidx.compose.ui.graphics.drawscope.Stroke(if (isSelected) 3f else if (node.resolved == false) 2f else 0f, pathEffect = if (node.resolved == false) androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(5f, 4f)) else null))
+                    val alpha = if ((searchTerm.isNotEmpty() && !isMatch) || (focusIds.isNotEmpty() && node.id !in focusIds)) .28f else 1f
+                    if (node.resolved != false) drawCircle(fill.copy(alpha = alpha), radius, p)
+                    if (isSelected || node.resolved == false) {
+                        val outline = when {
+                            node.resolved != false -> selectedStroke
+                            isSelected -> selectedUnresolvedStroke
+                            else -> unresolvedStroke
+                        }
+                        drawCircle(if (node.resolved == false) CloverAccent.copy(alpha = alpha) else fill.copy(alpha = alpha), radius, p, style = outline)
+                    }
                     if (isSelected || isMatch || node.id in standingLabels || revealed[node.id] != null) {
                         drawIntoCanvas { canvas ->
-                            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = CloverText2.toArgb(); textSize = 30f; textAlign = android.graphics.Paint.Align.CENTER; this.alpha = (alpha * 255).roundToInt() }
-                            val label = (node.title ?: node.id).let { if (it.length > 22) it.take(21) + "…" else it }
-                            canvas.nativeCanvas.drawText(label, p.x, p.y + radius + 28f, paint)
+                            labelPaint.color = CloverText2.toArgb()
+                            labelPaint.alpha = (alpha * 255).roundToInt()
+                            canvas.nativeCanvas.drawText(item.label, p.x, p.y + radius + 28f, labelPaint)
                         }
                     }
                 }
@@ -312,17 +372,19 @@ private fun LegendDot(label: String, color: Color, dashed: Boolean = false) {
     }
 }
 
-private fun forceLayout(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge>): Map<String, GraphPoint> {
+private suspend fun forceLayout(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge>): Map<String, GraphPoint> {
     if (nodes.isEmpty()) return emptyMap()
     val index = nodes.mapIndexed { i, n -> n.id to i }.toMap()
     val count = nodes.size
     val x = FloatArray(count) { i -> 600f + cos(i * 2.39996).toFloat() * (70f + sqrt(i.toFloat()) * 26f) }
     val y = FloatArray(count) { i -> 410f + sin(i * 2.39996).toFloat() * (48f + sqrt(i.toFloat()) * 19f) }
     val vx = FloatArray(count); val vy = FloatArray(count)
+    val fx = FloatArray(count); val fy = FloatArray(count)
     val links = edges.mapNotNull { e -> val a = index[e.source]; val b = index[e.target]; if (a == null || b == null) null else a to b }
     val iterations = if (count > 220) 100 else 180
     for (step in 0 until iterations) {
-        val fx = FloatArray(count); val fy = FloatArray(count)
+        if (step % 16 == 0) currentCoroutineContext().ensureActive()
+        fx.fill(0f); fy.fill(0f)
         for (i in 0 until count) for (j in i + 1 until count) {
             val dx = x[i] - x[j]; val dy = y[i] - y[j]
             val d2 = (dx * dx + dy * dy).coerceAtLeast(20f); val force = 7000f / d2
@@ -391,15 +453,21 @@ private fun DetailPanel(node: MemoryGraphNode?, traceNode: MemoryTraceNode?, nei
 
 @Composable private fun TraceLayerRow(title: String, content: String, selected: Boolean, onClick: () -> Unit) { Surface(onClick = onClick, color = if (selected) CloverAccent.copy(alpha = .12f) else CloverSurface2, shape = RoundedCornerShape(8.dp)) { Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) { Text(title, fontWeight = FontWeight.SemiBold, color = CloverAccent, style = MaterialTheme.typography.labelSmall); Text(content.ifBlank { "(none matched directly)" }, color = CloverText2, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) } } }
 
-@Composable private fun RecallResults(entries: List<MemoryEntry>, query: String, vm: AppViewModel) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("Recall query…", color = CloverText3); inner() })
-            IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Search, contentDescription = "Recall") }
-            Text("${entries.size} results", style = MaterialTheme.typography.titleSmall, color = CloverText2)
-        }
-        if (entries.isEmpty()) EmptyState("No memories matched", "Try another recall query. Write/remember stays on the host runtime.")
-        entries.forEach { MemoryEntryCard(it) }
+private fun LazyListScope.memoryRecallItems(state: AppUiState, vm: AppViewModel) {
+    item(key = "recall-search") { RecallSearchBar(state.memoryQuery, state.memoryEntries.size, vm) }
+    if (state.memoryEntries.isEmpty() && !state.memoryLoading && state.memoryError == null) {
+        item(key = "recall-empty") { EmptyState("No memories matched", "Try another recall query. Write/remember stays on the host runtime.", Modifier.padding(horizontal = 16.dp)) }
+    }
+    itemsIndexed(state.memoryEntries, key = { index, entry -> entry.id?.let { "memory-$it" } ?: "memory-index-$index" }) { _, entry ->
+        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) { MemoryEntryCard(entry) }
+    }
+}
+
+@Composable private fun RecallSearchBar(query: String, count: Int, vm: AppViewModel) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("Recall query…", color = CloverText3); inner() })
+        IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Search, contentDescription = "Recall") }
+        Text("$count results", style = MaterialTheme.typography.titleSmall, color = CloverText2)
     }
 }
 
