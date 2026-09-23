@@ -3,10 +3,13 @@ package com.luckyagent.android.data.api
 import com.luckyagent.android.data.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
 import java.util.concurrent.TimeUnit
 
@@ -20,7 +23,6 @@ class LuckyAgentApi(
     }
 
     private val logging = HttpLoggingInterceptor().apply {
-        // BASIC: never dump Authorization / body secrets at BODY level by default
         level = HttpLoggingInterceptor.Level.BASIC
     }
 
@@ -45,14 +47,15 @@ class LuckyAgentApi(
         .addInterceptor(logging)
         .build()
 
+    private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+
     private fun baseUrl(): String =
         settingsRepository.snapshot().apiBase.trim().trimEnd('/')
 
     private fun url(path: String, query: Map<String, String> = emptyMap()): String {
-        val base = baseUrl()
-        val raw = if (path.startsWith("http")) path else "$base$path"
+        val raw = baseUrl().trimEnd('/') + "/" + path.trimStart('/')
         val http = raw.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("Invalid API base or path: $raw")
+            ?: error("Invalid API base / path: $raw")
         val builder = http.newBuilder()
         query.forEach { (k, v) -> builder.addQueryParameter(k, v) }
         return builder.build().toString()
@@ -80,6 +83,44 @@ class LuckyAgentApi(
             }
         }
     }
+
+    suspend fun createSession(title: String = "Android session"): Result<RuntimeSession> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = json.encodeToString(SessionCreateRequest(title = title))
+                val request = Request.Builder()
+                    .url(url("/api/v1/sessions"))
+                    .post(payload.toRequestBody(jsonMedia))
+                    .header("Content-Type", "application/json")
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("create session ${resp.code}: $body")
+                    json.decodeFromString(RuntimeSession.serializer(), body)
+                }
+            }
+        }
+
+    suspend fun renameSession(id: String, title: String): Result<RuntimeSession> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = json.encodeToString(SessionPatchRequest(title = title))
+                val request = Request.Builder()
+                    .url(url("/api/v1/sessions/$id"))
+                    .patch(payload.toRequestBody(jsonMedia))
+                    .header("Content-Type", "application/json")
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("rename session ${resp.code}: $body")
+                    runCatching {
+                        json.decodeFromString(RuntimeSession.serializer(), body)
+                    }.getOrElse {
+                        RuntimeSession(id = id, title = title)
+                    }
+                }
+            }
+        }
 
     suspend fun sessionHistory(sessionId: String, limit: Int = 100): Result<SessionHistory> =
         withContext(Dispatchers.IO) {
@@ -151,6 +192,59 @@ class LuckyAgentApi(
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) error("memory graph ${resp.code}: $body")
                 json.decodeFromString(MemoryGraphResponse.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun sessionToolTrace(sessionId: String): Result<SessionToolTrace> = withContext(Dispatchers.IO) {
+        runCatching {
+            val id = sessionId.trim()
+            require(id.isNotEmpty()) { "session id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/sessions/$id/tools"))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("trajectory ${resp.code}: $body")
+                json.decodeFromString(SessionToolTrace.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun listGateways(): Result<List<GatewayStatus>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val paths = listOf("/api/v1/gateways", "/api/v1/msg-gateway")
+            var lastError: Throwable? = null
+            for (p in paths) {
+                try {
+                    val request = Request.Builder().url(url(p)).get().build()
+                    client.newCall(request).execute().use { resp ->
+                        val body = resp.body?.string().orEmpty()
+                        if (!resp.isSuccessful) error("gateways ${resp.code}: $body")
+                        val decoded = json.decodeFromString(GatewaysResponse.serializer(), body)
+                        val list = when {
+                            decoded.gateways.isNotEmpty() -> decoded.gateways
+                            decoded.items.isNotEmpty() -> decoded.items
+                            else -> emptyList()
+                        }
+                        return@runCatching list
+                    }
+                } catch (t: Throwable) {
+                    lastError = t
+                }
+            }
+            throw lastError ?: error("gateways unavailable")
+        }
+    }
+
+    suspend fun listSkills(): Result<SkillsResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/skills")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("skills ${resp.code}: $body")
+                json.decodeFromString(SkillsResponse.serializer(), body)
             }
         }
     }

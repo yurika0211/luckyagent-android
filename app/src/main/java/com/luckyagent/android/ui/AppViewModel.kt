@@ -10,6 +10,10 @@ import com.luckyagent.android.data.api.MemoryGraphNode
 import com.luckyagent.android.data.api.MemoryStats
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.data.api.SessionToolTrace
+import com.luckyagent.android.data.api.GatewayStatus
+import com.luckyagent.android.data.api.SkillSummary
+import com.luckyagent.android.data.api.SkillsResponse
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.data.settings.ClientSettings
 import kotlinx.coroutines.Job
@@ -29,6 +33,8 @@ enum class AppDestination {
     Chat, Trajectory, Gateways, Skills, Settings, Memory
 }
 
+enum class TrajectoryFilter { All, Success, Failure }
+
 data class ChatBubble(
     val id: String,
     val role: String,
@@ -40,6 +46,7 @@ data class ChatBubble(
     val toolDone: Boolean = false,
     val toolSuccess: Boolean? = null,
     val stepId: String? = null,
+    val reasoning: String? = null,
 )
 
 data class AppUiState(
@@ -67,8 +74,27 @@ data class AppUiState(
     val skillsJson: String? = null,
     val gatewaysJson: String? = null,
     val trajectoryJson: String? = null,
+    val trajectory: SessionToolTrace? = null,
+    val trajectoryLoading: Boolean = false,
+    val trajectoryError: String? = null,
+    val trajectoryFilter: TrajectoryFilter = TrajectoryFilter.All,
+    val trajectoryQuery: String = "",
+    val gateways: List<GatewayStatus> = emptyList(),
+    val gatewaysLoading: Boolean = false,
+    val gatewaysError: String? = null,
+    val skills: List<SkillSummary> = emptyList(),
+    val skillsDir: String? = null,
+    val skillsLoading: Boolean = false,
+    val skillsError: String? = null,
+    val skillsQuery: String = "",
     val activityLine: String? = null,
     val drawerOpenHint: Boolean = false,
+    val suggestionPrompts: List<String> = listOf(
+        "Summarize the current session trajectory",
+        "What skills are loaded on this runtime?",
+        "Recall project decisions from memory",
+        "Check gateway status and recent errors",
+    ),
 )
 
 class AppViewModel(
@@ -394,6 +420,7 @@ class AppViewModel(
         apiKey: String,
         sessionId: String,
         useBearer: Boolean,
+        wsUrl: String = container.settingsRepository.snapshot().wsUrl,
     ) {
         container.settingsRepository.update {
             it.copy(
@@ -401,10 +428,31 @@ class AppViewModel(
                 apiKey = apiKey,
                 sessionId = sessionId,
                 useBearer = useBearer,
+                wsUrl = wsUrl,
             )
         }
         connectSocket()
         refreshSessions()
+    }
+
+    fun updateSettings(transform: (com.luckyagent.android.data.settings.ClientSettings) -> com.luckyagent.android.data.settings.ClientSettings) {
+        val prev = container.settingsRepository.snapshot()
+        container.settingsRepository.update(transform)
+        val next = container.settingsRepository.snapshot()
+        val endpointChanged =
+            prev.apiBase != next.apiBase ||
+                prev.wsUrl != next.wsUrl ||
+                prev.sessionId != next.sessionId ||
+                prev.apiKey != next.apiKey ||
+                prev.useBearer != next.useBearer
+        if (endpointChanged && (
+                prev.apiBase != next.apiBase ||
+                    prev.wsUrl != next.wsUrl ||
+                    prev.sessionId != next.sessionId
+                )
+        ) {
+            connectSocket()
+        }
     }
 
     fun probeHealth() {
@@ -483,6 +531,7 @@ class AppViewModel(
                 id = "h-$idx-${role.hashCode()}",
                 role = role,
                 content = base.ifBlank { reasoningContent.orEmpty() },
+                reasoning = reasoningContent?.takeIf { it.isNotBlank() && base.isNotBlank() },
             )
         }
     }
@@ -547,50 +596,146 @@ class AppViewModel(
         }
     }
 
+
+    fun updateTrajectoryQuery(value: String) {
+        _ui.update { it.copy(trajectoryQuery = value) }
+    }
+
+    fun setTrajectoryFilter(filter: TrajectoryFilter) {
+        _ui.update { it.copy(trajectoryFilter = filter) }
+    }
+
+    fun updateSkillsQuery(value: String) {
+        _ui.update { it.copy(skillsQuery = value) }
+    }
+
+    fun applySuggestion(text: String) {
+        _ui.update { it.copy(composer = text) }
+    }
+
+    fun createSession(title: String = "Android session") {
+        viewModelScope.launch {
+            val result = container.api.createSession(title)
+            result.onSuccess { session ->
+                container.settingsRepository.update { it.copy(sessionId = session.id) }
+                assistantBufferId = null
+                toolStepIndex.clear()
+                _ui.update {
+                    it.copy(
+                        bubbles = emptyList(),
+                        activityLine = "new session · ${session.id}",
+                    )
+                }
+                connectSocket()
+                refreshSessions()
+            }.onFailure { e ->
+                _ui.update { it.copy(activityLine = "create session: ${e.message}") }
+            }
+        }
+    }
+
+    fun renameSession(id: String, title: String) {
+        val trimmed = title.trim()
+        if (id.isBlank() || trimmed.isEmpty()) return
+        viewModelScope.launch {
+            val result = container.api.renameSession(id, trimmed)
+            result.onSuccess {
+                _ui.update { it.copy(activityLine = "renamed · $trimmed") }
+                refreshSessions()
+            }.onFailure { e ->
+                _ui.update { it.copy(activityLine = "rename: ${e.message}") }
+            }
+        }
+    }
+
     fun refreshSkills() {
         viewModelScope.launch {
-            val result = container.api.getJson("/api/v1/skills")
+            _ui.update { it.copy(skillsLoading = true, skillsError = null) }
+            val result = container.api.listSkills()
             _ui.update {
-                it.copy(skillsJson = result.getOrElse { e -> e.message ?: "failed" })
+                if (result.isSuccess) {
+                    val payload = result.getOrNull() ?: SkillsResponse()
+                    it.copy(
+                        skillsLoading = false,
+                        skills = payload.skills,
+                        skillsDir = payload.skillsDir,
+                        skillsJson = null,
+                        skillsError = null,
+                        activityLine = "skills · ${payload.skills.size}",
+                    )
+                } else {
+                    it.copy(
+                        skillsLoading = false,
+                        skillsError = result.exceptionOrNull()?.message,
+                        skillsJson = result.exceptionOrNull()?.message,
+                    )
+                }
             }
         }
     }
 
     fun refreshGateways() {
         viewModelScope.launch {
-            val paths = listOf("/api/v1/gateways", "/api/v1/msg-gateway", "/api/data")
-            var body: String? = null
-            var err: String? = null
-            for (p in paths) {
-                val r = container.api.getJson(p)
-                if (r.isSuccess) {
-                    body = r.getOrNull()
-                    break
+            _ui.update { it.copy(gatewaysLoading = true, gatewaysError = null) }
+            val result = container.api.listGateways()
+            _ui.update {
+                if (result.isSuccess) {
+                    val list = result.getOrDefault(emptyList())
+                    it.copy(
+                        gatewaysLoading = false,
+                        gateways = list,
+                        gatewaysJson = null,
+                        gatewaysError = null,
+                        activityLine = "gateways · ${list.size}",
+                    )
+                } else {
+                    it.copy(
+                        gatewaysLoading = false,
+                        gatewaysError = result.exceptionOrNull()?.message,
+                        gatewaysJson = result.exceptionOrNull()?.message,
+                    )
                 }
-                err = r.exceptionOrNull()?.message
             }
-            _ui.update { it.copy(gatewaysJson = body ?: err) }
         }
     }
 
     fun refreshTrajectory() {
         viewModelScope.launch {
-            val paths = listOf(
-                "/api/v1/sessions/${_ui.value.settings.sessionId}/trajectory",
-                "/api/v1/trajectory",
-                "/api/v1/sessions/${_ui.value.settings.sessionId}",
-            )
-            var body: String? = null
-            var err: String? = null
-            for (p in paths) {
-                val r = container.api.getJson(p)
-                if (r.isSuccess) {
-                    body = r.getOrNull()
-                    break
+            val sessionId = _ui.value.settings.sessionId
+            if (sessionId.isBlank()) {
+                _ui.update {
+                    it.copy(
+                        trajectory = null,
+                        trajectoryError = "Select a session in Chat first",
+                        trajectoryLoading = false,
+                        trajectoryJson = null,
+                    )
                 }
-                err = r.exceptionOrNull()?.message
+                return@launch
             }
-            _ui.update { it.copy(trajectoryJson = body ?: err) }
+            _ui.update { it.copy(trajectoryLoading = true, trajectoryError = null) }
+            val result = container.api.sessionToolTrace(sessionId)
+            _ui.update {
+                if (result.isSuccess) {
+                    val trace = result.getOrNull()
+                    it.copy(
+                        trajectoryLoading = false,
+                        trajectory = trace,
+                        trajectoryJson = null,
+                        trajectoryError = null,
+                        activityLine = "trajectory · ${trace?.tools?.size ?: 0} tools",
+                    )
+                } else {
+                    // Fallback: keep raw JSON for diagnostics without blocking UI empty state message
+                    val raw = container.api.getJson("/api/v1/sessions/$sessionId")
+                    it.copy(
+                        trajectoryLoading = false,
+                        trajectory = null,
+                        trajectoryError = result.exceptionOrNull()?.message,
+                        trajectoryJson = raw.getOrNull() ?: result.exceptionOrNull()?.message,
+                    )
+                }
+            }
         }
     }
 

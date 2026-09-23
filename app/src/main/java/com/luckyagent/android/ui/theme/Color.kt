@@ -3,6 +3,7 @@ package com.luckyagent.android.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // Sampled from UI/GUI/src/styles.css (four-leaf-clover palette)
+// Light
 val CloverBg = Color(0xFFF9FAF4)
 val CloverBgSide = Color(0xFFEEF1E5)
 val CloverSurface = Color(0xFFFFFFFF)
@@ -19,3 +20,20 @@ val CloverLeafInk = Color(0xFF16190F)
 val CloverHover = Color(0x0D16190F)
 val CloverError = Color(0xFFB42318)
 val CloverAssistantBubble = Color(0xFFFFFFFF)
+val CloverCodeBg = Color(0xFF1E2218)
+val CloverCodeFg = Color(0xFFE8ECDC)
+val CloverToolBg = Color(0xFFF4F7EC)
+val CloverWarning = Color(0xFFB54708)
+
+// Dark (styles.css [data-theme="dark"])
+val CloverDarkBg = Color(0xFF23241F)
+val CloverDarkBgSide = Color(0xFF1B1C18)
+val CloverDarkSurface = Color(0xFF2A2C26)
+val CloverDarkSurface2 = Color(0xFF32342D)
+val CloverDarkUserBubble = Color(0xFF2F3A28)
+val CloverDarkLine = Color(0xFF3A4030)
+val CloverDarkText = Color(0xFFE8ECDC)
+val CloverDarkText2 = Color(0xFFBFC4B0)
+val CloverDarkText3 = Color(0xFF8B907C)
+val CloverDarkAccent = Color(0xFF9DC74B)
+val CloverDarkAssistantBubble = Color(0xFF2A2C26)

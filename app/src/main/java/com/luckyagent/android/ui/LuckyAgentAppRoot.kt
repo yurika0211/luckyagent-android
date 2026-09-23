@@ -48,7 +48,7 @@ private data class NavSpec(
 
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "Chat", Icons.Outlined.ChatBubbleOutline),
-    NavSpec(AppDestination.Trajectory, "Trajectory", Icons.Outlined.Timeline),
+    NavSpec(AppDestination.Trajectory, "Trace", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
     NavSpec(AppDestination.Skills, "Skills", Icons.Outlined.Extension),
     NavSpec(AppDestination.Memory, "Memory", Icons.Outlined.AccountTree),
@@ -101,9 +101,9 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
             Column(Modifier.fillMaxSize()) {
                 when (state.destination) {
                     AppDestination.Chat -> ChatScreen(state = state, vm = vm)
-                    AppDestination.Trajectory -> TrajectoryScreen(state = state, onRefresh = vm::refreshTrajectory)
-                    AppDestination.Gateways -> GatewaysScreen(state = state, onRefresh = vm::refreshGateways)
-                    AppDestination.Skills -> SkillsScreen(state = state, onRefresh = vm::refreshSkills)
+                    AppDestination.Trajectory -> TrajectoryScreen(state = state, vm = vm)
+                    AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)
+                    AppDestination.Skills -> SkillsScreen(state = state, vm = vm)
                     AppDestination.Memory -> MemoryScreen(state = state, vm = vm)
                     AppDestination.Settings -> SettingsScreen(state = state, vm = vm)
                 }

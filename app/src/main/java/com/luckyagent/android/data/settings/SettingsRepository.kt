@@ -15,6 +15,8 @@ data class ClientSettings(
     val apiKey: String = "",
     val sessionId: String = "android-main",
     val useBearer: Boolean = true,
+    /** Optional absolute ws/wss URL. Empty → derive from apiBase + /api/v1/ws */
+    val wsUrl: String = "",
 )
 
 /**
@@ -42,6 +44,7 @@ class SettingsRepository(context: Context) {
         apiKey = prefs.getString(KEY_API_KEY, "") ?: "",
         sessionId = prefs.getString(KEY_SESSION, "android-main") ?: "android-main",
         useBearer = prefs.getBoolean(KEY_USE_BEARER, true),
+        wsUrl = prefs.getString(KEY_WS_URL, "") ?: "",
     )
 
     fun update(transform: (ClientSettings) -> ClientSettings) {
@@ -51,6 +54,7 @@ class SettingsRepository(context: Context) {
             .putString(KEY_API_KEY, next.apiKey.trim())
             .putString(KEY_SESSION, next.sessionId.trim().ifEmpty { "android-main" })
             .putBoolean(KEY_USE_BEARER, next.useBearer)
+            .putString(KEY_WS_URL, next.wsUrl.trim())
             .apply()
         _settings.update { read() }
     }
@@ -62,5 +66,6 @@ class SettingsRepository(context: Context) {
         private const val KEY_API_KEY = "api_key"
         private const val KEY_SESSION = "session_id"
         private const val KEY_USE_BEARER = "use_bearer"
+        private const val KEY_WS_URL = "ws_url"
     }
 }

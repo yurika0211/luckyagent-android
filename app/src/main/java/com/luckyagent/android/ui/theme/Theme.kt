@@ -25,19 +25,19 @@ private val LightColors = lightColorScheme(
 )
 
 private val DarkColors = darkColorScheme(
-    primary = CloverLeaf,
+    primary = CloverDarkAccent,
     onPrimary = CloverLeafInk,
     primaryContainer = CloverAccent,
     onPrimaryContainer = Color.White,
     secondary = CloverAccent,
     onSecondary = Color.White,
-    background = Color(0xFF12140F),
-    onBackground = Color(0xFFE8ECDC),
-    surface = Color(0xFF1A1D15),
-    onSurface = Color(0xFFE8ECDC),
-    surfaceVariant = Color(0xFF262B1E),
-    onSurfaceVariant = Color(0xFFBFC4B0),
-    outline = Color(0xFF3A4030),
+    background = CloverDarkBg,
+    onBackground = CloverDarkText,
+    surface = CloverDarkSurface,
+    onSurface = CloverDarkText,
+    surfaceVariant = CloverDarkSurface2,
+    onSurfaceVariant = CloverDarkText2,
+    outline = CloverDarkLine,
     error = Color(0xFFFFB4AB),
 )
 

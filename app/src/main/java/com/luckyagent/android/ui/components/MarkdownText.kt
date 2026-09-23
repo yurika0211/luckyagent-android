@@ -13,7 +13,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Modifier.Modifier
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -31,8 +31,8 @@ import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
 
 /**
- * Lightweight Markdown renderer: **bold**, *italic*, `code`, ```fences```,
- * # headings, -/* lists, [links](url). No external dependency.
+ * Lightweight Markdown renderer: bold, italic, inline code, fenced code blocks,
+ * headings, bullet lists, and links. No external dependency.
  */
 @Composable
 fun MarkdownText(

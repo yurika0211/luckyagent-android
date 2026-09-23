@@ -101,19 +101,26 @@ class LuckyAgentWsClient(
     private fun openSocket(sessionId: String, isReconnect: Boolean) {
         socketRef.getAndSet(null)?.close(1000, "reconnect")
         val snap = settingsRepository.snapshot()
-        val base = snap.apiBase.trim().trimEnd('/')
-        if (base.isEmpty()) {
-            _state.value = SocketState.Error
-            _lastError.value = "API Base is empty"
-            return
+        val sessionQ = java.net.URLEncoder.encode(sessionId, Charsets.UTF_8.name())
+        val override = snap.wsUrl.trim()
+        val url = if (override.isNotEmpty()) {
+            val root = override.trimEnd('/')
+            if (root.contains("?")) "$root&session=$sessionQ" else "$root?session=$sessionQ"
+        } else {
+            val base = snap.apiBase.trim().trimEnd('/')
+            if (base.isEmpty()) {
+                _state.value = SocketState.Error
+                _lastError.value = "API Base is empty"
+                return
+            }
+            val wsBase = when {
+                base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
+                base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
+                base.startsWith("wss://") || base.startsWith("ws://") -> base
+                else -> "ws://$base"
+            }
+            "$wsBase/api/v1/ws?session=$sessionQ"
         }
-        val wsBase = when {
-            base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
-            base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
-            base.startsWith("wss://") || base.startsWith("ws://") -> base
-            else -> "ws://$base"
-        }
-        val url = "$wsBase/api/v1/ws?session=${java.net.URLEncoder.encode(sessionId, Charsets.UTF_8.name())}"
         val builder = Request.Builder().url(url)
         val key = snap.apiKey.trim()
         if (key.isNotEmpty()) {

@@ -78,6 +78,16 @@ data class ChatOutbound(
 )
 
 @Serializable
+data class SessionCreateRequest(
+    val title: String? = null,
+)
+
+@Serializable
+data class SessionPatchRequest(
+    val title: String? = null,
+)
+
+@Serializable
 data class MemoryListResponse(
     val entries: List<MemoryEntry> = emptyList(),
     val results: List<MemoryEntry> = emptyList(),
@@ -145,12 +155,88 @@ data class MemoryGraphEdge(
 )
 
 @Serializable
-data class SkillsResponse(
-    val skills: List<JsonObject> = emptyList(),
+data class ToolTraceRecord(
+    val name: String = "",
+    val arguments: String? = null,
+    val result: String? = null,
+    val success: Boolean = true,
+    val error: String? = null,
+    @SerialName("duration_ms") val durationMs: Long? = null,
+    val annotation: String? = null,
+)
+
+@Serializable
+data class SessionToolTrace(
+    @SerialName("session_id") val sessionId: String? = null,
+    val tools: List<ToolTraceRecord> = emptyList(),
+    @SerialName("total_calls") val totalCalls: Int? = null,
+    val successes: Int? = null,
+    val failures: Int? = null,
+    @SerialName("success_rate") val successRate: Double? = null,
+)
+
+@Serializable
+data class GatewayStats(
+    @SerialName("MessagesSent") val messagesSent: Long? = null,
+    @SerialName("MessagesReceived") val messagesReceived: Long? = null,
+    @SerialName("Errors") val errors: Long? = null,
+)
+
+@Serializable
+data class GatewayStatus(
+    val name: String = "",
+    val running: Boolean = false,
+    val stats: GatewayStats? = null,
+    val platform: String? = null,
+    val connected: Boolean? = null,
+    val error: String? = null,
 )
 
 @Serializable
 data class GatewaysResponse(
-    val gateways: List<JsonObject> = emptyList(),
-    val items: List<JsonObject> = emptyList(),
+    val gateways: List<GatewayStatus> = emptyList(),
+    val items: List<GatewayStatus> = emptyList(),
+    val count: Int? = null,
+)
+
+@Serializable
+data class SkillTool(
+    val name: String = "",
+    @SerialName("full_name") val fullName: String? = null,
+    val description: String? = null,
+    @SerialName("expose_to_model") val exposeToModel: Boolean? = null,
+    val registered: Boolean? = null,
+    val enabled: Boolean? = null,
+)
+
+@Serializable
+data class SkillSummary(
+    val name: String = "",
+    val description: String? = null,
+    val summary: String? = null,
+    val state: String? = null,
+    val dir: String? = null,
+    val aliases: List<String> = emptyList(),
+    val tools: List<SkillTool> = emptyList(),
+    @SerialName("tool_count") val toolCount: Int? = null,
+    val available: Boolean? = null,
+    val version: String? = null,
+    val author: String? = null,
+    @SerialName("loaded_at") val loadedAt: String? = null,
+    val error: String? = null,
+    @SerialName("unhealthy_tools") val unhealthyTools: List<String> = emptyList(),
+    val managed: Boolean? = null,
+)
+
+@Serializable
+data class SkillsResponse(
+    val skills: List<SkillSummary> = emptyList(),
+    val count: Int? = null,
+    @SerialName("skills_dir") val skillsDir: String? = null,
+)
+
+/** Keep loose JsonObject fallback for unknown dashboard blobs. */
+@Serializable
+data class JsonBlobResponse(
+    val data: JsonObject? = null,
 )
