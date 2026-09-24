@@ -86,7 +86,9 @@ data class WsEnvelope(
     val type: String,
     @SerialName("session_id") val sessionId: String? = null,
     val id: String? = null,
+    @SerialName("event_id") val eventId: String? = null,
     @SerialName("parent_id") val parentId: String? = null,
+    @SerialName("run_id") val runId: String? = null,
     val timestamp: String? = null,
     val data: JsonElement? = null,
     val error: String? = null,
@@ -101,6 +103,8 @@ data class WsEvent(
 data class WsChatHandle(
     val connectionId: String,
     val sessionId: String,
+    val requestId: String,
+    val ownsLease: Boolean = true,
 )
 
 @Serializable
@@ -128,7 +132,19 @@ data class UploadResponse(val attachments: List<MediaAttachment> = emptyList())
 @Serializable
 data class ChatOutbound(
     val type: String = "chat",
+    val id: String,
     val data: ChatOutboundData,
+)
+
+@Serializable
+data class ReconnectOutbound(
+    val type: String = "reconnect",
+    val data: ReconnectOutboundData,
+)
+
+@Serializable
+data class ReconnectOutboundData(
+    @SerialName("last_message_id") val lastMessageId: String = "",
 )
 
 @Serializable

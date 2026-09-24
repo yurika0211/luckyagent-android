@@ -129,6 +129,23 @@ class SettingsRepository(context: Context) {
 
     fun snapshot(): ClientSettings = _settings.value
 
+    fun eventCursor(sessionId: String): String = synchronized(prefs) {
+        val raw = prefs.getString(KEY_EVENT_CURSORS, null) ?: return@synchronized ""
+        runCatching { json.decodeFromString<Map<String, String>>(raw)[sessionId].orEmpty() }.getOrDefault("")
+    }
+
+    fun saveEventCursor(sessionId: String, cursor: String) {
+        if (sessionId.isBlank() || cursor.isBlank()) return
+        synchronized(prefs) {
+            val current = prefs.getString(KEY_EVENT_CURSORS, null)
+                ?.let { runCatching { json.decodeFromString<Map<String, String>>(it) }.getOrDefault(emptyMap()) }
+                .orEmpty()
+                .toMutableMap()
+            current[sessionId] = cursor
+            prefs.edit().putString(KEY_EVENT_CURSORS, json.encodeToString(current)).apply()
+        }
+    }
+
     companion object {
         private const val KEY_API_BASE = "api_base"
         private const val KEY_API_KEY = "api_key"
@@ -137,5 +154,6 @@ class SettingsRepository(context: Context) {
         private const val KEY_WS_URL = "ws_url"
         private const val KEY_ENDPOINTS = "runtime_endpoints"
         private const val KEY_ACTIVE_ENDPOINT = "active_runtime_endpoint"
+        private const val KEY_EVENT_CURSORS = "event_cursors"
     }
 }
