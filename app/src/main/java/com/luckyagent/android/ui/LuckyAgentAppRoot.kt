@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
+import com.luckyagent.android.ui.screens.BackgroundScreen
 import com.luckyagent.android.ui.screens.CommandsScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
 import com.luckyagent.android.ui.screens.MemoryScreen
@@ -81,6 +82,7 @@ private data class NavSpec(
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "Chat", Icons.Outlined.ChatBubbleOutline),
     NavSpec(AppDestination.Tasks, "Tasks", Icons.Outlined.Assignment),
+    NavSpec(AppDestination.Background, "Background", Icons.Outlined.Assignment),
     NavSpec(AppDestination.Commands, "Commands", Icons.Outlined.Code),
     NavSpec(AppDestination.Trajectory, "Trace", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
@@ -156,6 +158,7 @@ private fun AppScaffold(state: AppUiState, vm: AppViewModel, useRail: Boolean) {
                     when (state.destination) {
                         AppDestination.Chat -> ChatScreen(state = state, vm = vm)
                         AppDestination.Tasks -> TasksScreen(state = state, vm = vm)
+                        AppDestination.Background -> BackgroundScreen(state = state, vm = vm)
                         AppDestination.Commands -> CommandsScreen(state = state, vm = vm)
                         AppDestination.Trajectory -> TrajectoryScreen(state = state, vm = vm)
                         AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)

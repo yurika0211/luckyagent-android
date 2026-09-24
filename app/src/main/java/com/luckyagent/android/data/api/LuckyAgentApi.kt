@@ -400,6 +400,37 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun getAutonomyDashboard(state: String? = null, limit: Int = 200): Result<AutonomyDashboardResponse> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val query = buildMap {
+                    state?.trim()?.takeIf { it.isNotEmpty() }?.let { put("state", it) }
+                    put("limit", limit.coerceIn(1, 200).toString())
+                }
+                val request = Request.Builder()
+                    .url(url("/api/v1/autonomy/dashboard", query))
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("autonomy dashboard ${resp.code}: $body")
+                    json.decodeFromString(AutonomyDashboardResponse.serializer(), body)
+                }
+            }
+        }
+
+    suspend fun getAutonomyTask(id: String): Result<AutonomyTaskDetailResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "background task id required" }
+            val request = Request.Builder().url(url("/api/v1/autonomy/tasks/$id")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("background task ${resp.code}: $body")
+                json.decodeFromString(AutonomyTaskDetailResponse.serializer(), body)
+            }
+        }
+    }
+
     suspend fun getTaskRecord(id: String): Result<TaskRecord> = withContext(Dispatchers.IO) {
         runCatching {
             require(id.isNotBlank()) { "task id required" }

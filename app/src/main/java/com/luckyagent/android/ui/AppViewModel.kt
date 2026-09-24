@@ -17,6 +17,9 @@ import com.luckyagent.android.data.api.MemoryStats
 import com.luckyagent.android.data.api.MemorySearchTrace
 import com.luckyagent.android.data.api.ReceivedMemoryTrace
 import com.luckyagent.android.data.api.CommandExecution
+import com.luckyagent.android.data.api.AutonomyDashboardResponse
+import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
+import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.data.api.RuntimeCommand
@@ -60,12 +63,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLEncoder
 
 enum class AppDestination {
-    Chat, Tasks, Commands, Trajectory, Gateways, Skills, Settings, Memory
+    Chat, Tasks, Background, Commands, Trajectory, Gateways, Skills, Settings, Memory
 }
 
 enum class TrajectoryFilter { All, Success, Failure }
 
 enum class TaskFilter { All, Active, Completed, Failed, Cancelled }
+
+enum class BackgroundFilter { All, Ready, Running, Blocked, Done }
 
 enum class ProgressStatus { Active, Complete, Failed }
 
@@ -172,6 +177,17 @@ data class AppUiState(
     val taskDetailLoading: Boolean = false,
     val taskDetailError: String? = null,
     val taskPolling: Boolean = false,
+    val backgroundDashboard: AutonomyDashboardResponse? = null,
+    val backgroundTasks: List<AutonomyTaskSummary> = emptyList(),
+    val backgroundLoading: Boolean = false,
+    val backgroundError: String? = null,
+    val backgroundFilter: BackgroundFilter = BackgroundFilter.All,
+    val backgroundQuery: String = "",
+    val selectedBackgroundTaskId: String? = null,
+    val selectedBackgroundTask: AutonomyTaskDetailResponse? = null,
+    val backgroundDetailLoading: Boolean = false,
+    val backgroundDetailError: String? = null,
+    val backgroundPolling: Boolean = false,
 )
 
 class AppViewModel(
@@ -183,6 +199,7 @@ class AppViewModel(
     private var eventsJob: Job? = null
     private var settingsReconnectJob: Job? = null
     private var taskPollingJob: Job? = null
+    private var backgroundPollingJob: Job? = null
     private var assistantBufferId: String? = null
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
@@ -851,9 +868,13 @@ class AppViewModel(
     fun navigate(dest: AppDestination) {
         _ui.update { it.copy(destination = dest) }
         if (dest != AppDestination.Tasks) stopTaskPolling()
+        if (dest != AppDestination.Background) stopBackgroundPolling()
         when (dest) {
             AppDestination.Tasks -> {
                 startTaskPolling()
+            }
+            AppDestination.Background -> {
+                startBackgroundPolling()
             }
             AppDestination.Commands -> refreshCommands()
             AppDestination.Memory -> refreshMemory()
@@ -1587,6 +1608,89 @@ class AppViewModel(
         }
     }
 
+    fun updateBackgroundQuery(value: String) {
+        _ui.update { it.copy(backgroundQuery = value) }
+    }
+
+    fun setBackgroundFilter(filter: BackgroundFilter) {
+        _ui.update { it.copy(backgroundFilter = filter) }
+    }
+
+    fun refreshBackground() {
+        viewModelScope.launch { refreshBackgroundNow() }
+    }
+
+    private suspend fun refreshBackgroundNow() {
+        _ui.update { it.copy(backgroundLoading = true, backgroundError = null) }
+        val result = container.api.getAutonomyDashboard()
+        val dashboard = result.getOrNull()
+        _ui.update {
+            it.copy(
+                backgroundLoading = false,
+                backgroundDashboard = dashboard ?: it.backgroundDashboard,
+                backgroundTasks = dashboard?.tasks ?: it.backgroundTasks,
+                backgroundError = result.exceptionOrNull()?.message,
+            )
+        }
+        val selectedId = _ui.value.selectedBackgroundTaskId
+        if (selectedId != null && dashboard?.tasks?.any { task -> task.id == selectedId } == true) {
+            loadBackgroundTaskNow(selectedId, showLoading = false)
+        }
+    }
+
+    private fun startBackgroundPolling() {
+        if (backgroundPollingJob?.isActive == true) return
+        backgroundPollingJob = viewModelScope.launch {
+            _ui.update { it.copy(backgroundPolling = true) }
+            while (isActive && _ui.value.destination == AppDestination.Background) {
+                refreshBackgroundNow()
+                delay(BACKGROUND_POLL_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopBackgroundPolling() {
+        backgroundPollingJob?.cancel()
+        backgroundPollingJob = null
+        _ui.update { it.copy(backgroundPolling = false) }
+    }
+
+    fun selectBackgroundTask(id: String) {
+        if (id.isBlank()) return
+        _ui.update {
+            it.copy(
+                selectedBackgroundTaskId = id,
+                selectedBackgroundTask = if (it.selectedBackgroundTaskId == id) it.selectedBackgroundTask else null,
+                backgroundDetailLoading = true,
+                backgroundDetailError = null,
+            )
+        }
+        viewModelScope.launch { loadBackgroundTaskNow(id, showLoading = false) }
+    }
+
+    fun clearSelectedBackgroundTask() {
+        _ui.update {
+            it.copy(
+                selectedBackgroundTaskId = null,
+                selectedBackgroundTask = null,
+                backgroundDetailLoading = false,
+                backgroundDetailError = null,
+            )
+        }
+    }
+
+    private suspend fun loadBackgroundTaskNow(id: String, showLoading: Boolean) {
+        if (showLoading) _ui.update { it.copy(backgroundDetailLoading = true, backgroundDetailError = null) }
+        val result = container.api.getAutonomyTask(id)
+        _ui.update { current ->
+            if (current.selectedBackgroundTaskId != id) current else current.copy(
+                selectedBackgroundTask = result.getOrNull() ?: current.selectedBackgroundTask,
+                backgroundDetailLoading = false,
+                backgroundDetailError = result.exceptionOrNull()?.message,
+            )
+        }
+    }
+
     fun updateSkillsQuery(value: String) {
         _ui.update { it.copy(skillsQuery = value) }
     }
@@ -1763,6 +1867,7 @@ class AppViewModel(
 
     private companion object {
         const val TASK_POLL_INTERVAL_MS = 3_000L
+        const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
         val artifactPathPattern = Regex(
             """(?i)(?:MEDIA:\s*)?(?:~[/\\]\.luckyagent[/\\](?:workspace|uploads)[/\\][^\s`"'<>]+|/[^\s`"'<>/]+(?:/[^\s`"'<>/]+)*/\.luckyagent/(?:workspace|uploads)/[^\s`"'<>]+)""",
         )
@@ -1770,6 +1875,7 @@ class AppViewModel(
 
     override fun onCleared() {
         stopTaskPolling()
+        stopBackgroundPolling()
         container.wsClient.disconnect()
         super.onCleared()
     }
