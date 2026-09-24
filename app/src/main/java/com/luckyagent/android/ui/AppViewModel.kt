@@ -210,8 +210,8 @@ class AppViewModel(
         val handle: WsChatHandle,
     )
 
-    private val activeRuns = mutableMapOf<String, ActiveRun>()
-    private var foregroundRunConnectionId: String? = null
+    private val activeRuns = mutableMapOf<String, LinkedHashMap<String, ActiveRun>>()
+    private val foregroundRequestIds = mutableMapOf<String, String>()
 
     init {
         viewModelScope.launch {
@@ -244,6 +244,7 @@ class AppViewModel(
         eventsJob = viewModelScope.launch {
             container.wsClient.events.collect { event ->
                 val env = event.envelope
+                ensureReplayedRun(event)
                 val foreground = isForegroundEvent(event)
                 when (env.type) {
                     "stream_chunk", "assistant_delta", "delta", "chunk" -> {
@@ -266,7 +267,7 @@ class AppViewModel(
                                 attachments = attachments,
                             )
                             _ui.update { it.copy(isResponding = false) }
-                            foregroundRunConnectionId = null
+                            prepareNextForeground(event.sessionId)
                         } else {
                             finishBackgroundRun(event.sessionId)
                         }
@@ -287,7 +288,7 @@ class AppViewModel(
                                     },
                                 )
                             }
-                            foregroundRunConnectionId = null
+                            prepareNextForeground(event.sessionId)
                         } else {
                             finishBackgroundRun(event.sessionId)
                         }
@@ -316,7 +317,7 @@ class AppViewModel(
                                     },
                                 )
                             }
-                            foregroundRunConnectionId = null
+                            prepareNextForeground(event.sessionId)
                         } else {
                             finishBackgroundRun(event.sessionId)
                         }
@@ -340,7 +341,7 @@ class AppViewModel(
                                             },
                                         )
                                     }
-                                    foregroundRunConnectionId = null
+                                    prepareNextForeground(event.sessionId)
                                 } else {
                                     finishBackgroundRun(event.sessionId)
                                 }
@@ -381,36 +382,72 @@ class AppViewModel(
     private fun currentSessionId(): String =
         container.settingsRepository.snapshot().sessionId.ifBlank { "android-main" }
 
-    private fun isCurrentSessionRunActive(): Boolean = activeRuns.containsKey(currentSessionId())
+    private fun sessionRuns(sessionId: String): LinkedHashMap<String, ActiveRun> =
+        activeRuns.getOrPut(sessionId) { LinkedHashMap() }
+
+    private fun isCurrentSessionRunActive(): Boolean = activeRuns[currentSessionId()]?.isNotEmpty() == true
 
     private fun registerRun(handle: WsChatHandle) {
-        activeRuns[handle.sessionId] = ActiveRun(handle)
-        foregroundRunConnectionId = handle.connectionId
+        val runs = sessionRuns(handle.sessionId)
+        val existing = runs[handle.requestId]
+        if (existing != null) {
+            if (handle.ownsLease && !existing.handle.ownsLease) {
+                runs[handle.requestId] = ActiveRun(handle)
+            }
+            return
+        }
+        runs[handle.requestId] = ActiveRun(handle)
+        foregroundRequestIds.putIfAbsent(handle.sessionId, handle.requestId)
     }
 
+    private fun eventRequestId(event: WsEvent): String? =
+        event.envelope.parentId
+            ?: event.envelope.runId?.takeIf { id -> activeRuns[event.sessionId]?.containsKey(id) == true }
+
     private fun isForegroundEvent(event: WsEvent): Boolean =
-        event.sessionId == currentSessionId() && foregroundRunConnectionId == event.connectionId
+        event.sessionId == currentSessionId() &&
+            eventRequestId(event) == foregroundRequestIds[event.sessionId]
 
     private fun completeRun(event: WsEvent): Boolean {
-        val run = activeRuns[event.sessionId] ?: return false
-        if (run.handle.connectionId != event.connectionId) return false
-        releaseRun(event.sessionId)
+        val runs = activeRuns[event.sessionId] ?: return false
+        val requestId = eventRequestId(event) ?: return false
+        val run = runs.remove(requestId) ?: return false
+        if (run.handle.ownsLease) container.wsClient.release(run.handle.connectionId)
+        if (runs.isEmpty()) {
+            activeRuns.remove(event.sessionId)
+            foregroundRequestIds.remove(event.sessionId)
+        } else if (foregroundRequestIds[event.sessionId] == requestId) {
+            foregroundRequestIds[event.sessionId] = runs.keys.first()
+        }
         return true
     }
 
-    private fun releaseRun(sessionId: String) {
-        val run = activeRuns.remove(sessionId) ?: return
-        container.wsClient.release(run.handle.connectionId)
-        if (foregroundRunConnectionId == run.handle.connectionId) {
-            foregroundRunConnectionId = null
+    private fun clearRuns(sessionId: String) {
+        val runs = activeRuns.remove(sessionId).orEmpty()
+        runs.values.forEach { run ->
+            if (run.handle.ownsLease) container.wsClient.release(run.handle.connectionId)
         }
+        foregroundRequestIds.remove(sessionId)
     }
 
     private fun finishBackgroundRun(sessionId: String) {
         if (sessionId != currentSessionId()) return
-        foregroundRunConnectionId = null
         resetAssistantStream()
         loadHistory(sessionId)
+    }
+
+    private fun ensureReplayedRun(event: WsEvent) {
+        val requestId = event.envelope.parentId ?: return
+        if (event.envelope.runId.isNullOrBlank()) return
+        if (activeRuns[event.sessionId]?.containsKey(requestId) == true) return
+        registerRun(container.wsClient.replayHandle(event.sessionId, requestId, event.connectionId))
+    }
+
+    private fun prepareNextForeground(sessionId: String) {
+        if (sessionId != currentSessionId() || activeRuns[sessionId].isNullOrEmpty()) return
+        resetAssistantStream()
+        currentTurnId = "turn-${System.currentTimeMillis()}"
+        _ui.update { it.copy(isResponding = true, activityLine = "Next message queued · continuing") }
     }
 
     private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
@@ -816,6 +853,19 @@ class AppViewModel(
         val id = assistantBufferId
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
+            val lastAssistantIndex = list.indexOfLast { bubble ->
+                bubble.role == "assistant" && !bubble.streaming
+            }
+            val hasUserAfterLastAssistant = lastAssistantIndex >= 0 &&
+                list.drop(lastAssistantIndex + 1).any { bubble -> bubble.role == "user" }
+            val duplicateHistoryAnswer = id == null &&
+                !hasUserAfterLastAssistant &&
+                lastAssistantIndex >= 0 &&
+                (full.isNullOrBlank() || list[lastAssistantIndex].content == full) &&
+                (attachments.isEmpty() || list[lastAssistantIndex].attachments.map(::mediaKey) == attachments.map(::mediaKey))
+            if (duplicateHistoryAnswer) {
+                return@update st.copy(isResponding = false)
+            }
             if (id != null) {
                 val idx = list.indexOfLast { it.id == id }
                 if (idx >= 0) {
@@ -853,6 +903,12 @@ class AppViewModel(
         }
         assistantBufferId = null
     }
+
+    private fun mediaKey(media: ChatMedia): String =
+        media.descriptor.fileUrl
+            ?: media.descriptor.filePath
+            ?: media.descriptor.fileId
+            ?: media.descriptor.fileName.orEmpty()
 
     private fun resetAssistantStream() {
         assistantFlushJob?.cancel()
@@ -1034,17 +1090,16 @@ class AppViewModel(
     fun selectSession(id: String) {
         val target = id.ifBlank { "android-main" }
         container.settingsRepository.update { it.copy(sessionId = target) }
-        foregroundRunConnectionId = null
         resetAssistantStream()
         toolStepIndex.clear()
         _ui.update {
             it.copy(
                 bubbles = emptyList(),
-                isResponding = activeRuns.containsKey(target),
+                isResponding = activeRuns[target]?.isNotEmpty() == true,
                 progressSteps = emptyList(),
             )
         }
-        connectSocket()
+        container.wsClient.replaySession(target)
         loadHistory(target)
     }
 
@@ -1056,7 +1111,7 @@ class AppViewModel(
                 resetAssistantStream()
                 toolStepIndex.clear()
                 val bubbles = historyToBubbles(history.messages)
-                val running = activeRuns.containsKey(sessionId)
+                val running = activeRuns[sessionId]?.isNotEmpty() == true
                 _ui.update {
                     it.copy(
                         bubbles = bubbles,
@@ -1192,10 +1247,6 @@ class AppViewModel(
             return
         }
         val sessionId = currentSessionId()
-        if (isCurrentSessionRunActive()) {
-            _ui.update { it.copy(activityLine = "Agent 正在运行，请等待完成或发送 /stop") }
-            return
-        }
         if (runtimeCommand != null) {
             sendRuntimeCommand(text, runtimeCommand)
             return
@@ -1203,8 +1254,12 @@ class AppViewModel(
         val message = text.ifBlank { if (pending.isNotEmpty()) "请查看附件" else "" }
         val descriptors = pending.mapNotNull { it.descriptor }
         val media = pending.mapNotNull { item -> item.descriptor?.let { ChatMedia(it, item.uri) } }
-        currentTurnId = "turn-${System.currentTimeMillis()}"
-        toolStepIndex.clear()
+        val wasRunning = isCurrentSessionRunActive()
+        if (!wasRunning) {
+            currentTurnId = "turn-${System.currentTimeMillis()}"
+            toolStepIndex.clear()
+            resetAssistantStream()
+        }
         pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text, createdAt = nowIsoTimestamp(), attachments = media))
         _ui.update {
             it.copy(
@@ -1214,7 +1269,6 @@ class AppViewModel(
                 progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
             )
         }
-        resetAssistantStream()
         val handle = container.wsClient.sendChat(message, attachments = descriptors)
         if (handle != null) {
             registerRun(handle)
@@ -1367,10 +1421,10 @@ class AppViewModel(
 
     fun cancelRun() {
         val sessionId = currentSessionId()
-        activeRuns[sessionId]?.let { run ->
+        activeRuns[sessionId]?.values?.firstOrNull()?.let { run ->
             container.wsClient.cancel(run.handle)
-            releaseRun(sessionId)
         }
+        clearRuns(sessionId)
         finishAssistant(null)
         _ui.update {
             it.copy(
@@ -1742,13 +1796,13 @@ class AppViewModel(
             val result = container.api.createSession(title)
             result.onSuccess { session ->
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
-                foregroundRunConnectionId = null
+                foregroundRequestIds.remove(session.id)
                 resetAssistantStream()
                 toolStepIndex.clear()
                 _ui.update {
                     it.copy(
                         bubbles = emptyList(),
-                        isResponding = activeRuns.containsKey(session.id),
+                        isResponding = activeRuns[session.id]?.isNotEmpty() == true,
                         activityLine = "new session · ${session.id}",
                     )
                 }

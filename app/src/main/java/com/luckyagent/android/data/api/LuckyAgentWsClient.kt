@@ -128,7 +128,29 @@ class LuckyAgentWsClient(
         val connection = connections[id] ?: return
         connection.userClosed.set(false)
         connection.reconnectAttempt.set(0)
-        openSocket(connection, isReconnect = true)
+        reopenSocket(connection, isReconnect = true)
+    }
+
+    fun replaySession(sessionId: String) {
+        val connection = connections.values.firstOrNull { connection ->
+            connection.config.sessionId == sessionId && !connection.userClosed.get()
+        }
+        if (connection == null) {
+            connect(sessionId)
+            return
+        }
+        currentConnectionId.set(connection.id)
+        connection.userClosed.set(false)
+        connection.reconnectAttempt.set(0)
+        reopenSocket(connection, isReconnect = true)
+    }
+
+    private fun reopenSocket(connection: ManagedConnection, isReconnect: Boolean) {
+        val previous = connection.socketRef.get()
+        openSocket(connection, isReconnect)
+        if (previous != null && previous !== connection.socketRef.get()) {
+            previous.close(1000, "reconnect")
+        }
     }
 
     private fun snapshotConfig(sessionId: String): ConnectionConfig {
@@ -199,6 +221,15 @@ class LuckyAgentWsClient(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 connection.socketRef.set(webSocket)
                 connection.reconnectAttempt.set(0)
+                val reconnect = json.encodeToString(
+                    ReconnectOutbound.serializer(),
+                    ReconnectOutbound(
+                        data = ReconnectOutboundData(
+                            lastMessageId = settingsRepository.eventCursor(connection.config.sessionId),
+                        ),
+                    ),
+                )
+                webSocket.send(reconnect)
                 if (isCurrent(connection)) {
                     _reconnectInfo.value = null
                     _state.value = SocketState.Connected
@@ -209,6 +240,10 @@ class LuckyAgentWsClient(
                 _raw.tryEmit(text)
                 runCatching { json.decodeFromString(WsEnvelope.serializer(), text) }
                     .onSuccess { env ->
+                        settingsRepository.saveEventCursor(
+                            connection.config.sessionId,
+                            env.eventId ?: env.id.orEmpty(),
+                        )
                         if (isCurrent(connection)) {
                             when (env.type) {
                                 "stream_chunk", "assistant_delta", "delta", "chunk",
@@ -270,18 +305,10 @@ class LuckyAgentWsClient(
     private fun scheduleReconnect(connection: ManagedConnection, reason: String) {
         if (connection.userClosed.get() || connections[connection.id] !== connection) return
         val attempt = connection.reconnectAttempt.incrementAndGet()
-        if (attempt > MAX_RECONNECT) {
-            if (isCurrent(connection)) {
-                _reconnectInfo.value = "reconnect exhausted ($MAX_RECONNECT)"
-                _lastError.value = "WebSocket reconnect failed after $MAX_RECONNECT tries ($reason)"
-                _state.value = SocketState.Error
-            }
-            return
-        }
         val delayMs = (500L * (1L shl (attempt - 1).coerceAtMost(4))).coerceAtMost(8000L)
         if (isCurrent(connection)) {
             _state.value = SocketState.Reconnecting
-            _reconnectInfo.value = "reconnect $attempt/$MAX_RECONNECT in ${delayMs}ms"
+            _reconnectInfo.value = "reconnect ${attempt.coerceAtMost(MAX_RECONNECT)}/$MAX_RECONNECT in ${delayMs}ms"
         }
         connection.reconnectJob?.cancel()
         connection.reconnectJob = scope.launch {
@@ -299,9 +326,11 @@ class LuckyAgentWsClient(
     ): WsChatHandle? {
         val id = currentConnectionId.get() ?: return null
         val connection = connections[id] ?: return null
+        val requestId = UUID.randomUUID().toString()
         val payload = json.encodeToString(
             ChatOutbound.serializer(),
             ChatOutbound(
+                id = requestId,
                 data = ChatOutboundData(
                     message = message,
                     stream = true,
@@ -316,7 +345,7 @@ class LuckyAgentWsClient(
             connection.leases += 1
         }
         if (isCurrent(connection)) _state.value = SocketState.Running
-        return WsChatHandle(connection.id, connection.config.sessionId)
+        return WsChatHandle(connection.id, connection.config.sessionId, requestId)
     }
 
     fun cancel(handle: WsChatHandle): Boolean {
@@ -335,6 +364,9 @@ class LuckyAgentWsClient(
         }
         if (close) closeConnection(connection)
     }
+
+    fun replayHandle(sessionId: String, requestId: String, connectionId: String): WsChatHandle =
+        WsChatHandle(connectionId, sessionId, requestId, ownsLease = false)
 
     private fun closeIdleConnections(except: String) {
         connections.values
