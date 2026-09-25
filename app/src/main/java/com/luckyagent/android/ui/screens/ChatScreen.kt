@@ -394,27 +394,41 @@ private fun ChatConversation(
                 item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
             }
             if (timeline.size > 1) {
+                // Mini scroll rail: compact pill so it doesn't dominate the bubble area.
                 Column(
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 12.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 6.dp, bottom = 6.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(CloverSurface.copy(alpha = .82f))
+                        .border(0.5.dp, CloverLine.copy(alpha = .45f), RoundedCornerShape(999.dp)),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    IconButton(
-                        onClick = { scrollScope.launch { listState.animateScrollToItem(0) } },
+                    Box(
                         modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(CloverSurface.copy(alpha = .94f)),
+                            .size(width = 22.dp, height = 20.dp)
+                            .clickable { scrollScope.launch { listState.animateScrollToItem(0) } },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.Outlined.ExpandLess, contentDescription = "到顶")
+                        Icon(
+                            Icons.Outlined.ExpandLess,
+                            contentDescription = "到顶",
+                            modifier = Modifier.size(13.dp),
+                            tint = CloverText3,
+                        )
                     }
-                    Spacer(Modifier.height(4.dp))
-                    IconButton(
-                        onClick = { scrollScope.launch { listState.animateScrollToItem(timeline.size) } },
+                    Box(
                         modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(CloverSurface.copy(alpha = .94f)),
+                            .size(width = 22.dp, height = 20.dp)
+                            .clickable { scrollScope.launch { listState.animateScrollToItem(timeline.size) } },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.Outlined.ExpandMore, contentDescription = "到底")
+                        Icon(
+                            Icons.Outlined.ExpandMore,
+                            contentDescription = "到底",
+                            modifier = Modifier.size(13.dp),
+                            tint = CloverText3,
+                        )
                     }
                 }
             }

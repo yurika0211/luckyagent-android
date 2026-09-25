@@ -39,6 +39,8 @@ import com.luckyagent.android.data.api.WsChatHandle
 import com.luckyagent.android.data.api.WsEvent
 import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.RuntimeEndpoint
+import com.luckyagent.android.data.update.AvailableUpdate
+import com.luckyagent.android.BuildConfig
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -61,6 +63,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLEncoder
+import java.io.File
 
 enum class AppDestination {
     Chat, Tasks, Background, Commands, Trajectory, Gateways, Skills, Settings, Memory
@@ -101,6 +104,16 @@ data class ChatBubble(
 data class ChatMedia(
     val descriptor: MediaAttachment,
     val localUri: String? = null,
+)
+
+enum class UpdatePhase { Idle, Checking, Available, Downloading, ReadyToInstall, UpToDate, Error }
+
+data class AppUpdateUiState(
+    val phase: UpdatePhase = UpdatePhase.Idle,
+    val currentVersion: String = BuildConfig.VERSION_NAME,
+    val latest: AvailableUpdate? = null,
+    val downloadedPath: String? = null,
+    val error: String? = null,
 )
 
 data class PendingMedia(
@@ -188,6 +201,7 @@ data class AppUiState(
     val backgroundDetailLoading: Boolean = false,
     val backgroundDetailError: String? = null,
     val backgroundPolling: Boolean = false,
+    val update: AppUpdateUiState = AppUpdateUiState(),
 )
 
 class AppViewModel(
@@ -212,6 +226,7 @@ class AppViewModel(
 
     private val activeRuns = mutableMapOf<String, LinkedHashMap<String, ActiveRun>>()
     private val foregroundRequestIds = mutableMapOf<String, String>()
+    private var appInForeground = false
 
     init {
         viewModelScope.launch {
@@ -266,10 +281,11 @@ class AppViewModel(
                                 usage = extractUsage(env.data),
                                 attachments = attachments,
                             )
+                            notifyChatCompleted(event.sessionId, eventRequestId(event), piece, foreground)
                             _ui.update { it.copy(isResponding = false) }
                             prepareNextForeground(event.sessionId)
                         } else {
-                            finishBackgroundRun(event.sessionId)
+                            finishBackgroundRun(event.sessionId, piece, eventRequestId(event))
                         }
                         refreshSessions()
                     }
@@ -290,7 +306,7 @@ class AppViewModel(
                             }
                             prepareNextForeground(event.sessionId)
                         } else {
-                            finishBackgroundRun(event.sessionId)
+                            finishBackgroundRun(event.sessionId, null, eventRequestId(event))
                         }
                     }
                     "error" -> {
@@ -319,7 +335,7 @@ class AppViewModel(
                             }
                             prepareNextForeground(event.sessionId)
                         } else {
-                            finishBackgroundRun(event.sessionId)
+                            finishBackgroundRun(event.sessionId, null, eventRequestId(event))
                         }
                     }
                     "status", "info" -> {
@@ -332,6 +348,7 @@ class AppViewModel(
                                 if (!completeRun(event)) return@collect
                                 if (foreground) {
                                     finishAssistant(null)
+                                    notifyChatCompleted(event.sessionId, eventRequestId(event), null, true)
                                     _ui.update { current ->
                                         current.copy(
                                             isResponding = false,
@@ -343,7 +360,7 @@ class AppViewModel(
                                     }
                                     prepareNextForeground(event.sessionId)
                                 } else {
-                                    finishBackgroundRun(event.sessionId)
+                                    finishBackgroundRun(event.sessionId, null, eventRequestId(event))
                                 }
                             }
                             else -> if (foreground) _ui.update {
@@ -430,10 +447,18 @@ class AppViewModel(
         foregroundRequestIds.remove(sessionId)
     }
 
-    private fun finishBackgroundRun(sessionId: String) {
+    private fun finishBackgroundRun(sessionId: String, content: String?, requestId: String?) {
+        notifyChatCompleted(sessionId, requestId, content, false)
         if (sessionId != currentSessionId()) return
         resetAssistantStream()
         loadHistory(sessionId)
+    }
+
+    private fun notifyChatCompleted(sessionId: String, requestId: String?, content: String?, foreground: Boolean) {
+        val settings = container.settingsRepository.snapshot()
+        if (!settings.notifyOnChatCompleted) return
+        val viewingCurrentChat = appInForeground && foreground && sessionId == currentSessionId() && _ui.value.destination == AppDestination.Chat
+        if (!viewingCurrentChat) container.notifications.notifyCompleted(sessionId, requestId, content)
     }
 
     private fun ensureReplayedRun(event: WsEvent) {
@@ -939,6 +964,47 @@ class AppViewModel(
             AppDestination.Trajectory -> refreshTrajectory()
             AppDestination.Chat -> Unit
             AppDestination.Settings -> Unit
+        }
+    }
+
+    fun setAppForeground(value: Boolean) {
+        appInForeground = value
+    }
+
+    fun checkForUpdates() {
+        _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Checking, error = null)) }
+        viewModelScope.launch {
+            container.updates.checkLatest().onSuccess { available ->
+                _ui.update { state ->
+                    state.copy(update = state.update.copy(
+                        phase = if (available == null) UpdatePhase.UpToDate else UpdatePhase.Available,
+                        latest = available,
+                        downloadedPath = null,
+                        error = null,
+                    ))
+                }
+            }.onFailure { error ->
+                _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Error, error = error.message ?: "检查更新失败")) }
+            }
+        }
+    }
+
+    fun downloadUpdate() {
+        val available = _ui.value.update.latest ?: return
+        _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Downloading, error = null)) }
+        viewModelScope.launch {
+            container.updates.download(available).onSuccess { file ->
+                _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.ReadyToInstall, downloadedPath = file.absolutePath, error = null)) }
+            }.onFailure { error ->
+                _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Error, error = error.message ?: "下载更新失败")) }
+            }
+        }
+    }
+
+    fun installUpdate() {
+        val path = _ui.value.update.downloadedPath ?: return
+        container.updates.install(File(path)).onFailure { error ->
+            _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Error, error = error.message ?: "无法打开安装器")) }
         }
     }
 

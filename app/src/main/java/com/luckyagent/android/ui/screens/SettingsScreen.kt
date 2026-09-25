@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.UUID
 import com.luckyagent.android.data.api.SocketState
@@ -52,6 +53,11 @@ import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.RuntimeEndpoint
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
+import com.luckyagent.android.ui.UpdatePhase
+import android.Manifest
+import android.app.Activity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.ScreenHeader
@@ -88,6 +94,8 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsLiveCard(state, vm)
+                    SettingsNotificationsCard(state, vm)
+                    SettingsUpdateCard(state, vm)
                     SettingsAboutCard()
                 }
             }
@@ -98,10 +106,75 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
             ) {
                 SettingsEndpointCard(s, vm)
                 SettingsLiveCard(state, vm)
+                SettingsNotificationsCard(state, vm)
+                SettingsUpdateCard(state, vm)
                 SettingsAboutCard()
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun SettingsNotificationsCard(state: AppUiState, vm: AppViewModel) {
+    val context = LocalContext.current
+    val permissionMissing = android.os.Build.VERSION.SDK_INT >= 33 &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+    CloverCard {
+        Text("Notifications", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Notify when a response is complete", style = MaterialTheme.typography.bodyMedium)
+                Text("Sends one local notification for final results while you are away from the current chat.", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(
+                checked = state.settings.notifyOnChatCompleted,
+                onCheckedChange = { enabled ->
+                    vm.updateSettings { it.copy(notifyOnChatCompleted = enabled) }
+                    if (enabled && android.os.Build.VERSION.SDK_INT >= 33 && context is Activity) {
+                        ActivityCompat.requestPermissions(context, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
+                    }
+                },
+            )
+        }
+        if (permissionMissing) {
+            Text("Android notification permission is off.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            TextButton(
+                onClick = {
+                    if (context is Activity) ActivityCompat.requestPermissions(context, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
+                },
+            ) { Text("Allow notifications") }
+        }
+    }
+}
+
+@Composable
+private fun SettingsUpdateCard(state: AppUiState, vm: AppViewModel) {
+    val update = state.update
+    CloverCard {
+        Text("App updates", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("Current version ${update.currentVersion}", color = CloverText2, style = MaterialTheme.typography.bodyMedium)
+        val status = when (update.phase) {
+            UpdatePhase.Idle -> "Check GitHub Releases for a newer APK."
+            UpdatePhase.Checking -> "Checking GitHub Releases…"
+            UpdatePhase.UpToDate -> "You are on the latest release."
+            UpdatePhase.Available -> "Update available: ${update.latest?.release?.tagName.orEmpty()}"
+            UpdatePhase.Downloading -> "Downloading APK…"
+            UpdatePhase.ReadyToInstall -> "APK downloaded. Tap Install to continue."
+            UpdatePhase.Error -> update.error ?: "Update check failed."
+        }
+        Text(status, color = if (update.phase == UpdatePhase.Error) MaterialTheme.colorScheme.error else CloverText2, style = MaterialTheme.typography.bodySmall)
+        update.latest?.release?.body?.trim()?.takeIf { it.isNotBlank() }?.let { body ->
+            Text(body.replace(Regex("\\s+"), " ").take(180), color = CloverText3, style = MaterialTheme.typography.bodySmall, maxLines = 3)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (update.phase) {
+                UpdatePhase.Available -> Button(onClick = vm::downloadUpdate) { Text("Download APK") }
+                UpdatePhase.Downloading, UpdatePhase.Checking -> OutlinedButton(onClick = {}, enabled = false) { Text("Working…") }
+                UpdatePhase.ReadyToInstall -> Button(onClick = vm::installUpdate) { Text("Install") }
+                else -> Button(onClick = vm::checkForUpdates) { Text("Check for updates") }
+            }
+        }
     }
 }
 
