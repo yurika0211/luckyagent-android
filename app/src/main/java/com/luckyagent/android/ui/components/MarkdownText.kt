@@ -7,8 +7,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -107,6 +109,32 @@ fun MarkdownText(
                         )
                     }
                 }
+                is MdBlock.Table -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(vertical = 4.dp),
+                    ) {
+                        block.rows.forEachIndexed { rowIndex, cells ->
+                            Row {
+                                cells.forEach { cell ->
+                                    Text(
+                                        text = inlineMarkdown(cell),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = color,
+                                            fontWeight = if (rowIndex == 0) FontWeight.SemiBold else FontWeight.Normal,
+                                        ),
+                                        modifier = Modifier
+                                            .width(120.dp)
+                                            .border(1.dp, CloverLine)
+                                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 is MdBlock.Heading -> {
                     Text(
                         text = inlineMarkdown(block.text),
@@ -146,6 +174,7 @@ private sealed class MdBlock {
     data class ListItem(val text: String) : MdBlock()
     data class Code(val body: String) : MdBlock()
     data class Image(val alt: String, val source: String) : MdBlock()
+    data class Table(val rows: List<List<String>>) : MdBlock()
 }
 
 private fun decodeMarkdownImage(source: String): android.graphics.Bitmap? = runCatching {
@@ -188,6 +217,17 @@ private fun splitBlocks(src: String): List<MdBlock> {
     }
     while (i < lines.size) {
         val line = lines[i]
+        if (i + 1 < lines.size && line.contains('|') && isTableSeparator(lines[i + 1])) {
+            flushPara()
+            val rows = mutableListOf(splitTableRow(line))
+            i += 2
+            while (i < lines.size && lines[i].contains('|') && lines[i].isNotBlank()) {
+                rows += splitTableRow(lines[i])
+                i++
+            }
+            out += MdBlock.Table(rows)
+            continue
+        }
         val image = Regex("""^!\[([^]]*)\]\((.+)\)$""").matchEntire(line.trim())
         if (image != null) {
             flushPara()
@@ -242,6 +282,12 @@ private fun splitBlocks(src: String): List<MdBlock> {
     return out
 }
 
+private fun isTableSeparator(line: String): Boolean =
+    line.trim().matches(Regex("^\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?$"))
+
+private fun splitTableRow(line: String): List<String> =
+    line.trim().trim('|').split('|').map(String::trim)
+
 private fun looksLikeImageUrl(source: String): Boolean {
     val path = runCatching { android.net.Uri.parse(source).path.orEmpty().lowercase() }.getOrDefault("")
     return path.matches(Regex(".*\\.(png|jpe?g|gif|webp|bmp|svg|avif|heic)$")) ||
@@ -252,7 +298,7 @@ private fun looksLikeImageUrl(source: String): Boolean {
 private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
     // patterns: **bold**, *italic*, `code`, [label](url)
     val pattern = Regex(
-        """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\[[^\]]+\]\([^)]+\))"""
+        """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\$\$[^$]+\$\$)|(\$[^$]+\$)|(\[[^\]]+\]\([^)]+\))"""
     )
     var last = 0
     for (m in pattern.findAll(text)) {
@@ -271,6 +317,11 @@ private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString
                         background = Color(0x143F8A37),
                     ),
                 ) { append(token.removeSurrounding("`")) }
+            }
+            token.startsWith("$") -> {
+                withStyle(SpanStyle(fontFamily = FontFamily.Monospace, color = Color(0xFF6B4FA1))) {
+                    append(token)
+                }
             }
             token.startsWith("*") && token.endsWith("*") -> {
                 withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {

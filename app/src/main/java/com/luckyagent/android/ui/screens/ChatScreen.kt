@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -69,6 +70,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
@@ -118,6 +120,7 @@ import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import java.time.Instant
@@ -326,10 +329,31 @@ private fun ChatConversation(
         )
 
         val listState = rememberLazyListState()
+        val scrollScope = rememberCoroutineScope()
         val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
         var lastAutoScrollPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+        var restoredSession by remember { mutableStateOf("") }
+        LaunchedEffect(state.settings.sessionId) {
+            snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+                .collect { (index, offset) ->
+                    if (restoredSession == state.settings.sessionId) {
+                        vm.saveScrollAnchor(state.settings.sessionId, index, offset)
+                    }
+                }
+        }
+        LaunchedEffect(state.settings.sessionId, timeline.size) {
+            if (timeline.isEmpty() || restoredSession == state.settings.sessionId) return@LaunchedEffect
+            val anchor = vm.scrollAnchor(state.settings.sessionId)
+            restoredSession = state.settings.sessionId
+            if (anchor == null) {
+                listState.scrollToItem(0)
+                return@LaunchedEffect
+            }
+            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+            listState.scrollToItem(anchor.first.coerceIn(0, timeline.lastIndex), anchor.second)
+        }
         LaunchedEffect(timeline.size, timeline.lastOrNull()) {
-            if (timeline.isEmpty() || listState.isScrollInProgress) return@LaunchedEffect
+            if (timeline.isEmpty() || restoredSession != state.settings.sessionId || listState.isScrollInProgress) return@LaunchedEffect
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()
             val atBottom = lastVisible == null ||
@@ -341,30 +365,57 @@ private fun ChatConversation(
             }
         }
 
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            items(timeline, key = { it.key }) { item ->
-                when (item) {
-                    is ChatTimelineItem.Message -> BubbleRow(
-                        bubble = item.bubble,
-                        imageHeaders = imageHeaders,
-                        imageBaseUrl = state.settings.apiBase,
-                        onDownload = { media -> vm.downloadAttachment(context, media) },
-                    )
-                    is ChatTimelineItem.Process -> ProcessTimeline(
-                        steps = item.steps,
-                        isResponding = state.isResponding,
-                        imageHeaders = imageHeaders,
-                        imageBaseUrl = state.settings.apiBase,
-                        onDownload = { media -> vm.downloadAttachment(context, media) },
-                    )
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(timeline, key = { it.key }) { item ->
+                    when (item) {
+                        is ChatTimelineItem.Message -> BubbleRow(
+                            bubble = item.bubble,
+                            imageHeaders = imageHeaders,
+                            imageBaseUrl = state.settings.apiBase,
+                            onDownload = { media -> vm.downloadAttachment(context, media) },
+                        )
+                        is ChatTimelineItem.Process -> ProcessTimeline(
+                            steps = item.steps,
+                            isResponding = state.isResponding,
+                            imageHeaders = imageHeaders,
+                            imageBaseUrl = state.settings.apiBase,
+                            onDownload = { media -> vm.downloadAttachment(context, media) },
+                        )
+                    }
+                }
+                item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
+            }
+            if (timeline.size > 1) {
+                Column(
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 12.dp),
+                ) {
+                    IconButton(
+                        onClick = { scrollScope.launch { listState.animateScrollToItem(0) } },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(CloverSurface.copy(alpha = .94f)),
+                    ) {
+                        Icon(Icons.Outlined.ExpandLess, contentDescription = "到顶")
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    IconButton(
+                        onClick = { scrollScope.launch { listState.animateScrollToItem(timeline.size) } },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(CloverSurface.copy(alpha = .94f)),
+                    ) {
+                        Icon(Icons.Outlined.ExpandMore, contentDescription = "到底")
+                    }
                 }
             }
-            item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
         }
 
         ComposerBar(
@@ -491,7 +542,21 @@ private fun BubbleRow(
                     }
                     if (bubble.attachments.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
-                        bubble.attachments.forEach { media ->
+                        val images = bubble.attachments.filter { attachmentKind(it.descriptor) == "image" }
+                        val otherMedia = bubble.attachments.filter { attachmentKind(it.descriptor) != "image" }
+                        if (images.size > 1) {
+                            ImageAttachmentGrid(images, imageHeaders, imageBaseUrl, onDownload)
+                        } else {
+                            images.forEach { media ->
+                                ChatMediaPreview(
+                                    media = media,
+                                    imageHeaders = imageHeaders,
+                                    imageBaseUrl = imageBaseUrl,
+                                    onDownload = onDownload,
+                                )
+                            }
+                        }
+                        otherMedia.forEach { media ->
                             ChatMediaPreview(
                                 media = media,
                                 imageHeaders = imageHeaders,
@@ -513,6 +578,36 @@ private fun BubbleRow(
                         MessageMetadata(bubble)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageAttachmentGrid(
+    media: List<ChatMedia>,
+    imageHeaders: Map<String, String>,
+    imageBaseUrl: String,
+    onDownload: (ChatMedia) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        media.chunked(3).forEach { rowMedia ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                rowMedia.forEach { item ->
+                    Box(Modifier.weight(1f)) {
+                        ChatMediaPreview(
+                            media = item,
+                            imageHeaders = imageHeaders,
+                            imageBaseUrl = imageBaseUrl,
+                            onDownload = onDownload,
+                            compact = true,
+                        )
+                    }
+                }
+                repeat(3 - rowMedia.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
@@ -818,6 +913,7 @@ private fun ChatMediaPreview(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
+    compact: Boolean = false,
 ) {
     val descriptor = media.descriptor
     val context = LocalContext.current
@@ -881,19 +977,21 @@ private fun ChatMediaPreview(
                 Box(
                     Modifier
                         .widthIn(max = 420.dp)
-                        .heightIn(max = 280.dp)
+                        .then(if (compact) Modifier.aspectRatio(1f) else Modifier.heightIn(max = 280.dp))
                         .clip(RoundedCornerShape(12.dp))
                         .clickable { showImageViewer = true },
                 ) {
-                    AsyncImage(
-                        model = imageModel,
-                        contentDescription = descriptor.fileName ?: "图片附件",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth(),
+                        AsyncImage(
+                            model = imageModel,
+                            contentDescription = descriptor.fileName ?: "图片附件",
+                            contentScale = ContentScale.Crop,
+                            modifier = if (compact) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
                     )
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    AttachmentDownloadButton(media, onDownload)
+                if (!compact) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        AttachmentDownloadButton(media, onDownload)
+                    }
                 }
             }
         }
@@ -902,7 +1000,7 @@ private fun ChatMediaPreview(
                 Box(
                     Modifier
                         .widthIn(max = 420.dp)
-                        .heightIn(max = 280.dp)
+                        .then(if (compact) Modifier.aspectRatio(1f) else Modifier.heightIn(max = 280.dp))
                         .clip(RoundedCornerShape(12.dp))
                         .clickable { showImageViewer = true },
                 ) {
@@ -910,11 +1008,13 @@ private fun ChatMediaPreview(
                         model = sourceUri,
                         contentDescription = descriptor.fileName ?: "图片附件",
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = if (compact) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
                     )
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    AttachmentDownloadButton(media, onDownload)
+                if (!compact) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        AttachmentDownloadButton(media, onDownload)
+                    }
                 }
             }
         }
