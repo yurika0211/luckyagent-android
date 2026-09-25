@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: android.content.Intent?) {
-        intent?.getStringExtra(EXTRA_SESSION_ID)?.takeIf { it.isNotBlank() }?.let(appViewModel::selectSession)
+        intent?.getStringExtra(EXTRA_SESSION_ID)?.takeIf { it.isNotBlank() }?.let(appViewModel::openSessionFromNotification)
     }
 
     companion object { const val EXTRA_SESSION_ID = "session_id" }
