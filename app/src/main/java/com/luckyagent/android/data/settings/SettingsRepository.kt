@@ -32,6 +32,7 @@ data class ClientSettings(
     val wsUrl: String = "",
     val runtimeEndpoints: List<RuntimeEndpoint> = emptyList(),
     val activeRuntimeEndpointId: String = "",
+    val notifyOnChatCompleted: Boolean = true,
 )
 
 /**
@@ -77,6 +78,7 @@ class SettingsRepository(context: Context) {
             wsUrl = active.wsUrl,
             runtimeEndpoints = endpoints,
             activeRuntimeEndpointId = activeId,
+            notifyOnChatCompleted = prefs.getBoolean(KEY_NOTIFY_ON_CHAT_COMPLETED, true),
         )
     }
 
@@ -123,6 +125,7 @@ class SettingsRepository(context: Context) {
             if (next.wsUrl != previous.wsUrl) putString(KEY_WS_URL, next.wsUrl)
             if (next.runtimeEndpoints != previous.runtimeEndpoints) putString(KEY_ENDPOINTS, json.encodeToString(next.runtimeEndpoints))
             if (next.activeRuntimeEndpointId != previous.activeRuntimeEndpointId) putString(KEY_ACTIVE_ENDPOINT, next.activeRuntimeEndpointId)
+            if (next.notifyOnChatCompleted != previous.notifyOnChatCompleted) putBoolean(KEY_NOTIFY_ON_CHAT_COMPLETED, next.notifyOnChatCompleted)
         }.apply()
         _settings.value = next
     }
@@ -176,5 +179,6 @@ class SettingsRepository(context: Context) {
         private const val KEY_ACTIVE_ENDPOINT = "active_runtime_endpoint"
         private const val KEY_EVENT_CURSORS = "event_cursors"
         private const val KEY_SCROLL_ANCHORS = "scroll_anchors"
+        private const val KEY_NOTIFY_ON_CHAT_COMPLETED = "notify_on_chat_completed"
     }
 }
