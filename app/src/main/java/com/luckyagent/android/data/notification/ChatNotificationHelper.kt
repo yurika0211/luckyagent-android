@@ -13,9 +13,13 @@ import com.luckyagent.android.MainActivity
 
 class ChatNotificationHelper(private val context: Context) {
     private val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private val delivered = context.getSharedPreferences("chat_notification_dedupe", Context.MODE_PRIVATE)
 
+    @Synchronized
     fun notifyCompleted(sessionId: String, requestId: String?, content: String?) {
         if (android.os.Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val dedupeKey = "${sessionId}:${requestId.orEmpty()}"
+        if (!requestId.isNullOrBlank() && delivered.getBoolean(dedupeKey, false)) return
         ensureChannel()
         val intent = Intent(context, MainActivity::class.java).apply {
             putExtra(MainActivity.EXTRA_SESSION_ID, sessionId)
@@ -35,6 +39,7 @@ class ChatNotificationHelper(private val context: Context) {
             .build()
         val id = "chat:$sessionId:${requestId.orEmpty()}".hashCode()
         manager.notify(id, notification)
+        if (!requestId.isNullOrBlank()) delivered.edit().putBoolean(dedupeKey, true).apply()
     }
 
     fun ensureChannel() {

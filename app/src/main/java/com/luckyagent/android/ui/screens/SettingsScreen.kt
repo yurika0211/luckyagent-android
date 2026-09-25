@@ -164,14 +164,23 @@ private fun SettingsUpdateCard(state: AppUiState, vm: AppViewModel) {
             UpdatePhase.Error -> update.error ?: "Update check failed."
         }
         Text(status, color = if (update.phase == UpdatePhase.Error) MaterialTheme.colorScheme.error else CloverText2, style = MaterialTheme.typography.bodySmall)
+        if (update.phase == UpdatePhase.Downloading) {
+            androidx.compose.material3.LinearProgressIndicator(progress = { (update.downloadProgress ?: 0).coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth())
+            Text("${update.downloadProgress ?: 0}%", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+        }
+        update.installBlockReason?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         update.latest?.release?.body?.trim()?.takeIf { it.isNotBlank() }?.let { body ->
             Text(body.replace(Regex("\\s+"), " ").take(180), color = CloverText3, style = MaterialTheme.typography.bodySmall, maxLines = 3)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             when (update.phase) {
-                UpdatePhase.Available -> Button(onClick = vm::downloadUpdate) { Text("Download APK") }
-                UpdatePhase.Downloading, UpdatePhase.Checking -> OutlinedButton(onClick = {}, enabled = false) { Text("Working…") }
-                UpdatePhase.ReadyToInstall -> Button(onClick = vm::installUpdate) { Text("Install") }
+                UpdatePhase.Available -> {
+                    Button(onClick = vm::downloadUpdate, enabled = com.luckyagent.android.BuildConfig.BUILD_TYPE == "release") { Text("Download APK") }
+                    TextButton(onClick = vm::openReleasePage) { Text("Open Release") }
+                }
+                UpdatePhase.Downloading -> TextButton(onClick = vm::cancelUpdateDownload) { Text("Cancel") }
+                UpdatePhase.Checking -> OutlinedButton(onClick = {}, enabled = false) { Text("Checking…") }
+                UpdatePhase.ReadyToInstall -> Button(onClick = vm::installUpdate, enabled = update.installBlockReason == null) { Text("Install") }
                 else -> Button(onClick = vm::checkForUpdates) { Text("Check for updates") }
             }
         }

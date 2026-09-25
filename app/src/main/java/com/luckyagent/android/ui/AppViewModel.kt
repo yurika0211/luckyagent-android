@@ -113,6 +113,8 @@ data class AppUpdateUiState(
     val currentVersion: String = BuildConfig.VERSION_NAME,
     val latest: AvailableUpdate? = null,
     val downloadedPath: String? = null,
+    val downloadProgress: Int? = null,
+    val installBlockReason: String? = null,
     val error: String? = null,
 )
 
@@ -227,6 +229,7 @@ class AppViewModel(
     private val activeRuns = mutableMapOf<String, LinkedHashMap<String, ActiveRun>>()
     private val foregroundRequestIds = mutableMapOf<String, String>()
     private var appInForeground = false
+    private var updateDownloadJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -269,6 +272,7 @@ class AppViewModel(
                         appendAssistant(piece)
                     }
                     "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
+                        val requestId = eventRequestId(event)
                         if (!completeRun(event)) return@collect
                         val piece = extractFullResponse(env.data) ?: extractText(env.data)
                         val attachments = distinctMedia(
@@ -281,11 +285,12 @@ class AppViewModel(
                                 usage = extractUsage(env.data),
                                 attachments = attachments,
                             )
-                            notifyChatCompleted(event.sessionId, eventRequestId(event), piece, foreground)
+                            notifyChatCompleted(event.sessionId, requestId, piece ?: _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, foreground)
                             _ui.update { it.copy(isResponding = false) }
                             prepareNextForeground(event.sessionId)
                         } else {
-                            finishBackgroundRun(event.sessionId, piece, eventRequestId(event))
+                            notifyChatCompleted(event.sessionId, requestId, piece, false)
+                            finishBackgroundRun(event.sessionId)
                         }
                         refreshSessions()
                     }
@@ -306,7 +311,7 @@ class AppViewModel(
                             }
                             prepareNextForeground(event.sessionId)
                         } else {
-                            finishBackgroundRun(event.sessionId, null, eventRequestId(event))
+                            finishBackgroundRun(event.sessionId)
                         }
                     }
                     "error" -> {
@@ -335,7 +340,7 @@ class AppViewModel(
                             }
                             prepareNextForeground(event.sessionId)
                         } else {
-                            finishBackgroundRun(event.sessionId, null, eventRequestId(event))
+                            finishBackgroundRun(event.sessionId)
                         }
                     }
                     "status", "info" -> {
@@ -345,10 +350,11 @@ class AppViewModel(
                             "thinking" -> if (foreground) updatePhase("thinking", "Thinking through the request")
                             "executing" -> if (foreground) updatePhase("executing", "Working on your request")
                             "idle" -> {
+                                val requestId = eventRequestId(event)
                                 if (!completeRun(event)) return@collect
                                 if (foreground) {
                                     finishAssistant(null)
-                                    notifyChatCompleted(event.sessionId, eventRequestId(event), null, true)
+                                    notifyChatCompleted(event.sessionId, requestId, _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, true)
                                     _ui.update { current ->
                                         current.copy(
                                             isResponding = false,
@@ -360,7 +366,8 @@ class AppViewModel(
                                     }
                                     prepareNextForeground(event.sessionId)
                                 } else {
-                                    finishBackgroundRun(event.sessionId, null, eventRequestId(event))
+                                    notifyChatCompleted(event.sessionId, requestId, null, false)
+                                    finishBackgroundRun(event.sessionId)
                                 }
                             }
                             else -> if (foreground) _ui.update {
@@ -447,8 +454,7 @@ class AppViewModel(
         foregroundRequestIds.remove(sessionId)
     }
 
-    private fun finishBackgroundRun(sessionId: String, content: String?, requestId: String?) {
-        notifyChatCompleted(sessionId, requestId, content, false)
+    private fun finishBackgroundRun(sessionId: String) {
         if (sessionId != currentSessionId()) return
         resetAssistantStream()
         loadHistory(sessionId)
@@ -980,6 +986,8 @@ class AppViewModel(
                         phase = if (available == null) UpdatePhase.UpToDate else UpdatePhase.Available,
                         latest = available,
                         downloadedPath = null,
+                        downloadProgress = null,
+                        installBlockReason = null,
                         error = null,
                     ))
                 }
@@ -992,20 +1000,47 @@ class AppViewModel(
     fun downloadUpdate() {
         val available = _ui.value.update.latest ?: return
         _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Downloading, error = null)) }
-        viewModelScope.launch {
-            container.updates.download(available).onSuccess { file ->
-                _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.ReadyToInstall, downloadedPath = file.absolutePath, error = null)) }
+        updateDownloadJob?.cancel()
+        updateDownloadJob = viewModelScope.launch {
+            container.updates.download(available) { progress ->
+                _ui.update { it.copy(update = it.update.copy(downloadProgress = progress)) }
+            }.onSuccess { file ->
+                val blockReason = container.updates.installBlockReason(file).fold(
+                    onSuccess = { it },
+                    onFailure = { error -> error.message ?: "Unable to verify downloaded APK" },
+                )
+                _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.ReadyToInstall, downloadedPath = file.absolutePath, installBlockReason = blockReason, error = null)) }
             }.onFailure { error ->
                 _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Error, error = error.message ?: "下载更新失败")) }
             }
         }
     }
 
+    fun cancelUpdateDownload() {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        _ui.update { it.copy(update = it.update.copy(phase = if (it.update.latest == null) UpdatePhase.Idle else UpdatePhase.Available, downloadProgress = null)) }
+    }
+
     fun installUpdate() {
         val path = _ui.value.update.downloadedPath ?: return
-        container.updates.install(File(path)).onFailure { error ->
-            _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Error, error = error.message ?: "无法打开安装器")) }
+        val update = _ui.value.update
+        if (update.installBlockReason != null) {
+            _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Error, error = update.installBlockReason)) }
+            return
         }
+        container.updates.install(File(path)).onFailure { error ->
+            _ui.update { it.copy(update = it.update.copy(error = error.message ?: "无法打开安装器")) }
+        }
+    }
+
+    fun openReleasePage() {
+        container.updates.openReleasePage(_ui.value.update.latest)
+    }
+
+    fun openSessionFromNotification(sessionId: String) {
+        navigate(AppDestination.Chat)
+        selectSession(sessionId)
     }
 
     fun updateComposer(value: String) {
