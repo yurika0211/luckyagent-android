@@ -129,6 +129,26 @@ class SettingsRepository(context: Context) {
 
     fun snapshot(): ClientSettings = _settings.value
 
+    /** Last visible chat position, keyed by session so switching chats keeps context. */
+    fun scrollAnchor(sessionId: String): Pair<Int, Int>? = synchronized(prefs) {
+        if (sessionId.isBlank()) return@synchronized null
+        val raw = prefs.getString(KEY_SCROLL_ANCHORS, null) ?: return@synchronized null
+        val anchor = runCatching { json.decodeFromString<Map<String, List<Int>>>(raw)[sessionId] }.getOrNull()
+            ?: return@synchronized null
+        if (anchor.size < 2) null else anchor[0].coerceAtLeast(0) to anchor[1].coerceAtLeast(0)
+    }
+
+    fun saveScrollAnchor(sessionId: String, index: Int, offset: Int) {
+        if (sessionId.isBlank()) return
+        synchronized(prefs) {
+            val current = prefs.getString(KEY_SCROLL_ANCHORS, null)
+                ?.let { runCatching { json.decodeFromString<Map<String, List<Int>>>(it) }.getOrDefault(emptyMap()) }
+                .orEmpty().toMutableMap()
+            current[sessionId] = listOf(index.coerceAtLeast(0), offset.coerceAtLeast(0))
+            prefs.edit().putString(KEY_SCROLL_ANCHORS, json.encodeToString(current)).apply()
+        }
+    }
+
     fun eventCursor(sessionId: String): String = synchronized(prefs) {
         val raw = prefs.getString(KEY_EVENT_CURSORS, null) ?: return@synchronized ""
         runCatching { json.decodeFromString<Map<String, String>>(raw)[sessionId].orEmpty() }.getOrDefault("")
@@ -155,5 +175,6 @@ class SettingsRepository(context: Context) {
         private const val KEY_ENDPOINTS = "runtime_endpoints"
         private const val KEY_ACTIVE_ENDPOINT = "active_runtime_endpoint"
         private const val KEY_EVENT_CURSORS = "event_cursors"
+        private const val KEY_SCROLL_ANCHORS = "scroll_anchors"
     }
 }

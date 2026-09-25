@@ -100,8 +100,9 @@ class LuckyAgentApi(
             ?.replace('\\', '_')
             ?.takeIf { it.isNotBlank() }
             ?: "luckyagent-attachment"
+        val destinationName = uniqueDownloadName(context, fileName)
         val request = DownloadManager.Request(Uri.parse(downloadUrl))
-            .setTitle(fileName)
+            .setTitle(destinationName)
             .setDescription("LuckyAgent attachment")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
@@ -114,11 +115,12 @@ class LuckyAgentApi(
                 else request.addRequestHeader("X-API-Key", snap.apiKey)
             }
         }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-        } else {
-            request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
-        }
+        // App-specific external storage works on every supported Android
+        // version and avoids the scoped-storage/public-directory failures
+        // that previously made an otherwise valid download silently fail.
+        // DownloadManager still exposes the completed file through its
+        // notification and the system file opener.
+        request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, destinationName)
         val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
             ?: error("系统下载服务不可用")
         manager.enqueue(request)
@@ -126,6 +128,16 @@ class LuckyAgentApi(
 
     private fun baseUrl(): String =
         settingsRepository.snapshot().apiBase.trim().trimEnd('/')
+
+    private fun uniqueDownloadName(context: Context, requested: String): String {
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: return requested
+        if (!java.io.File(dir, requested).exists()) return requested
+        val dot = requested.lastIndexOf('.')
+        val stem = if (dot > 0) requested.substring(0, dot) else requested
+        val ext = if (dot > 0) requested.substring(dot) else ""
+        return "$stem-${System.currentTimeMillis()}$ext"
+    }
 
     private fun absoluteUrl(raw: String): String = when {
         raw.startsWith("http://") || raw.startsWith("https://") -> raw

@@ -1230,6 +1230,12 @@ class AppViewModel(
             .onFailure { error -> _ui.update { it.copy(activityLine = "下载失败 · ${error.message ?: "未知错误"}") } }
     }
 
+    fun scrollAnchor(sessionId: String): Pair<Int, Int>? = container.settingsRepository.scrollAnchor(sessionId)
+
+    fun saveScrollAnchor(sessionId: String, index: Int, offset: Int) {
+        container.settingsRepository.saveScrollAnchor(sessionId, index, offset)
+    }
+
     fun sendComposer() {
         val text = _ui.value.composer.trim()
         val pending = _ui.value.pendingMedia
