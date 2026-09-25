@@ -785,7 +785,7 @@ class AppViewModel(
             model = usage["model"]?.jsonPrimitive?.contentOrNull,
         )
         return result.takeIf {
-            it.totalTokens > 0 || it.inputTokens > 0 || it.outputTokens > 0 || !it.model.isNullOrBlank()
+            it.totalTokens > 0 || it.inputTokens > 0 || it.outputTokens > 0 || it.cachedInputTokens > 0 || !it.model.isNullOrBlank()
         }
     }
 

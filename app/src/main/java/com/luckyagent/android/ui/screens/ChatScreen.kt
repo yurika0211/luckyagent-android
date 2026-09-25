@@ -98,10 +98,12 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
+import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.MarkdownText
@@ -619,7 +621,7 @@ private fun MessageMetadata(bubble: ChatBubble) {
     val usage = bubble.usage
     val summary = listOfNotNull(
         bubble.createdAt?.let(::formatMessageTime),
-        usage?.totalTokens?.takeIf { it > 0 }?.let { "${compactTokenCount(it)} tokens" },
+        usage?.let(::formatUsageSummary),
     ).joinToString(" · ")
     if (summary.isBlank()) return
 
@@ -639,9 +641,16 @@ private fun MessageMetadata(bubble: ChatBubble) {
                     .padding(top = 4.dp),
                 horizontalAlignment = Alignment.End,
             ) {
-                Text("输入 ${usage.inputTokens}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
-                Text("输出 ${usage.outputTokens}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
-                Text("总计 ${usage.totalTokens}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                Text("输入 ${formatTokenCount(usage.inputTokens)}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                if (usage.cachedInputTokens > 0) {
+                    Text(
+                        "缓存 ${formatTokenCount(usage.cachedInputTokens)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CloverText3,
+                    )
+                }
+                Text("输出 ${formatTokenCount(usage.outputTokens)}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                Text("总计 ${formatTokenCount(usage.totalTokens)}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 usage.model?.takeIf { it.isNotBlank() }?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -663,11 +672,11 @@ private fun formatMessageTime(raw: String): String {
     }.getOrElse { raw.take(16).replace('T', ' ') }
 }
 
-private fun compactTokenCount(tokens: Int): String {
-    if (tokens < 1000) return tokens.toString()
-    val value = tokens / 1000.0
-    return String.format(Locale.US, "%.1fk", value).removeSuffix(".0k")
-}
+private fun formatUsageSummary(usage: TokenUsage): String? = TokenFormat.usageSummary(usage)
+
+private fun formatTokenCount(tokens: Int): String = TokenFormat.full(tokens)
+
+private fun compactTokenCount(tokens: Int): String = TokenFormat.compact(tokens)
 
 @Composable
 private fun ProcessTimeline(
