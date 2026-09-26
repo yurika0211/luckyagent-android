@@ -2,6 +2,8 @@ package com.luckyagent.android.ui.screens
 
 import android.content.Context
 import android.net.Uri
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -130,6 +133,11 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import androidx.compose.material.icons.outlined.Mic
+import androidx.core.content.ContextCompat
+import com.luckyagent.android.data.media.CaptureMediaStore
+import com.luckyagent.android.data.media.CaptureTarget
+import com.luckyagent.android.data.media.VoiceRecorder
 
 private sealed interface ChatTimelineItem {
     val key: String
@@ -169,18 +177,129 @@ private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
 fun ChatScreen(state: AppUiState, vm: AppViewModel) {
     val context = LocalContext.current
     var showAttachmentOptions by remember { mutableStateOf(false) }
+    var pendingCameraTarget by remember { mutableStateOf<CaptureTarget?>(null) }
+    var pendingVoiceTarget by remember { mutableStateOf<CaptureTarget?>(null) }
+    var isRecordingVoice by remember { mutableStateOf(false) }
+    var recordingStartedAtMs by remember { mutableStateOf<Long?>(null) }
+    var recordingElapsedSec by remember { mutableStateOf(0) }
+    var captureHint by remember { mutableStateOf<String?>(null) }
+    val voiceRecorder = remember { VoiceRecorder() }
+
+    fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
     val visualPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
         if (uris.isNotEmpty()) {
-            uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+            uris.forEach { uri ->
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+            }
             vm.addPickedMedia(context.contentResolver, uris)
         }
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
-            uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+            uris.forEach { uri ->
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+            }
             vm.addPickedMedia(context.contentResolver, uris)
         }
     }
+    val takePictureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val target = pendingCameraTarget
+        pendingCameraTarget = null
+        if (target == null) return@rememberLauncherForActivityResult
+        if (success && target.file.exists() && target.file.length() > 0L) {
+            vm.addPickedMedia(context.contentResolver, listOf(target.uri))
+            captureHint = null
+        } else {
+            target.file.delete()
+            captureHint = "拍照取消或失败"
+        }
+    }
+
+    fun launchCameraCapture() {
+        if (isRecordingVoice) {
+            captureHint = "请先结束录音"
+            return
+        }
+        val target = CaptureMediaStore.newPhotoTarget(context)
+        pendingCameraTarget = target
+        runCatching { takePictureLauncher.launch(target.uri) }.onFailure {
+            pendingCameraTarget = null
+            target.file.delete()
+            captureHint = it.message ?: "无法打开相机"
+        }
+    }
+
+    fun startVoiceCapture() {
+        if (isRecordingVoice) return
+        val target = CaptureMediaStore.newVoiceTarget(context)
+        runCatching {
+            voiceRecorder.start(context, target.file)
+            pendingVoiceTarget = target
+            isRecordingVoice = true
+            recordingStartedAtMs = System.currentTimeMillis()
+            recordingElapsedSec = 0
+            captureHint = null
+        }.onFailure {
+            target.file.delete()
+            pendingVoiceTarget = null
+            isRecordingVoice = false
+            recordingStartedAtMs = null
+            captureHint = it.message ?: "无法开始录音"
+        }
+    }
+
+    fun stopVoiceCapture(cancel: Boolean) {
+        if (!isRecordingVoice && pendingVoiceTarget == null) return
+        val target = pendingVoiceTarget
+        pendingVoiceTarget = null
+        isRecordingVoice = false
+        recordingStartedAtMs = null
+        recordingElapsedSec = 0
+        if (cancel) {
+            voiceRecorder.cancel()
+            target?.file?.delete()
+            captureHint = "已取消录音"
+            return
+        }
+        val file = voiceRecorder.stop()
+        if (file != null && target != null) {
+            vm.addPickedMedia(context.contentResolver, listOf(target.uri))
+            captureHint = null
+        } else {
+            target?.file?.delete()
+            captureHint = "录音太短或失败"
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) launchCameraCapture() else captureHint = "需要相机权限才能拍照"
+    }
+    val micPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startVoiceCapture() else captureHint = "需要麦克风权限才能录音"
+    }
+
+    fun requestCameraCapture() {
+        if (hasPermission(Manifest.permission.CAMERA)) launchCameraCapture()
+        else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    fun requestVoiceCapture() {
+        if (hasPermission(Manifest.permission.RECORD_AUDIO)) startVoiceCapture()
+        else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val usePermanentSessionPane = LocalConfiguration.current.screenWidthDp >= 900
@@ -188,12 +307,46 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
 
+    LaunchedEffect(isRecordingVoice, recordingStartedAtMs) {
+        val started = recordingStartedAtMs ?: return@LaunchedEffect
+        if (!isRecordingVoice) return@LaunchedEffect
+        while (true) {
+            recordingElapsedSec = ((System.currentTimeMillis() - started) / 1000L).toInt().coerceAtLeast(0)
+            kotlinx.coroutines.delay(250)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (voiceRecorder.isRecording) {
+                voiceRecorder.cancel()
+            }
+        }
+    }
+
+    LaunchedEffect(captureHint) {
+        val hint = captureHint ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(2500)
+        if (captureHint == hint) captureHint = null
+    }
+
     if (showAttachmentOptions) {
         AlertDialog(
             onDismissRequest = { showAttachmentOptions = false },
             title = { Text("添加附件") },
             text = {
                 Column {
+                    TextButton(onClick = {
+                        showAttachmentOptions = false
+                        requestCameraCapture()
+                    }) { Text("拍照") }
+                    TextButton(
+                        onClick = {
+                            showAttachmentOptions = false
+                            requestVoiceCapture()
+                        },
+                        enabled = !isRecordingVoice,
+                    ) { Text("录音") }
                     TextButton(onClick = {
                         showAttachmentOptions = false
                         visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
@@ -204,7 +357,9 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
                     }) { Text("浏览文件") }
                 }
             },
-            confirmButton = {},
+            confirmButton = {
+                TextButton(onClick = { showAttachmentOptions = false }) { Text("取消") }
+            },
         )
     }
 
@@ -251,6 +406,11 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
                 showSessionMenu = !sessionPaneExpanded,
                 onOpenSessions = { sessionPaneExpanded = true },
                 onRequestAttachment = { showAttachmentOptions = true },
+                isRecordingVoice = isRecordingVoice,
+                recordingElapsedSec = recordingElapsedSec,
+                captureHint = captureHint,
+                onStopVoice = { stopVoiceCapture(cancel = false) },
+                onCancelVoice = { stopVoiceCapture(cancel = true) },
                 modifier = Modifier.weight(1f),
             )
         }
@@ -272,6 +432,11 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
                 showSessionMenu = true,
                 onOpenSessions = { scope.launch { drawerState.open() } },
                 onRequestAttachment = { showAttachmentOptions = true },
+                isRecordingVoice = isRecordingVoice,
+                recordingElapsedSec = recordingElapsedSec,
+                captureHint = captureHint,
+                onStopVoice = { stopVoiceCapture(cancel = false) },
+                onCancelVoice = { stopVoiceCapture(cancel = true) },
             )
         }
     }
@@ -310,6 +475,11 @@ private fun ChatConversation(
     showSessionMenu: Boolean,
     onOpenSessions: () -> Unit,
     onRequestAttachment: () -> Unit,
+    isRecordingVoice: Boolean,
+    recordingElapsedSec: Int,
+    captureHint: String?,
+    onStopVoice: () -> Unit,
+    onCancelVoice: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -441,6 +611,11 @@ private fun ChatConversation(
             onStop = vm::cancelRun,
             onAttach = onRequestAttachment,
             onRemoveMedia = vm::removePendingMedia,
+            isRecordingVoice = isRecordingVoice,
+            recordingElapsedSec = recordingElapsedSec,
+            captureHint = captureHint,
+            onStopVoice = onStopVoice,
+            onCancelVoice = onCancelVoice,
         )
     }
 }
@@ -837,6 +1012,11 @@ private fun ComposerBar(
     onStop: () -> Unit,
     onAttach: () -> Unit,
     onRemoveMedia: (String) -> Unit,
+    isRecordingVoice: Boolean,
+    recordingElapsedSec: Int,
+    captureHint: String?,
+    onStopVoice: () -> Unit,
+    onCancelVoice: () -> Unit,
 ) {
     Column(
         Modifier
@@ -845,6 +1025,36 @@ private fun ComposerBar(
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
+        if (isRecordingVoice) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(CloverSurface)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .padding(bottom = 0.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(Icons.Outlined.Mic, contentDescription = null, tint = CloverError)
+                Text(
+                    text = "录音中 ${formatElapsed(recordingElapsedSec)}",
+                    color = CloverText2,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onCancelVoice) { Text("取消") }
+                Button(onClick = onStopVoice) { Text("完成") }
+            }
+            Spacer(Modifier.height(8.dp))
+        } else if (!captureHint.isNullOrBlank()) {
+            Text(
+                text = captureHint,
+                color = CloverError,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
         if (state.pendingMedia.isNotEmpty()) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
@@ -1179,6 +1389,13 @@ private fun AttachmentFileCard(media: ChatMedia, kind: String, onDownload: (Chat
         )
         AttachmentDownloadButton(media, onDownload)
     }
+}
+
+private fun formatElapsed(totalSec: Int): String {
+    val safe = totalSec.coerceAtLeast(0)
+    val min = safe / 60
+    val sec = safe % 60
+    return "%d:%02d".format(min, sec)
 }
 
 private fun attachmentKind(descriptor: com.luckyagent.android.data.api.MediaAttachment): String {
