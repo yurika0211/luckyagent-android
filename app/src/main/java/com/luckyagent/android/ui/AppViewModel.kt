@@ -45,6 +45,7 @@ import com.luckyagent.android.BuildConfig
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -1350,7 +1351,7 @@ class AppViewModel(
                 _ui.update { it.copy(activityLine = "下载失败 · 系统下载服务不可用") }
                 return
             }
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             var status = -1
             var reason = 0
             manager.query(DownloadManager.Query().setFilterById(downloadId))?.use { cursor ->
