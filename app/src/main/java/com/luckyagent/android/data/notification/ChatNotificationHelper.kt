@@ -28,7 +28,7 @@ class ChatNotificationHelper(private val context: Context) {
         val pending = PendingIntent.getActivity(context, sessionId.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val body = summarize(content)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(com.luckyagent.android.R.drawable.ic_launcher)
+            .setSmallIcon(com.luckyagent.android.R.drawable.ic_notification)
             .setContentTitle("LuckyAgent · 对话完成")
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
