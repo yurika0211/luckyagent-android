@@ -129,6 +129,12 @@ data class PendingMedia(
     val error: String? = null,
 )
 
+data class AttachmentNotice(
+    val text: String,
+    val isError: Boolean = false,
+    val isComplete: Boolean = false,
+)
+
 data class AppUiState(
     val destination: AppDestination = AppDestination.Chat,
     val settings: ClientSettings = ClientSettings(),
@@ -181,6 +187,7 @@ data class AppUiState(
     val commandExecuting: Boolean = false,
     val commandExecution: CommandExecution? = null,
     val activityLine: String? = null,
+    val attachmentNotice: AttachmentNotice? = null,
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
     val drawerOpenHint: Boolean = false,
@@ -232,6 +239,7 @@ class AppViewModel(
     private val foregroundRequestIds = mutableMapOf<String, String>()
     private var appInForeground = false
     private var updateDownloadJob: Job? = null
+    private var attachmentNoticeJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -782,10 +790,8 @@ class AppViewModel(
     private fun distinctMedia(items: List<ChatMedia>): List<ChatMedia> {
         val seen = mutableSetOf<String>()
         return items.filter { media ->
-            val key = media.descriptor.fileUrl
-                ?: media.descriptor.filePath
-                ?: media.localUri
-                ?: return@filter false
+            val key = mediaKey(media).ifBlank { media.localUri.orEmpty() }
+            if (key.isBlank()) return@filter false
             seen.add(key)
         }
     }
@@ -937,11 +943,31 @@ class AppViewModel(
         assistantBufferId = null
     }
 
-    private fun mediaKey(media: ChatMedia): String =
-        media.descriptor.fileUrl
-            ?: media.descriptor.filePath
-            ?: media.descriptor.fileId
-            ?: media.descriptor.fileName.orEmpty()
+    private fun mediaKey(media: ChatMedia): String {
+        val descriptor = media.descriptor
+        return listOf(descriptor.fileUrl, descriptor.filePath, descriptor.fileId, descriptor.fileName)
+            .mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }
+            .map(::canonicalMediaKey)
+            .firstOrNull()
+            .orEmpty()
+    }
+
+    private fun canonicalMediaKey(value: String): String {
+        val normalized = value.replace('\\', '/')
+        val uri = runCatching { Uri.parse(normalized) }.getOrNull()
+        uri?.getQueryParameter("path")?.takeIf { it.isNotBlank() }?.let {
+            return "artifact:${it.trimStart('/')}"
+        }
+        listOf("/.luckyagent/workspace/", "/.luckyagent/uploads/").forEach { marker ->
+            if (normalized.contains(marker)) {
+                return "artifact:${normalized.substringAfter(marker)}".let {
+                    if (marker.contains("uploads")) it.replaceFirst("artifact:", "artifact:uploads/")
+                    else it.replaceFirst("artifact:", "artifact:workspace/")
+                }
+            }
+        }
+        return normalized
+    }
 
     private fun resetAssistantStream() {
         assistantFlushJob?.cancel()
@@ -1331,24 +1357,47 @@ class AppViewModel(
     fun downloadAttachment(context: Context, media: ChatMedia) {
         val descriptor = media.descriptor
         val fileName = descriptor.fileName ?: "附件"
-        if (descriptor.fileUrl.isNullOrBlank()) {
-            _ui.update { it.copy(activityLine = "附件没有可下载的 URL") }
+        val downloadUrl = descriptor.fileUrl?.takeIf { it.isNotBlank() }
+            ?: descriptor.filePath?.let(::artifactDescriptor)?.fileUrl
+        if (downloadUrl.isNullOrBlank()) {
+            publishAttachmentNotice("附件没有可下载的地址", isError = true)
             return
         }
-        container.api.enqueueAttachmentDownload(context, descriptor)
+        val downloadDescriptor = if (descriptor.fileUrl == downloadUrl) descriptor else descriptor.copy(fileUrl = downloadUrl)
+        publishAttachmentNotice("准备下载 · $fileName")
+        container.api.enqueueAttachmentDownload(context, downloadDescriptor)
             .onSuccess { downloadId ->
-                _ui.update { it.copy(activityLine = "下载中 · $fileName") }
+                publishAttachmentNotice("下载中 · $fileName")
                 viewModelScope.launch {
                     monitorAttachmentDownload(context.applicationContext, downloadId, fileName)
                 }
             }
-            .onFailure { error -> _ui.update { it.copy(activityLine = "下载失败 · ${error.message ?: "未知错误"}") } }
+            .onFailure { error -> publishAttachmentNotice("下载失败 · ${error.message ?: "未知错误"}", isError = true) }
+    }
+
+    private fun publishAttachmentNotice(text: String, isError: Boolean = false, isComplete: Boolean = false) {
+        attachmentNoticeJob?.cancel()
+        _ui.update {
+            it.copy(
+                attachmentNotice = AttachmentNotice(text, isError = isError, isComplete = isComplete),
+                activityLine = text,
+            )
+        }
+        if (isComplete || isError) {
+            val expected = text
+            attachmentNoticeJob = viewModelScope.launch {
+                delay(5000)
+                _ui.update { state ->
+                    if (state.attachmentNotice?.text == expected) state.copy(attachmentNotice = null) else state
+                }
+            }
+        }
     }
 
     private suspend fun monitorAttachmentDownload(context: Context, downloadId: Long, fileName: String) {
         val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
             ?: run {
-                _ui.update { it.copy(activityLine = "下载失败 · 系统下载服务不可用") }
+                publishAttachmentNotice("下载失败 · 系统下载服务不可用", isError = true)
                 return
             }
         while (currentCoroutineContext().isActive) {
@@ -1362,15 +1411,15 @@ class AppViewModel(
             }
             when (status) {
                 DownloadManager.STATUS_SUCCESSFUL -> {
-                    _ui.update { it.copy(activityLine = "下载完成 · $fileName") }
+                    publishAttachmentNotice("下载完成 · $fileName", isComplete = true)
                     return
                 }
                 DownloadManager.STATUS_FAILED -> {
-                    _ui.update { it.copy(activityLine = "下载失败 · ${downloadFailureReason(reason)}") }
+                    publishAttachmentNotice("下载失败 · ${downloadFailureReason(reason)}", isError = true)
                     return
                 }
                 -1 -> {
-                    _ui.update { it.copy(activityLine = "下载失败 · 找不到下载任务") }
+                    publishAttachmentNotice("下载失败 · 找不到下载任务", isError = true)
                     return
                 }
             }
