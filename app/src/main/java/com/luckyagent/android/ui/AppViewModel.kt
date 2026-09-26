@@ -1053,7 +1053,13 @@ class AppViewModel(
                 if (cursor.moveToFirst()) cursor.getString(0) else null
             } ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "attachment"
             val id = "media-${System.nanoTime()}"
-            val item = PendingMedia(id, uri.toString(), name, resolver.getType(uri) ?: "application/octet-stream")
+            val mime = resolver.getType(uri)
+                ?: name.substringAfterLast('.', missingDelimiterValue = "")
+                    .takeIf { it.isNotBlank() && it != name }
+                    ?.lowercase()
+                    ?.let { ext -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) }
+                ?: "application/octet-stream"
+            val item = PendingMedia(id, uri.toString(), name, mime)
             _ui.update { state -> state.copy(pendingMedia = state.pendingMedia + item) }
             viewModelScope.launch {
                 mediaUploadSemaphore.withPermit { container.api.uploadAttachment(resolver, uri, name) }.onSuccess { descriptor ->
