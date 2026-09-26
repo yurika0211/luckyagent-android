@@ -8,8 +8,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -41,18 +48,23 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.AudioFile
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -110,10 +122,8 @@ import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.MarkdownText
-import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.theme.CloverAccent
-import com.luckyagent.android.ui.theme.CloverAssistantBubble
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverBgSide
 import com.luckyagent.android.ui.theme.CloverError
@@ -330,39 +340,6 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
         if (captureHint == hint) captureHint = null
     }
 
-    if (showAttachmentOptions) {
-        AlertDialog(
-            onDismissRequest = { showAttachmentOptions = false },
-            title = { Text("添加附件") },
-            text = {
-                Column {
-                    TextButton(onClick = {
-                        showAttachmentOptions = false
-                        requestCameraCapture()
-                    }) { Text("拍照") }
-                    TextButton(
-                        onClick = {
-                            showAttachmentOptions = false
-                            requestVoiceCapture()
-                        },
-                        enabled = !isRecordingVoice,
-                    ) { Text("录音") }
-                    TextButton(onClick = {
-                        showAttachmentOptions = false
-                        visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                    }) { Text("照片和视频") }
-                    TextButton(onClick = {
-                        showAttachmentOptions = false
-                        filePicker.launch(arrayOf("*/*"))
-                    }) { Text("浏览文件") }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showAttachmentOptions = false }) { Text("取消") }
-            },
-        )
-    }
-
     val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
         SessionDrawer(
             state = state,
@@ -405,7 +382,24 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
                 vm = vm,
                 showSessionMenu = !sessionPaneExpanded,
                 onOpenSessions = { sessionPaneExpanded = true },
-                onRequestAttachment = { showAttachmentOptions = true },
+                showAttachmentOptions = showAttachmentOptions,
+                onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
+                onCameraCapture = {
+                    showAttachmentOptions = false
+                    requestCameraCapture()
+                },
+                onVoiceCapture = {
+                    showAttachmentOptions = false
+                    requestVoiceCapture()
+                },
+                onVisualPick = {
+                    showAttachmentOptions = false
+                    visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                },
+                onFilePick = {
+                    showAttachmentOptions = false
+                    filePicker.launch(arrayOf("*/*"))
+                },
                 isRecordingVoice = isRecordingVoice,
                 recordingElapsedSec = recordingElapsedSec,
                 captureHint = captureHint,
@@ -431,7 +425,24 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
                 vm = vm,
                 showSessionMenu = true,
                 onOpenSessions = { scope.launch { drawerState.open() } },
-                onRequestAttachment = { showAttachmentOptions = true },
+                showAttachmentOptions = showAttachmentOptions,
+                onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
+                onCameraCapture = {
+                    showAttachmentOptions = false
+                    requestCameraCapture()
+                },
+                onVoiceCapture = {
+                    showAttachmentOptions = false
+                    requestVoiceCapture()
+                },
+                onVisualPick = {
+                    showAttachmentOptions = false
+                    visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                },
+                onFilePick = {
+                    showAttachmentOptions = false
+                    filePicker.launch(arrayOf("*/*"))
+                },
                 isRecordingVoice = isRecordingVoice,
                 recordingElapsedSec = recordingElapsedSec,
                 captureHint = captureHint,
@@ -474,7 +485,12 @@ private fun ChatConversation(
     vm: AppViewModel,
     showSessionMenu: Boolean,
     onOpenSessions: () -> Unit,
-    onRequestAttachment: () -> Unit,
+    showAttachmentOptions: Boolean,
+    onToggleAttachment: () -> Unit,
+    onCameraCapture: () -> Unit,
+    onVoiceCapture: () -> Unit,
+    onVisualPick: () -> Unit,
+    onFilePick: () -> Unit,
     isRecordingVoice: Boolean,
     recordingElapsedSec: Int,
     captureHint: String?,
@@ -609,7 +625,12 @@ private fun ChatConversation(
             onChange = vm::updateComposer,
             onSend = vm::sendComposer,
             onStop = vm::cancelRun,
-            onAttach = onRequestAttachment,
+            showAttachmentOptions = showAttachmentOptions,
+            onToggleAttachment = onToggleAttachment,
+            onCameraCapture = onCameraCapture,
+            onVoiceCapture = onVoiceCapture,
+            onVisualPick = onVisualPick,
+            onFilePick = onFilePick,
             onRemoveMedia = vm::removePendingMedia,
             isRecordingVoice = isRecordingVoice,
             recordingElapsedSec = recordingElapsedSec,
@@ -623,55 +644,50 @@ private fun ChatConversation(
 @Composable
 private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean) {
     val openNavigation = LocalOpenNavigationDrawer.current
-    Row(
+    val live = state.socketState == SocketState.Connected || state.socketState == SocketState.Running
+    val connectionLabel = if (live) "live" else state.socketState.name.lowercase()
+    val connectionColor = if (live) CloverLeaf else CloverError
+    Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .clip(MaterialTheme.shapes.medium)
-            .background(CloverSurface)
-            .padding(horizontal = 4.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .background(CloverBg),
     ) {
-        if (showMenu) {
-            IconButton(onClick = onMenu) {
-                Icon(Icons.Outlined.Menu, contentDescription = "Sessions")
-            }
-        }
-        Column(Modifier.weight(1f)) {
-            Text("Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            val sid = state.settings.sessionId
-            Text(
-                if (sid.isBlank()) "No session" else sid.take(18) + if (sid.length > 18) "…" else "",
-                style = MaterialTheme.typography.labelSmall,
-                color = CloverText3,
-            )
-        }
-        val live = state.socketState == SocketState.Connected || state.socketState == SocketState.Running
-        MetaChip(if (live) "live" else state.socketState.name.lowercase())
-        if (state.isResponding || state.commandExecuting) {
-            Spacer(Modifier.width(6.dp))
-            MetaChip("working")
-        }
-        if (openNavigation != null) {
-            IconButton(onClick = openNavigation) {
-                Icon(Icons.Outlined.AccountCircle, contentDescription = "Profile and navigation")
-            }
-        }
-    }
-    if (state.progressSteps.isEmpty()) state.activityLine?.let {
-        Text(
-            it,
-            color = CloverText2,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier
+        HorizontalDivider(color = CloverLine.copy(alpha = .55f))
+        Row(
+            Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .clip(MaterialTheme.shapes.small)
-                .background(CloverSurface2)
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+                .heightIn(min = 56.dp)
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (showMenu) {
+                IconButton(onClick = onMenu) {
+                    Icon(Icons.Outlined.Menu, contentDescription = "Sessions", tint = CloverText2)
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                val sid = state.settings.sessionId
+                Text(
+                    if (sid.isBlank()) "No session" else sid.take(18) + if (sid.length > 18) "…" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Box(Modifier.size(6.dp).clip(CircleShape).background(connectionColor))
+                Text(connectionLabel, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+            }
+            if (openNavigation != null) {
+                IconButton(onClick = openNavigation) {
+                    Icon(Icons.Outlined.AccountCircle, contentDescription = "Profile and navigation", tint = CloverText2)
+                }
+            }
+        }
+        HorizontalDivider(color = CloverLine.copy(alpha = .55f))
     }
 }
 
@@ -695,20 +711,15 @@ private fun BubbleRow(
                     bubble.content,
                     color = CloverText3,
                     style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(CloverSurface2)
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(vertical = 4.dp),
                 )
             }
             else -> {
-                val bg = if (isUser) CloverUserBubble else CloverAssistantBubble
                 Column(
                     Modifier
                         .widthIn(max = 520.dp)
-                        .clip(MaterialTheme.shapes.medium)
-                        .background(bg)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(vertical = 2.dp),
+                    horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
                 ) {
                     if (!isUser) {
                         Text(
@@ -728,8 +739,6 @@ private fun BubbleRow(
                                 imageBaseUrl = imageBaseUrl,
                             )
                         }
-                    } else if (bubble.streaming) {
-                        Text("…", color = CloverText3)
                     }
                     if (bubble.attachments.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
@@ -755,15 +764,6 @@ private fun BubbleRow(
                                 onDownload = onDownload,
                             )
                         }
-                    }
-                    if (bubble.streaming) {
-                        Spacer(Modifier.height(4.dp))
-                        Box(
-                            Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                            .background(CloverLeaf),
-                        )
                     }
                     if (bubble.createdAt != null || bubble.usage != null) {
                         MessageMetadata(bubble)
@@ -940,15 +940,15 @@ private fun ToolPart(
         Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier.size(7.dp).clip(CircleShape).background(
-                when {
-                    bubble.toolSuccess == false -> CloverError
-                    !bubble.toolDone -> CloverAccent
-                    else -> CloverLeaf
-                },
-            ),
-        )
+        if (!bubble.toolDone && bubble.toolSuccess != false) {
+            CloverPulseIndicator(Modifier.size(10.dp), CloverAccent)
+        } else {
+            Box(
+                Modifier.size(7.dp).clip(CircleShape).background(
+                    if (bubble.toolSuccess == false) CloverError else CloverLeaf,
+                ),
+            )
+        }
         Spacer(Modifier.width(9.dp))
         Text(
             bubble.toolName ?: "工具调用",
@@ -1010,7 +1010,12 @@ private fun ComposerBar(
     onChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
-    onAttach: () -> Unit,
+    showAttachmentOptions: Boolean,
+    onToggleAttachment: () -> Unit,
+    onCameraCapture: () -> Unit,
+    onVoiceCapture: () -> Unit,
+    onVisualPick: () -> Unit,
+    onFilePick: () -> Unit,
     onRemoveMedia: (String) -> Unit,
     isRecordingVoice: Boolean,
     recordingElapsedSec: Int,
@@ -1018,6 +1023,10 @@ private fun ComposerBar(
     onStopVoice: () -> Unit,
     onCancelVoice: () -> Unit,
 ) {
+    val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
+    val activityWorking = chatWorking || state.commandExecuting
+    val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty()
+    val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
     Column(
         Modifier
             .fillMaxWidth()
@@ -1025,26 +1034,35 @@ private fun ComposerBar(
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
+        AnimatedVisibility(visible = showAttachmentOptions && !isRecordingVoice) {
+            Column {
+                AttachmentActionRow(
+                    onCameraCapture = onCameraCapture,
+                    onVoiceCapture = onVoiceCapture,
+                    onVisualPick = onVisualPick,
+                    onFilePick = onFilePick,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+        }
         if (isRecordingVoice) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(CloverSurface)
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .padding(bottom = 0.dp),
+                    .padding(horizontal = 4.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(Icons.Outlined.Mic, contentDescription = null, tint = CloverError)
+                CloverPulseIndicator(tint = CloverError)
+                Icon(Icons.Outlined.Mic, contentDescription = null, tint = CloverError, modifier = Modifier.size(18.dp))
                 Text(
                     text = "录音中 ${formatElapsed(recordingElapsedSec)}",
                     color = CloverText2,
                     style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
                 )
+                VoiceWaveform(Modifier.weight(1f))
                 TextButton(onClick = onCancelVoice) { Text("取消") }
-                Button(onClick = onStopVoice) { Text("完成") }
+                TextButton(onClick = onStopVoice) { Text("完成") }
             }
             Spacer(Modifier.height(8.dp))
         } else if (!captureHint.isNullOrBlank()) {
@@ -1052,10 +1070,28 @@ private fun ComposerBar(
                 text = captureHint,
                 color = CloverError,
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(bottom = 8.dp),
+                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
             )
         }
         if (state.pendingMedia.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("附件 ${state.pendingMedia.size}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                val failed = state.pendingMedia.count { it.error != null }
+                val uploading = state.pendingMedia.count { it.descriptor == null && it.error == null }
+                Text(
+                    when {
+                        failed > 0 -> "$failed 个失败"
+                        uploading > 0 -> "$uploading 个上传中"
+                        else -> "已就绪"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (failed > 0) CloverError else CloverText3,
+                )
+            }
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1063,9 +1099,28 @@ private fun ComposerBar(
                 state.pendingMedia.forEach { media -> PendingMediaChip(media, onRemove = { onRemoveMedia(media.id) }) }
             }
         }
+        if (activityWorking) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                CloverPulseIndicator()
+                StreamingDots()
+                Text(
+                    if (state.commandExecuting) "执行中" else "生成中",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                )
+            }
+        }
         Row(verticalAlignment = Alignment.Bottom) {
-            IconButton(onClick = onAttach, modifier = Modifier.padding(end = 2.dp)) {
-                Icon(Icons.Outlined.Add, contentDescription = "添加附件", tint = CloverText2)
+            IconButton(onClick = onToggleAttachment, modifier = Modifier.padding(end = 2.dp)) {
+                Icon(
+                    if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
+                    contentDescription = if (showAttachmentOptions) "关闭附件选项" else "添加附件",
+                    tint = CloverText2,
+                )
             }
             BasicTextField(
                 value = state.composer,
@@ -1077,9 +1132,7 @@ private fun ComposerBar(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = 48.dp, max = 140.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(CloverSurface)
-                    .padding(horizontal = 16.dp, vertical = 13.dp),
+                    .padding(horizontal = 4.dp, vertical = 13.dp),
                 decorationBox = { inner ->
                     if (state.composer.isEmpty()) {
                         Text("Message or /command", color = CloverText3)
@@ -1088,9 +1141,6 @@ private fun ComposerBar(
                 },
             )
             Spacer(Modifier.width(6.dp))
-            val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
-            val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty()
-            val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
             if (chatWorking) {
                 if (isStopCommand) {
                     IconButton(
@@ -1136,6 +1186,129 @@ private fun ComposerBar(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentActionRow(
+    onCameraCapture: () -> Unit,
+    onVoiceCapture: () -> Unit,
+    onVisualPick: () -> Unit,
+    onFilePick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        AttachmentAction(Icons.Outlined.CameraAlt, "拍照", onCameraCapture)
+        AttachmentAction(Icons.Outlined.Mic, "录音", onVoiceCapture)
+        AttachmentAction(Icons.Outlined.PhotoLibrary, "相册", onVisualPick)
+        AttachmentAction(Icons.Outlined.AttachFile, "文件", onFilePick)
+    }
+}
+
+@Composable
+private fun AttachmentAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Column(
+        Modifier
+            .width(76.dp)
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(icon, contentDescription = label, tint = CloverText2, modifier = Modifier.size(20.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+    }
+}
+
+@Composable
+private fun CloverPulseIndicator(
+    modifier: Modifier = Modifier,
+    tint: Color = CloverLeaf,
+) {
+    val transition = rememberInfiniteTransition(label = "clover-pulse")
+    val pulse = transition.animateFloat(
+        initialValue = .65f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "clover-alpha",
+    ).value
+    Canvas(modifier.size(14.dp)) {
+        val radius = size.minDimension * .27f
+        val x1 = size.width * .31f
+        val x2 = size.width * .69f
+        val y1 = size.height * .31f
+        val y2 = size.height * .69f
+        drawCircle(tint.copy(alpha = pulse), radius, androidx.compose.ui.geometry.Offset(x1, y1))
+        drawCircle(tint.copy(alpha = pulse), radius, androidx.compose.ui.geometry.Offset(x2, y1))
+        drawCircle(tint.copy(alpha = pulse), radius, androidx.compose.ui.geometry.Offset(x1, y2))
+        drawCircle(tint.copy(alpha = pulse), radius, androidx.compose.ui.geometry.Offset(x2, y2))
+    }
+}
+
+@Composable
+private fun StreamingDots() {
+    val transition = rememberInfiniteTransition(label = "streaming-dots")
+    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        repeat(3) { index ->
+            val alpha = transition.animateFloat(
+                initialValue = .22f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    keyframes {
+                        durationMillis = 1200
+                        .22f at 0
+                        .22f at (index * 150)
+                        1f at (index * 150 + 180)
+                        .22f at (index * 150 + 430)
+                        .22f at 1200
+                    },
+                    RepeatMode.Restart,
+                ),
+                label = "dot-$index",
+            ).value
+            Box(Modifier.size(4.dp).clip(CircleShape).background(CloverLeaf.copy(alpha = alpha)))
+        }
+    }
+}
+
+@Composable
+private fun VoiceWaveform(modifier: Modifier = Modifier) {
+    Row(
+        modifier,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(10) { index ->
+            val transition = rememberInfiniteTransition(label = "voice-wave-$index")
+            val level = transition.animateFloat(
+                initialValue = .25f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = keyframes {
+                        durationMillis = 900
+                        .25f at 0
+                        (if (index % 3 == 0) 1f else .55f) at 260
+                        .25f at 520
+                        .25f at 900
+                    },
+                    repeatMode = RepeatMode.Restart,
+                ),
+                label = "voice-bar-$index",
+            ).value
+            Box(
+                Modifier
+                    .width(2.dp)
+                    .height((5f + level * 13f).dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(CloverLeaf),
+            )
         }
     }
 }
@@ -1427,10 +1600,8 @@ private fun sameMediaOrigin(url: String, baseUrl: String): Boolean {
 private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit) {
     Row(
         Modifier
-            .widthIn(max = 190.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(CloverSurface2)
-            .padding(start = 6.dp, end = 2.dp, top = 5.dp, bottom = 5.dp),
+            .widthIn(max = 230.dp)
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (media.mimeType.startsWith("image/")) {
@@ -1439,6 +1610,14 @@ private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit) {
                 contentDescription = media.fileName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)),
+            )
+            Spacer(Modifier.width(7.dp))
+        } else {
+            Icon(
+                if (media.mimeType.startsWith("audio/")) Icons.Outlined.AudioFile else Icons.Outlined.AttachFile,
+                contentDescription = null,
+                tint = CloverText2,
+                modifier = Modifier.size(22.dp),
             )
             Spacer(Modifier.width(7.dp))
         }
@@ -1450,6 +1629,11 @@ private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit) {
                 color = if (media.error != null) CloverError else CloverText3,
                 maxLines = 1,
             )
+        }
+        when {
+            media.error != null -> Icon(Icons.Outlined.ErrorOutline, contentDescription = "上传失败", tint = CloverError, modifier = Modifier.size(17.dp))
+            media.descriptor == null -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp, color = CloverAccent)
+            else -> Icon(Icons.Outlined.Check, contentDescription = "上传完成", tint = CloverLeaf, modifier = Modifier.size(17.dp))
         }
         IconButton(onClick = onRemove, modifier = Modifier.size(30.dp)) {
             Icon(Icons.Outlined.Close, contentDescription = "移除附件", modifier = Modifier.size(16.dp), tint = CloverText3)
