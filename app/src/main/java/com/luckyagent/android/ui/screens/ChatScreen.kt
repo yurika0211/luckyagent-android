@@ -60,6 +60,8 @@ import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
@@ -70,6 +72,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -131,6 +134,7 @@ import com.luckyagent.android.ui.theme.CloverLeaf
 import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
+import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
@@ -1047,6 +1051,32 @@ private fun ComposerBar(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        state.attachmentNotice?.let { notice ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                when {
+                    notice.isError -> Icon(Icons.Outlined.ErrorOutline, contentDescription = null, tint = CloverError, modifier = Modifier.size(15.dp))
+                    notice.isComplete -> Icon(Icons.Outlined.Check, contentDescription = null, tint = CloverLeaf, modifier = Modifier.size(15.dp))
+                    else -> CloverPulseIndicator(Modifier.size(14.dp), CloverAccent)
+                }
+                Text(
+                    notice.text,
+                    color = when {
+                        notice.isError -> CloverError
+                        notice.isComplete -> CloverAccent
+                        else -> CloverText3
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         AnimatedVisibility(visible = showAttachmentOptions && !isRecordingVoice) {
             Column {
                 AttachmentActionRow(
@@ -1355,6 +1385,9 @@ private fun ChatMediaPreview(
     }
     var showImageViewer by remember(sourceUri?.toString(), kind) { mutableStateOf(false) }
     var playbackError by remember(sourceUri?.toString(), descriptor.mimeType, kind) { mutableStateOf(false) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var positionMs by remember { mutableStateOf(0L) }
+    var durationMs by remember { mutableStateOf(0L) }
     val player = rememberAttachmentPlayer(
         context = context,
         sourceUri = sourceUri,
@@ -1367,6 +1400,14 @@ private fun ChatMediaPreview(
             onDispose { }
         } else {
             val listener = object : Player.Listener {
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    isPlaying = playing
+                }
+
+                override fun onPlaybackStateChanged(state: Int) {
+                    durationMs = player.duration.takeIf { it > 0 } ?: 0L
+                }
+
                 override fun onPlayerError(error: PlaybackException) {
                     playbackError = true
                 }
@@ -1390,71 +1431,29 @@ private fun ChatMediaPreview(
         player.prepare()
     }
 
+    LaunchedEffect(player) {
+        while (true) {
+            if (player != null) {
+                positionMs = player.currentPosition.coerceAtLeast(0L)
+                durationMs = player.duration.takeIf { it > 0 } ?: durationMs
+                isPlaying = player.isPlaying
+            }
+            kotlinx.coroutines.delay(250)
+        }
+    }
+
     when {
         kind == "image" && sourceUri != null && imageModel != null -> {
-            Column(Modifier.fillMaxWidth()) {
-                Box(
-                    Modifier
-                        .widthIn(max = 420.dp)
-                        .then(if (compact) Modifier.aspectRatio(1f) else Modifier.heightIn(max = 280.dp))
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { showImageViewer = true },
-                ) {
-                        AsyncImage(
-                            model = imageModel,
-                            contentDescription = descriptor.fileName ?: "图片附件",
-                            contentScale = ContentScale.Crop,
-                            modifier = if (compact) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
-                    )
-                }
-                if (!compact) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        AttachmentDownloadButton(media, onDownload)
-                    }
-                }
-            }
+            ImageAttachmentCard(media, imageModel, compact, { showImageViewer = true }, onDownload)
         }
         kind == "image" && sourceUri != null && media.localUri != null -> {
-            Column(Modifier.fillMaxWidth()) {
-                Box(
-                    Modifier
-                        .widthIn(max = 420.dp)
-                        .then(if (compact) Modifier.aspectRatio(1f) else Modifier.heightIn(max = 280.dp))
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { showImageViewer = true },
-                ) {
-                    AsyncImage(
-                        model = sourceUri,
-                        contentDescription = descriptor.fileName ?: "图片附件",
-                        contentScale = ContentScale.Crop,
-                        modifier = if (compact) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
-                    )
-                }
-                if (!compact) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        AttachmentDownloadButton(media, onDownload)
-                    }
-                }
-            }
+            ImageAttachmentCard(media, sourceUri, compact, { showImageViewer = true }, onDownload)
         }
-        (kind == "audio" || kind == "video") && player != null -> {
-            AndroidView(
-                factory = { PlayerView(it) },
-                update = { view ->
-                    view.player = player
-                    view.useController = true
-                    view.resizeMode = if (kind == "video") {
-                        AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    } else {
-                        AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(if (kind == "video") 230.dp else 76.dp)
-                    .clip(RoundedCornerShape(12.dp)),
-            )
-            AttachmentDownloadButton(media, onDownload)
+        kind == "audio" && player != null -> {
+            AudioAttachmentCard(media, player, isPlaying, positionMs, durationMs, onDownload)
+        }
+        kind == "video" && player != null -> {
+            VideoAttachmentCard(media, player, onDownload)
         }
         else -> AttachmentFileCard(media, kind, onDownload)
     }
@@ -1464,7 +1463,7 @@ private fun ChatMediaPreview(
             model = imageModel ?: sourceUri,
             name = descriptor.fileName ?: "图片附件",
             onDismiss = { showImageViewer = false },
-            onDownload = if (!descriptor.fileUrl.isNullOrBlank()) {
+            onDownload = if (!descriptor.fileUrl.isNullOrBlank() || !descriptor.filePath.isNullOrBlank()) {
                 {
                     onDownload(media)
                     showImageViewer = false
@@ -1472,6 +1471,175 @@ private fun ChatMediaPreview(
             } else {
                 null
             },
+        )
+    }
+}
+
+@Composable
+private fun ImageAttachmentCard(
+    media: ChatMedia,
+    model: Any,
+    compact: Boolean,
+    onOpen: () -> Unit,
+    onDownload: (ChatMedia) -> Unit,
+) {
+    val descriptor = media.descriptor
+    Box(
+        Modifier
+            .widthIn(max = 420.dp)
+            .fillMaxWidth()
+            .then(if (compact) Modifier.aspectRatio(1f) else Modifier.heightIn(min = 180.dp, max = 300.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.Black)
+            .clickable(onClick = onOpen),
+    ) {
+        AsyncImage(
+            model = model,
+            contentDescription = descriptor.fileName ?: "图片附件",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Row(
+            Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = .48f))
+                .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    descriptor.fileName ?: "图片附件",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                descriptor.fileSize?.takeIf { it > 0 }?.let {
+                    Text(formatMediaSize(it), color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            AttachmentDownloadButton(media, onDownload, tint = Color.White)
+        }
+    }
+}
+
+@Composable
+private fun AudioAttachmentCard(
+    media: ChatMedia,
+    player: ExoPlayer,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    onDownload: (ChatMedia) -> Unit,
+) {
+    val descriptor = media.descriptor
+    val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .widthIn(max = 440.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(CloverSurface2)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(CloverAccent),
+                contentAlignment = Alignment.Center,
+            ) {
+                IconButton(onClick = { if (player.isPlaying) player.pause() else player.play() }) {
+                    Icon(
+                        if (isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                        contentDescription = if (isPlaying) "暂停音频" else "播放音频",
+                        tint = Color.White,
+                    )
+                }
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    descriptor.fileName ?: "音频附件",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = CloverText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "${formatDuration(positionMs)} / ${formatDuration(durationMs)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                )
+            }
+            AttachmentDownloadButton(media, onDownload)
+        }
+        Spacer(Modifier.height(8.dp))
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(3.dp)),
+            color = CloverAccent,
+            trackColor = CloverLine,
+        )
+    }
+}
+
+@Composable
+private fun VideoAttachmentCard(
+    media: ChatMedia,
+    player: ExoPlayer,
+    onDownload: (ChatMedia) -> Unit,
+) {
+    val descriptor = media.descriptor
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .widthIn(max = 440.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(CloverSurface2),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 190.dp, max = 260.dp)
+                .background(Color.Black),
+        ) {
+            AndroidView(
+                factory = { PlayerView(it) },
+                update = { view ->
+                    view.player = player
+                    view.useController = true
+                    view.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+            Row(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = .38f))
+                    .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    descriptor.fileName ?: "视频附件",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                AttachmentDownloadButton(media, onDownload, tint = Color.White)
+            }
+        }
+        Text(
+            text = "视频 · ${descriptor.fileName ?: "附件"}",
+            style = MaterialTheme.typography.labelMedium,
+            color = CloverText2,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -1550,10 +1718,10 @@ private fun FullscreenImagePreview(
 }
 
 @Composable
-private fun AttachmentDownloadButton(media: ChatMedia, onDownload: (ChatMedia) -> Unit) {
-    if (!media.descriptor.fileUrl.isNullOrBlank()) {
+private fun AttachmentDownloadButton(media: ChatMedia, onDownload: (ChatMedia) -> Unit, tint: Color = CloverText2) {
+    if (!media.descriptor.fileUrl.isNullOrBlank() || !media.descriptor.filePath.isNullOrBlank()) {
         IconButton(onClick = { onDownload(media) }, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Outlined.Download, contentDescription = "下载附件", tint = CloverText2)
+            Icon(Icons.Outlined.Download, contentDescription = "下载附件", tint = tint)
         }
     }
 }
@@ -1566,17 +1734,20 @@ private fun AttachmentFileCard(media: ChatMedia, kind: String, onDownload: (Chat
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(CloverSurface2)
-            .padding(start = 10.dp, end = 2.dp),
+            .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
     ) {
         Text(
-            text = "${mediaTypeLabel(kind)} · ${descriptor.fileName ?: "附件"}",
-            style = MaterialTheme.typography.bodySmall,
+            text = descriptor.fileName ?: "附件",
+            style = MaterialTheme.typography.bodyMedium,
             color = CloverText2,
-            modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            modifier = Modifier.weight(1f),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        AttachmentDownloadButton(media, onDownload)
+        Column(horizontalAlignment = Alignment.End) {
+            Text(mediaTypeLabel(kind), style = MaterialTheme.typography.labelSmall, color = CloverText3)
+            AttachmentDownloadButton(media, onDownload)
+        }
     }
 }
 
@@ -1585,6 +1756,17 @@ private fun formatElapsed(totalSec: Int): String {
     val min = safe / 60
     val sec = safe % 60
     return "%d:%02d".format(min, sec)
+}
+
+private fun formatMediaSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> "%.1f MB".format(bytes / (1024f * 1024f))
+    bytes >= 1024L -> "%.0f KB".format(bytes / 1024f)
+    else -> "$bytes B"
+}
+
+private fun formatDuration(milliseconds: Long): String {
+    val seconds = (milliseconds / 1000L).coerceAtLeast(0L)
+    return "%d:%02d".format(seconds / 60L, seconds % 60L)
 }
 
 private fun attachmentKind(descriptor: com.luckyagent.android.data.api.MediaAttachment): String {
