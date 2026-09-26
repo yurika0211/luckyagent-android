@@ -1027,13 +1027,26 @@ private fun ComposerBar(
     val activityWorking = chatWorking || state.commandExecuting
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty()
     val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
+    val attachmentActivity = state.activityLine?.takeIf {
+        it.contains("下载") || it.contains("附件")
+    }
     Column(
         Modifier
             .fillMaxWidth()
             .background(CloverBg)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+        .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
+        if (!isRecordingVoice && !activityWorking && !attachmentActivity.isNullOrBlank()) {
+            Text(
+                attachmentActivity,
+                color = if (attachmentActivity.contains("失败")) CloverError else CloverText3,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(start = 4.dp, bottom = 7.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         AnimatedVisibility(visible = showAttachmentOptions && !isRecordingVoice) {
             Column {
                 AttachmentActionRow(
@@ -1452,7 +1465,10 @@ private fun ChatMediaPreview(
             name = descriptor.fileName ?: "图片附件",
             onDismiss = { showImageViewer = false },
             onDownload = if (!descriptor.fileUrl.isNullOrBlank()) {
-                { onDownload(media) }
+                {
+                    onDownload(media)
+                    showImageViewer = false
+                }
             } else {
                 null
             },

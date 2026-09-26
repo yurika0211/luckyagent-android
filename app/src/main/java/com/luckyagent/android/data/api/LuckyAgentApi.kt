@@ -4,6 +4,7 @@ import android.app.DownloadManager
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import com.luckyagent.android.data.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
@@ -115,12 +116,16 @@ class LuckyAgentApi(
                 else request.addRequestHeader("X-API-Key", snap.apiKey)
             }
         }
-        // App-specific external storage works on every supported Android
-        // version and avoids the scoped-storage/public-directory failures
-        // that previously made an otherwise valid download silently fail.
-        // DownloadManager still exposes the completed file through its
-        // notification and the system file opener.
-        request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, destinationName)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ allows DownloadManager to write the public Downloads
+            // directory without broad storage permission. This makes the file
+            // visible to the user's file manager and share sheet.
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, destinationName)
+        } else {
+            // Older Android versions keep the permission-free app-specific
+            // fallback; the completion notification still exposes the file.
+            request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, destinationName)
+        }
         val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
             ?: error("系统下载服务不可用")
         manager.enqueue(request)

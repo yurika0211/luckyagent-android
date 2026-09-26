@@ -1,5 +1,6 @@
 package com.luckyagent.android.ui
 
+import android.app.DownloadManager
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
@@ -44,6 +45,7 @@ import com.luckyagent.android.BuildConfig
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -1328,13 +1330,65 @@ class AppViewModel(
 
     fun downloadAttachment(context: Context, media: ChatMedia) {
         val descriptor = media.descriptor
+        val fileName = descriptor.fileName ?: "附件"
         if (descriptor.fileUrl.isNullOrBlank()) {
             _ui.update { it.copy(activityLine = "附件没有可下载的 URL") }
             return
         }
         container.api.enqueueAttachmentDownload(context, descriptor)
-            .onSuccess { _ui.update { it.copy(activityLine = "已开始下载 · ${descriptor.fileName ?: "附件"}") } }
+            .onSuccess { downloadId ->
+                _ui.update { it.copy(activityLine = "下载中 · $fileName") }
+                viewModelScope.launch {
+                    monitorAttachmentDownload(context.applicationContext, downloadId, fileName)
+                }
+            }
             .onFailure { error -> _ui.update { it.copy(activityLine = "下载失败 · ${error.message ?: "未知错误"}") } }
+    }
+
+    private suspend fun monitorAttachmentDownload(context: Context, downloadId: Long, fileName: String) {
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+            ?: run {
+                _ui.update { it.copy(activityLine = "下载失败 · 系统下载服务不可用") }
+                return
+            }
+        while (currentCoroutineContext().isActive) {
+            var status = -1
+            var reason = 0
+            manager.query(DownloadManager.Query().setFilterById(downloadId))?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                    reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                }
+            }
+            when (status) {
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    _ui.update { it.copy(activityLine = "下载完成 · $fileName") }
+                    return
+                }
+                DownloadManager.STATUS_FAILED -> {
+                    _ui.update { it.copy(activityLine = "下载失败 · ${downloadFailureReason(reason)}") }
+                    return
+                }
+                -1 -> {
+                    _ui.update { it.copy(activityLine = "下载失败 · 找不到下载任务") }
+                    return
+                }
+            }
+            delay(500)
+        }
+    }
+
+    private fun downloadFailureReason(reason: Int): String = when (reason) {
+        DownloadManager.ERROR_CANNOT_RESUME -> "无法继续下载"
+        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "存储设备不可用"
+        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "文件已存在"
+        DownloadManager.ERROR_FILE_ERROR -> "文件写入失败"
+        DownloadManager.ERROR_HTTP_DATA_ERROR -> "网络数据错误"
+        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "存储空间不足"
+        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "重定向次数过多"
+        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "服务器返回异常"
+        DownloadManager.ERROR_UNKNOWN -> "未知错误"
+        else -> "系统错误 $reason"
     }
 
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = container.settingsRepository.scrollAnchor(sessionId)
