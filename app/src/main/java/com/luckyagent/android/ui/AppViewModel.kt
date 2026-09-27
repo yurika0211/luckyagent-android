@@ -1213,11 +1213,19 @@ class AppViewModel(
             val q = _ui.value.sessionQuery
             val result = container.api.listSessions(q)
             _ui.update {
-                it.copy(
-                    sessionsLoading = false,
-                    sessions = result.getOrDefault(emptyList()),
-                    sessionsError = result.exceptionOrNull()?.message,
-                )
+                if (result.isSuccess) {
+                    it.copy(
+                        sessionsLoading = false,
+                        sessions = result.getOrDefault(emptyList()),
+                        sessionsError = null,
+                    )
+                } else {
+                    // Keep the previous list so errors don't look like an empty workspace.
+                    it.copy(
+                        sessionsLoading = false,
+                        sessionsError = result.exceptionOrNull()?.message ?: "Failed to load sessions",
+                    )
+                }
             }
         }
     }

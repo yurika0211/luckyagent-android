@@ -35,6 +35,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import com.luckyagent.android.ui.MinMainContentWidth
+import com.luckyagent.android.ui.AppNavRailWidth
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
@@ -100,7 +106,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.viewinterop.AndroidView
@@ -188,7 +193,11 @@ private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
 }
 
 @Composable
-fun ChatScreen(state: AppUiState, vm: AppViewModel) {
+fun ChatScreen(
+    state: AppUiState,
+    vm: AppViewModel,
+    railOccupied: Boolean = false,
+) {
     val context = LocalContext.current
     var showAttachmentOptions by remember { mutableStateOf(false) }
     var pendingCameraTarget by remember { mutableStateOf<CaptureTarget?>(null) }
@@ -316,8 +325,9 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val usePermanentSessionPane = LocalConfiguration.current.screenWidthDp >= 900
     var sessionPaneExpanded by rememberSaveable { mutableStateOf(true) }
+    val sessionPaneWidth = 304.dp
+    val sessionDrawerWidth = 320.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
 
@@ -344,115 +354,133 @@ fun ChatScreen(state: AppUiState, vm: AppViewModel) {
         if (captureHint == hint) captureHint = null
     }
 
-    val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
-        SessionDrawer(
-            state = state,
-            onClose = {
-                if (usePermanentSessionPane) sessionPaneExpanded = false
-                else scope.launch { drawerState.close() }
-            },
-            onSelect = { id ->
-                vm.selectSession(id)
-                if (!usePermanentSessionPane) scope.launch { drawerState.close() }
-            },
-            onCreate = {
-                vm.createSession()
-                if (!usePermanentSessionPane) scope.launch { drawerState.close() }
-            },
-            onQueryChange = vm::updateSessionQuery,
-            onRename = { session ->
-                renameTarget = session
-                renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
-            },
-            onRefresh = vm::refreshSessions,
-            showClose = showClose,
-        )
-    }
+    BoxWithConstraints(Modifier.fillMaxSize().background(CloverBg)) {
+        // Fixed session pane only when the remaining chat area stays usable.
+        val usePermanentSessionPane =
+            maxWidth >= 900.dp &&
+                (maxWidth - sessionPaneWidth - (if (railOccupied) AppNavRailWidth else 0.dp)) >= MinMainContentWidth
+        val drawerMaxWidth = minOf(sessionDrawerWidth, maxWidth * 0.86f)
 
-    if (usePermanentSessionPane) {
-        Row(Modifier.fillMaxSize().background(CloverBg)) {
-            if (sessionPaneExpanded) {
-                Column(
-                    Modifier
-                        .width(304.dp)
-                        .fillMaxHeight()
-                        .background(CloverBgSide),
-                ) {
-                    sessionDrawer(true)
-                }
-            }
-            ChatConversation(
+        val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
+            SessionDrawer(
                 state = state,
-                vm = vm,
-                showSessionMenu = !sessionPaneExpanded,
-                onOpenSessions = { sessionPaneExpanded = true },
-                showAttachmentOptions = showAttachmentOptions,
-                onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
-                onCameraCapture = {
-                    showAttachmentOptions = false
-                    requestCameraCapture()
+                onClose = {
+                    if (usePermanentSessionPane) sessionPaneExpanded = false
+                    else scope.launch { drawerState.close() }
                 },
-                onVoiceCapture = {
-                    showAttachmentOptions = false
-                    requestVoiceCapture()
+                onSelect = { id ->
+                    vm.selectSession(id)
+                    if (!usePermanentSessionPane) scope.launch { drawerState.close() }
                 },
-                onVisualPick = {
-                    showAttachmentOptions = false
-                    visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                onCreate = {
+                    vm.createSession()
+                    if (!usePermanentSessionPane) scope.launch { drawerState.close() }
                 },
-                onFilePick = {
-                    showAttachmentOptions = false
-                    filePicker.launch(arrayOf("*/*"))
+                onQueryChange = vm::updateSessionQuery,
+                onRename = { session ->
+                    renameTarget = session
+                    renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
                 },
-                isRecordingVoice = isRecordingVoice,
-                recordingElapsedSec = recordingElapsedSec,
-                captureHint = captureHint,
-                onStopVoice = { stopVoiceCapture(cancel = false) },
-                onCancelVoice = { stopVoiceCapture(cancel = true) },
-                modifier = Modifier.weight(1f),
+                onRefresh = vm::refreshSessions,
+                showClose = showClose,
             )
         }
-    } else {
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            drawerContent = {
-                ModalDrawerSheet(
-                    drawerContainerColor = CloverBgSide,
-                    modifier = Modifier.width(320.dp),
-                ) {
-                    sessionDrawer(true)
+
+        if (usePermanentSessionPane) {
+            Row(Modifier.fillMaxSize()) {
+                if (sessionPaneExpanded) {
+                    Column(
+                        Modifier
+                            .width(sessionPaneWidth)
+                            .widthIn(max = sessionPaneWidth)
+                            .fillMaxHeight()
+                            .background(CloverBgSide)
+                            .windowInsetsPadding(WindowInsets.safeDrawing),
+                    ) {
+                        sessionDrawer(true)
+                    }
                 }
-            },
-        ) {
-            ChatConversation(
-                state = state,
-                vm = vm,
-                showSessionMenu = true,
-                onOpenSessions = { scope.launch { drawerState.open() } },
-                showAttachmentOptions = showAttachmentOptions,
-                onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
-                onCameraCapture = {
-                    showAttachmentOptions = false
-                    requestCameraCapture()
+                ChatConversation(
+                    state = state,
+                    vm = vm,
+                    showSessionMenu = !sessionPaneExpanded,
+                    onOpenSessions = { sessionPaneExpanded = true },
+                    showAttachmentOptions = showAttachmentOptions,
+                    onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
+                    onCameraCapture = {
+                        showAttachmentOptions = false
+                        requestCameraCapture()
+                    },
+                    onVoiceCapture = {
+                        showAttachmentOptions = false
+                        requestVoiceCapture()
+                    },
+                    onVisualPick = {
+                        showAttachmentOptions = false
+                        visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                    },
+                    onFilePick = {
+                        showAttachmentOptions = false
+                        filePicker.launch(arrayOf("*/*"))
+                    },
+                    isRecordingVoice = isRecordingVoice,
+                    recordingElapsedSec = recordingElapsedSec,
+                    captureHint = captureHint,
+                    onStopVoice = { stopVoiceCapture(cancel = false) },
+                    onCancelVoice = { stopVoiceCapture(cancel = true) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        } else {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                drawerContent = {
+                    ModalDrawerSheet(
+                        drawerContainerColor = CloverBgSide,
+                        modifier = Modifier
+                            .widthIn(max = drawerMaxWidth)
+                            .fillMaxHeight(),
+                    ) {
+                        Column(
+                            Modifier
+                                .fillMaxHeight()
+                                .windowInsetsPadding(WindowInsets.safeDrawing),
+                        ) {
+                            sessionDrawer(true)
+                        }
+                    }
                 },
-                onVoiceCapture = {
-                    showAttachmentOptions = false
-                    requestVoiceCapture()
-                },
-                onVisualPick = {
-                    showAttachmentOptions = false
-                    visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                },
-                onFilePick = {
-                    showAttachmentOptions = false
-                    filePicker.launch(arrayOf("*/*"))
-                },
-                isRecordingVoice = isRecordingVoice,
-                recordingElapsedSec = recordingElapsedSec,
-                captureHint = captureHint,
-                onStopVoice = { stopVoiceCapture(cancel = false) },
-                onCancelVoice = { stopVoiceCapture(cancel = true) },
-            )
+            ) {
+                ChatConversation(
+                    state = state,
+                    vm = vm,
+                    showSessionMenu = true,
+                    onOpenSessions = { scope.launch { drawerState.open() } },
+                    showAttachmentOptions = showAttachmentOptions,
+                    onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
+                    onCameraCapture = {
+                        showAttachmentOptions = false
+                        requestCameraCapture()
+                    },
+                    onVoiceCapture = {
+                        showAttachmentOptions = false
+                        requestVoiceCapture()
+                    },
+                    onVisualPick = {
+                        showAttachmentOptions = false
+                        visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                    },
+                    onFilePick = {
+                        showAttachmentOptions = false
+                        filePicker.launch(arrayOf("*/*"))
+                    },
+                    isRecordingVoice = isRecordingVoice,
+                    recordingElapsedSec = recordingElapsedSec,
+                    captureHint = captureHint,
+                    onStopVoice = { stopVoiceCapture(cancel = false) },
+                    onCancelVoice = { stopVoiceCapture(cancel = true) },
+                )
+            }
         }
     }
 
@@ -1866,6 +1894,11 @@ private fun SessionDrawer(
     onRefresh: () -> Unit,
     showClose: Boolean,
 ) {
+    val query = state.sessionQuery.trim()
+    val sessions = state.sessions
+    val showInitialLoading = state.sessionsLoading && sessions.isEmpty() && state.sessionsError == null
+    val showEmpty = !state.sessionsLoading && state.sessionsError == null && sessions.isEmpty()
+
     Column(Modifier.fillMaxHeight()) {
         Row(
             Modifier
@@ -1873,7 +1906,12 @@ private fun SessionDrawer(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Sessions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text(
+                "Sessions",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
             IconButton(onClick = onCreate) {
                 Icon(Icons.Outlined.Add, contentDescription = "New session")
             }
@@ -1896,46 +1934,161 @@ private fun SessionDrawer(
             placeholder = { Text("Search sessions") },
             leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
             trailingIcon = {
-                IconButton(onClick = onRefresh) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = "Refresh sessions")
+                if (state.sessionsLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .padding(12.dp)
+                            .size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    IconButton(onClick = onRefresh) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = "Refresh sessions")
+                    }
                 }
             },
         )
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            items(state.sessions, key = { it.id }) { session ->
-                val selected = session.id == state.settings.sessionId
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (selected) CloverUserBubble else CloverSurface)
-                        .border(1.dp, if (selected) CloverAccent else CloverLine, RoundedCornerShape(12.dp))
-                        .clickable { onSelect(session.id) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
+
+        if (state.sessionsError != null) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Outlined.ErrorOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    state.sessionsError ?: "Failed to load sessions",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                TextButton(onClick = onRefresh) {
+                    Text("Retry")
+                }
+            }
+        }
+
+        when {
+            showInitialLoading -> {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = CloverAccent, strokeWidth = 3.dp)
+                        Spacer(Modifier.height(12.dp))
                         Text(
-                            session.title?.takeIf { it.isNotBlank() } ?: session.id,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            session.id,
-                            style = MaterialTheme.typography.labelSmall,
+                            "Loading sessions…",
+                            style = MaterialTheme.typography.bodyMedium,
                             color = CloverText3,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    IconButton(onClick = { onRename(session) }) {
-                        Icon(Icons.Outlined.Edit, contentDescription = "Rename", tint = CloverText2)
+                }
+            }
+
+            showEmpty -> {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            if (query.isNotEmpty()) {
+                                "No sessions match \"$query\""
+                            } else {
+                                "No sessions yet"
+                            },
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = CloverText2,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            if (query.isNotEmpty()) {
+                                "Try another keyword, or clear the search."
+                            } else {
+                                "Create a session to start chatting."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = CloverText3,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        if (query.isNotEmpty()) {
+                            TextButton(onClick = {
+                                onQueryChange("")
+                                onRefresh()
+                            }) {
+                                Text("Clear search")
+                            }
+                        } else {
+                            TextButton(onClick = onCreate) {
+                                Text("New session")
+                            }
+                        }
+                    }
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (state.sessionsLoading) {
+                        item(key = "sessions-loading-bar") {
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                                color = CloverAccent,
+                            )
+                        }
+                    }
+                    items(sessions, key = { it.id }) { session ->
+                        val selected = session.id == state.settings.sessionId
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (selected) CloverUserBubble else CloverSurface)
+                                .border(
+                                    1.dp,
+                                    if (selected) CloverAccent else CloverLine,
+                                    RoundedCornerShape(12.dp),
+                                )
+                                .clickable { onSelect(session.id) }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    session.title?.takeIf { it.isNotBlank() } ?: session.id,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    session.id,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CloverText3,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            IconButton(onClick = { onRename(session) }) {
+                                Icon(Icons.Outlined.Edit, contentDescription = "Rename", tint = CloverText2)
+                            }
+                        }
                     }
                 }
             }
