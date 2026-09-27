@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,7 +45,13 @@ import com.luckyagent.android.ui.theme.CloverText2
 
 /**
  * Lightweight Markdown renderer: bold, italic, inline code, fenced code blocks,
- * headings, bullet lists, and links. No external dependency.
+ * headings, bullet lists, links, and GFM tables. Tables use a stateful row
+ * tokenizer (escaped/code/link pipes are safe), support alignment markers, and
+ * use content-based column widths inside a horizontally scrollable row. One-column
+ * tables are supported when written with explicit outer pipes. A table is held
+ * back while [streaming] until its delimiter row is complete. Malformed
+ * delimiter rows remain ordinary text; colspan and nested block Markdown in a
+ * cell are outside this lightweight renderer's scope.
  */
 @Composable
 fun MarkdownText(
@@ -53,9 +60,12 @@ fun MarkdownText(
     modifier: Modifier = Modifier,
     imageHeaders: Map<String, String> = emptyMap(),
     imageBaseUrl: String = "",
+    streaming: Boolean = false,
 ) {
     val context = LocalContext.current
-    val blocks = remember(markdown) { splitBlocks(markdown) }
+    val blocks = remember(markdown, streaming) {
+        splitMarkdownBlocks(markdown, hideIncompleteTables = streaming)
+    }
     Column(modifier = modifier) {
         blocks.forEach { block ->
             when (block) {
@@ -110,6 +120,17 @@ fun MarkdownText(
                     }
                 }
                 is MdBlock.Table -> {
+                    // Keep columns aligned while sizing each one from its longest
+                    // visible cell. The bounds prevent a long URL from taking
+                    // over the bubble; the surrounding scroll handles overflow.
+                    val columnWidths = remember(block.rows) {
+                        List(block.alignments.size) { column ->
+                            val maxCharacters = block.rows.maxOfOrNull {
+                                it.getOrNull(column).orEmpty().length
+                            } ?: 0
+                            (maxCharacters * 8 + 16).coerceIn(64, 280).dp
+                        }
+                    }
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -118,15 +139,20 @@ fun MarkdownText(
                     ) {
                         block.rows.forEachIndexed { rowIndex, cells ->
                             Row {
-                                cells.forEach { cell ->
+                                cells.forEachIndexed { columnIndex, cell ->
                                     Text(
                                         text = inlineMarkdown(cell),
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             color = color,
                                             fontWeight = if (rowIndex == 0) FontWeight.SemiBold else FontWeight.Normal,
+                                            textAlign = when (block.alignments.getOrNull(columnIndex)) {
+                                                TableAlignment.CENTER -> TextAlign.Center
+                                                TableAlignment.RIGHT -> TextAlign.End
+                                                else -> TextAlign.Start
+                                            },
                                         ),
                                         modifier = Modifier
-                                            .width(120.dp)
+                                            .width(columnWidths.getOrElse(columnIndex) { 64.dp })
                                             .border(1.dp, CloverLine)
                                             .padding(horizontal = 8.dp, vertical = 6.dp),
                                     )
@@ -135,6 +161,7 @@ fun MarkdownText(
                         }
                     }
                 }
+                MdBlock.IncompleteTable -> Unit
                 is MdBlock.Heading -> {
                     Text(
                         text = inlineMarkdown(block.text),
@@ -168,15 +195,6 @@ fun MarkdownText(
     }
 }
 
-private sealed class MdBlock {
-    data class Paragraph(val text: String) : MdBlock()
-    data class Heading(val level: Int, val text: String) : MdBlock()
-    data class ListItem(val text: String) : MdBlock()
-    data class Code(val body: String) : MdBlock()
-    data class Image(val alt: String, val source: String) : MdBlock()
-    data class Table(val rows: List<List<String>>) : MdBlock()
-}
-
 private fun decodeMarkdownImage(source: String): android.graphics.Bitmap? = runCatching {
     val payload = source.substringAfter("base64,", "")
     if (payload.isBlank()) return null
@@ -204,96 +222,6 @@ private fun sameOrigin(source: String, baseUrl: String): Boolean {
 }
 
 private fun defaultPort(scheme: String?): Int = if (scheme.equals("https", true)) 443 else 80
-
-private fun splitBlocks(src: String): List<MdBlock> {
-    val out = mutableListOf<MdBlock>()
-    val lines = src.replace("\r\n", "\n").split('\n')
-    var i = 0
-    val para = StringBuilder()
-    fun flushPara() {
-        val t = para.toString().trimEnd()
-        if (t.isNotBlank()) out += MdBlock.Paragraph(t)
-        para.clear()
-    }
-    while (i < lines.size) {
-        val line = lines[i]
-        if (i + 1 < lines.size && line.contains('|') && isTableSeparator(lines[i + 1])) {
-            flushPara()
-            val rows = mutableListOf(splitTableRow(line))
-            i += 2
-            while (i < lines.size && lines[i].contains('|') && lines[i].isNotBlank()) {
-                rows += splitTableRow(lines[i])
-                i++
-            }
-            out += MdBlock.Table(rows)
-            continue
-        }
-        val image = Regex("""^!\[([^]]*)\]\((.+)\)$""").matchEntire(line.trim())
-        if (image != null) {
-            flushPara()
-            out += MdBlock.Image(image.groupValues[1], image.groupValues[2])
-            i++
-            continue
-        }
-        val bareImage = Regex("""^\s*(https?://\S+)\s*$""").matchEntire(line)
-        if (bareImage != null && looksLikeImageUrl(bareImage.groupValues[1])) {
-            flushPara()
-            out += MdBlock.Image("图片", bareImage.groupValues[1])
-            i++
-            continue
-        }
-        if (line.trimStart().startsWith("```")) {
-            flushPara()
-            i++
-            val code = StringBuilder()
-            while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
-                if (code.isNotEmpty()) code.append('\n')
-                code.append(lines[i])
-                i++
-            }
-            if (i < lines.size) i++ // closing fence
-            out += MdBlock.Code(code.toString())
-            continue
-        }
-        val heading = Regex("""^(#{1,3})\s+(.*)$""").matchEntire(line.trimEnd())
-        if (heading != null) {
-            flushPara()
-            out += MdBlock.Heading(heading.groupValues[1].length, heading.groupValues[2])
-            i++
-            continue
-        }
-        val list = Regex("""^\s*[-*]\s+(.*)$""").matchEntire(line)
-        if (list != null) {
-            flushPara()
-            out += MdBlock.ListItem(list.groupValues[1])
-            i++
-            continue
-        }
-        if (line.isBlank()) {
-            flushPara()
-            i++
-            continue
-        }
-        if (para.isNotEmpty()) para.append('\n')
-        para.append(line)
-        i++
-    }
-    flushPara()
-    return out
-}
-
-private fun isTableSeparator(line: String): Boolean =
-    line.trim().matches(Regex("^\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?$"))
-
-private fun splitTableRow(line: String): List<String> =
-    line.trim().trim('|').split('|').map(String::trim)
-
-private fun looksLikeImageUrl(source: String): Boolean {
-    val path = runCatching { android.net.Uri.parse(source).path.orEmpty().lowercase() }.getOrDefault("")
-    return path.matches(Regex(".*\\.(png|jpe?g|gif|webp|bmp|svg|avif|heic)$")) ||
-        source.contains("format=", ignoreCase = true) ||
-        source.contains("image", ignoreCase = true)
-}
 
 private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
     // patterns: **bold**, *italic*, `code`, [label](url)
