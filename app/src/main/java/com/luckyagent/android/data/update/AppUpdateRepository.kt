@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.encodeToString
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -46,34 +47,109 @@ data class AvailableUpdate(
     val apk: GitHubReleaseAsset,
 )
 
+@Serializable
+private data class UpdateManifest(
+    @SerialName("tag_name") val tagName: String,
+    @SerialName("version_name") val versionName: String? = null,
+    @SerialName("html_url") val htmlUrl: String? = null,
+    val body: String? = null,
+    val assets: List<UpdateManifestAsset> = emptyList(),
+)
+
+@Serializable
+private data class UpdateManifestAsset(
+    val name: String,
+    @SerialName("download_url") val downloadUrl: String,
+    val size: Long = 0,
+    val sha256: String? = null,
+)
+
 class AppUpdateRepository(private val context: Context) {
+    companion object {
+        private const val manifestUrl = "https://github.com/yurika0211/luckyagent-android/releases/latest/download/update.json"
+        private const val cacheName = "app_update_manifest"
+        private const val cacheReleaseKey = "release"
+        private const val cacheCheckedAtKey = "checked_at"
+        private const val cacheTtlMs = 24L * 60L * 60L * 1000L
+        private const val manualCheckMinIntervalMs = 15L * 60L * 1000L
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun checkLatest(): Result<AvailableUpdate?> = withContext(Dispatchers.IO) {
-        runCatching {
+    suspend fun checkLatest(force: Boolean = false): Result<AvailableUpdate?> = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val cached = readCachedRelease()
+        val lastCheckedAt = cachePrefs().getLong(cacheCheckedAtKey, 0L)
+        val minInterval = if (force) manualCheckMinIntervalMs else cacheTtlMs
+        if (cached != null && now - lastCheckedAt in 0 until minInterval) {
+            return@withContext runCatching { availableUpdate(cached) }
+        }
+
+        try {
             val request = Request.Builder()
-                .url("https://api.github.com/repos/yurika0211/luckyagent-android/releases/latest")
-                .header("Accept", "application/vnd.github+json")
+                .url(manifestUrl)
+                .header("Accept", "application/json")
                 .header("User-Agent", "LuckyAgent-Android/${BuildConfig.VERSION_NAME}")
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) error("GitHub release ${response.code}: ${body.take(240)}")
-                val release = json.decodeFromString<GitHubRelease>(body)
-                val apk = release.assets
-                    .filter { it.name.endsWith(".apk", ignoreCase = true) }
-                    .sortedWith(compareByDescending<GitHubReleaseAsset> { !it.name.contains("unsigned", ignoreCase = true) }.thenByDescending { it.size })
-                    .firstOrNull()
-                    ?: error("Release ${release.tagName} has no APK asset")
-                if (!isNewer(release.tagName, BuildConfig.VERSION_NAME)) null else AvailableUpdate(release, apk)
+                if (!response.isSuccessful) error("Update manifest ${response.code}: ${body.take(240)}")
+                val manifest = json.decodeFromString<UpdateManifest>(body)
+                val release = manifest.toRelease()
+                cacheRelease(release, now)
+                Result.success(availableUpdate(release))
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            if (cached != null) {
+                runCatching { availableUpdate(cached) }
+            } else {
+                Result.failure(error)
             }
         }
     }
+
+    private fun UpdateManifest.toRelease(): GitHubRelease = GitHubRelease(
+        tagName = tagName,
+        name = versionName,
+        body = body,
+        htmlUrl = htmlUrl ?: "https://github.com/yurika0211/luckyagent-android/releases/tag/$tagName",
+        assets = assets.map {
+            GitHubReleaseAsset(
+                name = it.name,
+                browserDownloadUrl = it.downloadUrl,
+                size = it.size,
+            )
+        },
+    )
+
+    private fun availableUpdate(release: GitHubRelease): AvailableUpdate? {
+        val apk = release.assets
+            .filter { it.name.endsWith(".apk", ignoreCase = true) }
+            .sortedWith(compareByDescending<GitHubReleaseAsset> { !it.name.contains("unsigned", ignoreCase = true) }.thenByDescending { it.size })
+            .firstOrNull()
+            ?: error("Release ${release.tagName} has no APK asset")
+        return if (!isNewer(release.tagName, BuildConfig.VERSION_NAME)) null else AvailableUpdate(release, apk)
+    }
+
+    private fun cachePrefs() = context.getSharedPreferences(cacheName, Context.MODE_PRIVATE)
+
+    private fun cacheRelease(release: GitHubRelease, checkedAt: Long) {
+        cachePrefs().edit()
+            .putString(cacheReleaseKey, json.encodeToString(release))
+            .putLong(cacheCheckedAtKey, checkedAt)
+            .apply()
+    }
+
+    private fun readCachedRelease(): GitHubRelease? = runCatching {
+        cachePrefs().getString(cacheReleaseKey, null)?.let { json.decodeFromString<GitHubRelease>(it) }
+    }.getOrNull()
 
     suspend fun download(update: AvailableUpdate, onProgress: (Int) -> Unit = {}): Result<File> = withContext(Dispatchers.IO) {
         val directory = File(context.cacheDir, "updates").apply { mkdirs() }

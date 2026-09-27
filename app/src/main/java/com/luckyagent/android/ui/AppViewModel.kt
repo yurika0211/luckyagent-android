@@ -1008,7 +1008,7 @@ class AppViewModel(
     fun checkForUpdates() {
         _ui.update { it.copy(update = it.update.copy(phase = UpdatePhase.Checking, error = null)) }
         viewModelScope.launch {
-            container.updates.checkLatest().onSuccess { available ->
+            container.updates.checkLatest(force = true).onSuccess { available ->
                 _ui.update { state ->
                     state.copy(update = state.update.copy(
                         phase = if (available == null) UpdatePhase.UpToDate else UpdatePhase.Available,

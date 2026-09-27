@@ -154,19 +154,53 @@ jobs:
             ./gradlew :app:assembleRelease --stacktrace --no-daemon
           fi
 
+      - name: Prepare update manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          apk_path="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$apk_path"
+          cp "$apk_path" app-release.apk
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          apk = Path("app-release.apk")
+          tag = os.environ["RELEASE_TAG"]
+          manifest = {
+              "schema": 1,
+              "tag_name": tag,
+              "version_name": tag.removeprefix("v"),
+              "html_url": f"https://github.com/yurika0211/luckyagent-android/releases/tag/{tag}",
+              "assets": [{
+                  "name": apk.name,
+                  "download_url": "https://github.com/yurika0211/luckyagent-android/releases/latest/download/app-release.apk",
+                  "size": apk.stat().st_size,
+                  "sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
+              }],
+          }
+          Path("update.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+          PY
+
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release-${{ github.sha }}
           path: |
-            app/build/outputs/apk/release/*.apk
+            app-release.apk
+            update.json
           if-no-files-found: error
           retention-days: 30
 
       - name: Publish GitHub Release with APK
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/release/*.apk
+          files: |
+            app-release.apk
+            update.json
           generate_release_notes: true
           fail_on_unmatched_files: true
         env:
