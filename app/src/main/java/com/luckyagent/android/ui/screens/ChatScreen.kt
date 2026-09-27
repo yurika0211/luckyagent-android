@@ -734,15 +734,12 @@ private fun BubbleRow(
                         Spacer(Modifier.height(4.dp))
                     }
                     if (bubble.content.isNotBlank()) {
-                        if (bubble.streaming) {
-                            Text(bubble.content, style = MaterialTheme.typography.bodyLarge)
-                        } else {
-                            MarkdownText(
-                                markdown = bubble.content,
-                                imageHeaders = imageHeaders,
-                                imageBaseUrl = imageBaseUrl,
-                            )
-                        }
+                        MarkdownText(
+                            markdown = bubble.content,
+                            imageHeaders = imageHeaders,
+                            imageBaseUrl = imageBaseUrl,
+                            streaming = bubble.streaming,
+                        )
                     }
                     if (bubble.attachments.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
@@ -986,7 +983,12 @@ private fun ToolPart(
             }
             bubble.toolOutput?.takeIf { it.isNotBlank() }?.let {
                 Text(if (bubble.toolSuccess == false) "错误" else "结果", style = MaterialTheme.typography.labelSmall, color = CloverText3)
-                MonoBlock(it)
+                MarkdownText(
+                    markdown = truncateToolOutput(it),
+                    color = CloverText2,
+                    imageHeaders = imageHeaders,
+                    imageBaseUrl = imageBaseUrl,
+                )
             }
             bubble.attachments.forEach { media ->
                 ChatMediaPreview(media, imageHeaders, imageBaseUrl, onDownload)
@@ -1006,6 +1008,13 @@ private fun MonoBlock(text: String) {
         maxLines = 12,
         overflow = TextOverflow.Ellipsis,
     )
+}
+
+/** Keep the existing compact tool preview while letting complete GFM tables render. */
+private fun truncateToolOutput(text: String, maxLines: Int = 12): String {
+    val lines = text.replace("\r\n", "\n").split('\n')
+    if (lines.size <= maxLines) return text
+    return lines.take(maxLines).joinToString("\n") + "\n…"
 }
 
 @Composable
