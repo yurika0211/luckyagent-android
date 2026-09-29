@@ -45,7 +45,7 @@ import com.luckyagent.android.ui.theme.CloverText2
 
 /**
  * Lightweight Markdown renderer: bold, italic, inline code, fenced code blocks,
- * headings, bullet lists, links, and GFM tables. Tables use a stateful row
+ * headings, bullet and ordered lists, links, and GFM tables. Tables use a stateful row
  * tokenizer (escaped/code/link pipes are safe), support alignment markers, and
  * use content-based column widths inside a horizontally scrollable row. One-column
  * tables are supported when written with explicit outer pipes. A table is held
@@ -168,7 +168,10 @@ fun MarkdownText(
                         style = when (block.level) {
                             1 -> MaterialTheme.typography.titleLarge
                             2 -> MaterialTheme.typography.titleMedium
-                            else -> MaterialTheme.typography.titleSmall
+                            3 -> MaterialTheme.typography.titleSmall
+                            4 -> MaterialTheme.typography.bodyLarge
+                            5 -> MaterialTheme.typography.bodyMedium
+                            else -> MaterialTheme.typography.bodySmall
                         }.copy(color = color, fontWeight = FontWeight.SemiBold),
                         modifier = Modifier.padding(vertical = 4.dp),
                     )
@@ -176,7 +179,8 @@ fun MarkdownText(
                 is MdBlock.ListItem -> {
                     Text(
                         text = buildAnnotatedString {
-                            append("• ")
+                            append(block.marker)
+                            append(" ")
                             append(inlineMarkdown(block.text))
                         },
                         style = MaterialTheme.typography.bodyLarge.copy(color = color),

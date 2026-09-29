@@ -108,6 +108,23 @@ class MarkdownParserTest {
         assertTrue(blocks.any { it is MdBlock.Code && it.body == "code" })
     }
 
+    @Test
+    fun parsesHeadingLevelsFourThroughSix() {
+        val headings = splitMarkdownBlocks("#### Four\n##### Five\n###### Six")
+            .map { it as MdBlock.Heading }
+
+        assertEquals(listOf(4, 5, 6), headings.map { it.level })
+        assertEquals(listOf("Four", "Five", "Six"), headings.map { it.text })
+    }
+
+    @Test
+    fun parsesOrderedListItemWithItsNumber() {
+        val item = splitMarkdownBlocks("1. first").single() as MdBlock.ListItem
+
+        assertEquals("first", item.text)
+        assertEquals("1.", item.marker)
+    }
+
     private fun table(markdown: String): MdBlock.Table {
         val table = splitMarkdownBlocks(markdown).single() as? MdBlock.Table
         return table ?: error("Expected a table block: $markdown")

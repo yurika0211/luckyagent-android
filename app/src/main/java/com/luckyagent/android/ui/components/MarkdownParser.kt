@@ -10,7 +10,7 @@ package com.luckyagent.android.ui.components
 internal sealed class MdBlock {
     data class Paragraph(val text: String) : MdBlock()
     data class Heading(val level: Int, val text: String) : MdBlock()
-    data class ListItem(val text: String) : MdBlock()
+    data class ListItem(val text: String, val marker: String = "•") : MdBlock()
     data class Code(val body: String) : MdBlock()
     data class Image(val alt: String, val source: String) : MdBlock()
     data class Table(
@@ -104,7 +104,7 @@ internal fun splitMarkdownBlocks(
             out += MdBlock.Code(code.toString())
             continue
         }
-        val heading = Regex("""^(#{1,3})\s+(.*)$""").matchEntire(line.trimEnd())
+        val heading = Regex("""^(#{1,6})\s+(.*)$""").matchEntire(line.trimEnd())
         if (heading != null) {
             flushPara()
             out += MdBlock.Heading(heading.groupValues[1].length, heading.groupValues[2])
@@ -115,6 +115,16 @@ internal fun splitMarkdownBlocks(
         if (list != null) {
             flushPara()
             out += MdBlock.ListItem(list.groupValues[1])
+            i++
+            continue
+        }
+        val orderedList = Regex("""^\s*(\d+)[.)]\s+(.*)$""").matchEntire(line)
+        if (orderedList != null) {
+            flushPara()
+            out += MdBlock.ListItem(
+                text = orderedList.groupValues[2],
+                marker = "${orderedList.groupValues[1]}.",
+            )
             i++
             continue
         }

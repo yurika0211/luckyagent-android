@@ -814,12 +814,14 @@ private fun BubbleRow(
                         Spacer(Modifier.height(4.dp))
                     }
                     Column(
-                        Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(
-                                if (isUser) CloverUserBubble else CloverSurface,
-                            )
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        if (isUser) {
+                            Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(CloverUserBubble)
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        } else {
+                            Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        },
                     ) {
                         bubble.quote?.let { quote ->
                             QuoteCard(quote = quote, compact = true)
