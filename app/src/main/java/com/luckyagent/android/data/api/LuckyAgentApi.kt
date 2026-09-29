@@ -383,6 +383,17 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun listCronJobs(): Result<CronListResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/cron")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("cron ${resp.code}: $body")
+                json.decodeFromString(CronListResponse.serializer(), body)
+            }
+        }
+    }
+
     suspend fun runCommand(
         command: String,
         args: String,

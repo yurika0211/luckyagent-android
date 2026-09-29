@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -58,6 +59,7 @@ import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
 import com.luckyagent.android.ui.screens.BackgroundScreen
 import com.luckyagent.android.ui.screens.CommandsScreen
+import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
 import com.luckyagent.android.ui.screens.MemoryScreen
 import com.luckyagent.android.ui.screens.SettingsScreen
@@ -88,6 +90,7 @@ private val navItems = listOf(
     NavSpec(AppDestination.Chat, "Chat", Icons.Outlined.ChatBubbleOutline),
     NavSpec(AppDestination.Tasks, "Tasks", Icons.Outlined.Assignment),
     NavSpec(AppDestination.Background, "Background", Icons.Outlined.Assignment),
+    NavSpec(AppDestination.Cron, "Cron", Icons.Outlined.Schedule),
     NavSpec(AppDestination.Commands, "Commands", Icons.Outlined.Code),
     NavSpec(AppDestination.Trajectory, "Trace", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
@@ -208,6 +211,7 @@ private fun AppScaffold(
                             AppDestination.Chat -> ChatScreen(state = state, vm = vm, railOccupied = useRail)
                             AppDestination.Tasks -> TasksScreen(state = state, vm = vm)
                             AppDestination.Background -> BackgroundScreen(state = state, vm = vm)
+                            AppDestination.Cron -> CronScreen(state = state, vm = vm)
                             AppDestination.Commands -> CommandsScreen(state = state, vm = vm)
                             AppDestination.Trajectory -> TrajectoryScreen(state = state, vm = vm)
                             AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)

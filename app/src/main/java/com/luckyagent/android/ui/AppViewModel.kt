@@ -18,6 +18,7 @@ import com.luckyagent.android.data.api.MemoryStats
 import com.luckyagent.android.data.api.MemorySearchTrace
 import com.luckyagent.android.data.api.ReceivedMemoryTrace
 import com.luckyagent.android.data.api.CommandExecution
+import com.luckyagent.android.data.api.CronJob
 import com.luckyagent.android.data.api.AutonomyDashboardResponse
 import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
 import com.luckyagent.android.data.api.AutonomyTaskSummary
@@ -42,6 +43,10 @@ import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.RuntimeEndpoint
 import com.luckyagent.android.data.update.AvailableUpdate
 import com.luckyagent.android.BuildConfig
+import com.luckyagent.android.ui.util.MessageQuote
+import com.luckyagent.android.ui.util.bubbleCopyText
+import com.luckyagent.android.ui.util.buildOutboundMessage
+import com.luckyagent.android.ui.util.quoteFromBubble
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -68,7 +73,7 @@ import java.net.URLEncoder
 import java.io.File
 
 enum class AppDestination {
-    Chat, Tasks, Background, Commands, Trajectory, Gateways, Skills, Settings, Memory
+    Chat, Tasks, Background, Cron, Commands, Trajectory, Gateways, Skills, Settings, Memory
 }
 
 enum class TrajectoryFilter { All, Success, Failure }
@@ -101,6 +106,7 @@ data class ChatBubble(
     val reasoningRound: Int? = null,
     val reasoningHasContent: Boolean = false,
     val attachments: List<ChatMedia> = emptyList(),
+    val quote: MessageQuote? = null,
 )
 
 data class ChatMedia(
@@ -212,6 +218,13 @@ data class AppUiState(
     val backgroundDetailLoading: Boolean = false,
     val backgroundDetailError: String? = null,
     val backgroundPolling: Boolean = false,
+    val cronJobs: List<CronJob> = emptyList(),
+    val cronRunning: Boolean = false,
+    val cronCount: Int = 0,
+    val cronLoading: Boolean = false,
+    val cronError: String? = null,
+    val pendingQuote: MessageQuote? = null,
+    val snackbarMessage: String? = null,
     val update: AppUpdateUiState = AppUpdateUiState(),
 )
 
@@ -244,7 +257,12 @@ class AppViewModel(
     init {
         viewModelScope.launch {
             container.settingsRepository.settings.collect { s ->
-                _ui.update { it.copy(settings = s) }
+                _ui.update { current ->
+                    current.copy(
+                        settings = s,
+                        pendingQuote = if (current.settings.sessionId != s.sessionId) null else current.pendingQuote,
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -991,6 +1009,7 @@ class AppViewModel(
             AppDestination.Background -> {
                 startBackgroundPolling()
             }
+            AppDestination.Cron -> refreshCron()
             AppDestination.Commands -> refreshCommands()
             AppDestination.Memory -> refreshMemory()
             AppDestination.Skills -> refreshSkills()
@@ -1069,6 +1088,39 @@ class AppViewModel(
     fun openSessionFromNotification(sessionId: String) {
         navigate(AppDestination.Chat)
         selectSession(sessionId)
+    }
+
+    fun quoteMessage(bubble: ChatBubble) {
+        val quote = quoteFromBubble(
+            id = bubble.id,
+            role = bubble.role,
+            content = bubble.content,
+            toolName = bubble.toolName,
+            toolArgs = bubble.toolArgs,
+            toolOutput = bubble.toolOutput,
+        ) ?: return
+        _ui.update { it.copy(pendingQuote = quote, snackbarMessage = null) }
+    }
+
+    fun clearQuote() {
+        _ui.update { it.copy(pendingQuote = null) }
+    }
+
+    fun copyBubbleText(bubble: ChatBubble): String =
+        bubbleCopyText(
+            role = bubble.role,
+            content = bubble.content,
+            toolName = bubble.toolName,
+            toolArgs = bubble.toolArgs,
+            toolOutput = bubble.toolOutput,
+        )
+
+    fun notifyCopied() {
+        _ui.update { it.copy(snackbarMessage = "已复制") }
+    }
+
+    fun consumeSnackbar() {
+        _ui.update { it.copy(snackbarMessage = null) }
     }
 
     fun updateComposer(value: String) {
@@ -1240,6 +1292,7 @@ class AppViewModel(
                 bubbles = emptyList(),
                 isResponding = activeRuns[target]?.isNotEmpty() == true,
                 progressSteps = emptyList(),
+                pendingQuote = null,
             )
         }
         container.wsClient.replaySession(target)
@@ -1261,6 +1314,7 @@ class AppViewModel(
                         activityLine = if (running) "Agent running · history loaded" else "loaded ${bubbles.size} messages",
                         isResponding = running,
                         progressSteps = emptyList(),
+                        pendingQuote = null,
                     )
                 }
             }.onFailure { e ->
@@ -1457,7 +1511,8 @@ class AppViewModel(
     fun sendComposer() {
         val text = _ui.value.composer.trim()
         val pending = _ui.value.pendingMedia
-        if (text.isEmpty() && pending.isEmpty()) return
+        val hasQuote = _ui.value.pendingQuote != null
+        if (text.isEmpty() && pending.isEmpty() && !hasQuote) return
         val parsedCommand = parseRuntimeCommand(text)
         val runtimeCommand = if (pending.isEmpty()) parsedCommand else null
         if (parsedCommand?.name?.equals("stop", ignoreCase = true) == true) {
@@ -1475,7 +1530,15 @@ class AppViewModel(
             sendRuntimeCommand(text, runtimeCommand)
             return
         }
-        val message = text.ifBlank { if (pending.isNotEmpty()) "请查看附件" else "" }
+        val pendingQuote = _ui.value.pendingQuote
+        val baseMessage = text.ifBlank {
+            when {
+                pending.isNotEmpty() -> "请查看附件"
+                pendingQuote != null -> "" // quote block alone is enough for the model
+                else -> ""
+            }
+        }
+        val message = buildOutboundMessage(baseMessage, pendingQuote)
         val descriptors = pending.mapNotNull { it.descriptor }
         val media = pending.mapNotNull { item -> item.descriptor?.let { ChatMedia(it, item.uri) } }
         val wasRunning = isCurrentSessionRunActive()
@@ -1484,11 +1547,21 @@ class AppViewModel(
             toolStepIndex.clear()
             resetAssistantStream()
         }
-        pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text, createdAt = nowIsoTimestamp(), attachments = media))
+        pushBubble(
+            ChatBubble(
+                id = "u-${System.currentTimeMillis()}",
+                role = "user",
+                content = text,
+                createdAt = nowIsoTimestamp(),
+                attachments = media,
+                quote = pendingQuote,
+            ),
+        )
         _ui.update {
             it.copy(
                 composer = "",
                 pendingMedia = emptyList(),
+                pendingQuote = null,
                 isResponding = true,
                 progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
             )
@@ -1898,6 +1971,23 @@ class AppViewModel(
         viewModelScope.launch { refreshBackgroundNow() }
     }
 
+    fun refreshCron() {
+        viewModelScope.launch {
+            _ui.update { it.copy(cronLoading = true, cronError = null) }
+            val result = container.api.listCronJobs()
+            val payload = result.getOrNull()
+            _ui.update {
+                it.copy(
+                    cronLoading = false,
+                    cronJobs = payload?.jobs ?: it.cronJobs,
+                    cronRunning = payload?.running ?: it.cronRunning,
+                    cronCount = payload?.count ?: it.cronCount,
+                    cronError = result.exceptionOrNull()?.message,
+                )
+            }
+        }
+    }
+
     private suspend fun refreshBackgroundNow() {
         _ui.update { it.copy(backgroundLoading = true, backgroundError = null) }
         val result = container.api.getAutonomyDashboard()
@@ -2028,6 +2118,7 @@ class AppViewModel(
                         bubbles = emptyList(),
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
                         activityLine = "new session · ${session.id}",
+                        pendingQuote = null,
                     )
                 }
                 connectSocket()
