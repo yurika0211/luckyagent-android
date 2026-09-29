@@ -3,7 +3,10 @@ package com.luckyagent.android.ui
 import android.app.DownloadManager
 import android.content.ContentResolver
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.lifecycle.ViewModel
@@ -139,6 +142,8 @@ data class AttachmentNotice(
     val text: String,
     val isError: Boolean = false,
     val isComplete: Boolean = false,
+    val openUri: String? = null,
+    val mimeType: String? = null,
 )
 
 data class AppUiState(
@@ -1431,17 +1436,34 @@ class AppViewModel(
             .onSuccess { downloadId ->
                 publishAttachmentNotice("下载中 · $fileName")
                 viewModelScope.launch {
-                    monitorAttachmentDownload(context.applicationContext, downloadId, fileName)
+                    monitorAttachmentDownload(
+                        context = context.applicationContext,
+                        downloadId = downloadId,
+                        fileName = fileName,
+                        mimeType = descriptor.mimeType,
+                    )
                 }
             }
             .onFailure { error -> publishAttachmentNotice("下载失败 · ${error.message ?: "未知错误"}", isError = true) }
     }
 
-    private fun publishAttachmentNotice(text: String, isError: Boolean = false, isComplete: Boolean = false) {
+    private fun publishAttachmentNotice(
+        text: String,
+        isError: Boolean = false,
+        isComplete: Boolean = false,
+        openUri: String? = null,
+        mimeType: String? = null,
+    ) {
         attachmentNoticeJob?.cancel()
         _ui.update {
             it.copy(
-                attachmentNotice = AttachmentNotice(text, isError = isError, isComplete = isComplete),
+                attachmentNotice = AttachmentNotice(
+                    text = text,
+                    isError = isError,
+                    isComplete = isComplete,
+                    openUri = openUri,
+                    mimeType = mimeType,
+                ),
                 activityLine = text,
             )
         }
@@ -1456,7 +1478,12 @@ class AppViewModel(
         }
     }
 
-    private suspend fun monitorAttachmentDownload(context: Context, downloadId: Long, fileName: String) {
+    private suspend fun monitorAttachmentDownload(
+        context: Context,
+        downloadId: Long,
+        fileName: String,
+        mimeType: String?,
+    ) {
         val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
             ?: run {
                 publishAttachmentNotice("下载失败 · 系统下载服务不可用", isError = true)
@@ -1473,7 +1500,15 @@ class AppViewModel(
             }
             when (status) {
                 DownloadManager.STATUS_SUCCESSFUL -> {
-                    publishAttachmentNotice("下载完成 · $fileName", isComplete = true)
+                    val uri = runCatching { manager.getUriForDownloadedFile(downloadId) }
+                        .getOrNull()
+                        ?.toString()
+                    publishAttachmentNotice(
+                        text = "下载完成 · $fileName · ${attachmentDownloadLocation(context, fileName)}",
+                        isComplete = true,
+                        openUri = uri,
+                        mimeType = mimeType,
+                    )
                     return
                 }
                 DownloadManager.STATUS_FAILED -> {
@@ -1486,6 +1521,28 @@ class AppViewModel(
                 }
             }
             delay(500)
+        }
+    }
+
+    private fun attachmentDownloadLocation(context: Context, fileName: String): String =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "Downloads/$fileName"
+        } else {
+            context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?.let { File(it, fileName).absolutePath }
+                ?: "应用文件/$fileName"
+        }
+
+    fun openDownloadedAttachment(context: Context, uriString: String, mimeType: String?) {
+        runCatching {
+            val uri = Uri.parse(uriString)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType?.takeIf { it.isNotBlank() } ?: "*/*")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(intent)
+        }.onFailure { error ->
+            publishAttachmentNotice("打开失败 · ${error.message ?: "没有可用的查看应用"}", isError = true)
         }
     }
 

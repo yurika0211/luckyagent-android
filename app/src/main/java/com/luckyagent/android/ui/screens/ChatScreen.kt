@@ -1,4 +1,3 @@
-@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package com.luckyagent.android.ui.screens
 
 import android.content.Context
@@ -160,15 +159,12 @@ import com.luckyagent.android.data.media.CaptureTarget
 import com.luckyagent.android.data.media.VoiceRecorder
 import android.content.ClipData
 import android.content.ClipboardManager
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
 import com.luckyagent.android.ui.util.quoteRoleLabel
@@ -552,6 +548,17 @@ private fun ChatConversation(
         snackbarHostState.showSnackbar(msg)
         vm.consumeSnackbar()
     }
+    LaunchedEffect(state.attachmentNotice?.text, state.attachmentNotice?.openUri) {
+        val notice = state.attachmentNotice ?: return@LaunchedEffect
+        if (!notice.isComplete && !notice.isError) return@LaunchedEffect
+        val result = snackbarHostState.showSnackbar(
+            message = notice.text,
+            actionLabel = notice.openUri?.let { "打开" },
+        )
+        if (result == SnackbarResult.ActionPerformed && notice.openUri != null) {
+            vm.openDownloadedAttachment(context, notice.openUri, notice.mimeType)
+        }
+    }
     val imageHeaders = remember(state.settings.apiKey, state.settings.useBearer) {
         if (state.settings.apiKey.isBlank()) emptyMap()
         else if (state.settings.useBearer) mapOf("Authorization" to "Bearer ${state.settings.apiKey}")
@@ -778,8 +785,6 @@ private fun BubbleRow(
 ) {
     val isUser = bubble.role.equals("user", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
-    var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
-
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
@@ -808,48 +813,34 @@ private fun BubbleRow(
                         )
                         Spacer(Modifier.height(4.dp))
                     }
-                    Box {
-                        Column(
-                            Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(
-                                    if (isUser) CloverUserBubble else CloverSurface,
-                                )
-                                .combinedClickable(
-                                    onClick = {},
-                                    onLongClick = { menuExpanded = true },
-                                )
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                        ) {
-                            bubble.quote?.let { quote ->
-                                QuoteCard(quote = quote, compact = true)
-                                Spacer(Modifier.height(8.dp))
-                            }
-                            if (bubble.content.isNotBlank()) {
-                                MarkdownText(
-                                    markdown = bubble.content,
-                                    imageHeaders = imageHeaders,
-                                    imageBaseUrl = imageBaseUrl,
-                                    streaming = bubble.streaming,
-                                )
-                            }
-                            if (bubble.attachments.isNotEmpty()) {
-                                Spacer(Modifier.height(8.dp))
-                                val images = bubble.attachments.filter { attachmentKind(it.descriptor) == "image" }
-                                val otherMedia = bubble.attachments.filter { attachmentKind(it.descriptor) != "image" }
-                                if (images.size > 1) {
-                                    ImageAttachmentGrid(images, imageHeaders, imageBaseUrl, onDownload)
-                                } else {
-                                    images.forEach { media ->
-                                        ChatMediaPreview(
-                                            media = media,
-                                            imageHeaders = imageHeaders,
-                                            imageBaseUrl = imageBaseUrl,
-                                            onDownload = onDownload,
-                                        )
-                                    }
-                                }
-                                otherMedia.forEach { media ->
+                    Column(
+                        Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (isUser) CloverUserBubble else CloverSurface,
+                            )
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    ) {
+                        bubble.quote?.let { quote ->
+                            QuoteCard(quote = quote, compact = true)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        if (bubble.content.isNotBlank()) {
+                            MarkdownText(
+                                markdown = bubble.content,
+                                imageHeaders = imageHeaders,
+                                imageBaseUrl = imageBaseUrl,
+                                streaming = bubble.streaming,
+                            )
+                        }
+                        if (bubble.attachments.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            val images = bubble.attachments.filter { attachmentKind(it.descriptor) == "image" }
+                            val otherMedia = bubble.attachments.filter { attachmentKind(it.descriptor) != "image" }
+                            if (images.size > 1) {
+                                ImageAttachmentGrid(images, imageHeaders, imageBaseUrl, onDownload)
+                            } else {
+                                images.forEach { media ->
                                     ChatMediaPreview(
                                         media = media,
                                         imageHeaders = imageHeaders,
@@ -858,31 +849,14 @@ private fun BubbleRow(
                                     )
                                 }
                             }
-                        }
-                        DropdownMenu(
-                            expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("回复") },
-                                onClick = {
-                                    menuExpanded = false
-                                    onQuote(bubble)
-                                },
-                                leadingIcon = {
-                                    Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null, tint = CloverText2)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("复制") },
-                                onClick = {
-                                    menuExpanded = false
-                                    onCopy(bubble)
-                                },
-                                leadingIcon = {
-                                    Icon(Icons.Outlined.ContentCopy, contentDescription = null, tint = CloverText2)
-                                },
-                            )
+                            otherMedia.forEach { media ->
+                                ChatMediaPreview(
+                                    media = media,
+                                    imageHeaders = imageHeaders,
+                                    imageBaseUrl = imageBaseUrl,
+                                    onDownload = onDownload,
+                                )
+                            }
                         }
                     }
                     if (bubble.createdAt != null || bubble.usage != null) {
@@ -1137,99 +1111,68 @@ private fun ToolPart(
     onCopy: (ChatBubble) -> Unit,
 ) {
     var expanded by remember(bubble.id) { mutableStateOf(false) }
-    var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
-    Box(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .combinedClickable(
-                    onClick = { expanded = !expanded },
-                    onLongClick = { menuExpanded = true },
-                )
-                .padding(vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded }
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (!bubble.toolDone && bubble.toolSuccess != false) {
+            CloverPulseIndicator(Modifier.size(10.dp), CloverAccent)
+        } else {
+            Box(
+                Modifier.size(7.dp).clip(CircleShape).background(
+                    if (bubble.toolSuccess == false) CloverError else CloverLeaf,
+                ),
+            )
+        }
+        Spacer(Modifier.width(9.dp))
+        Text(
+            bubble.toolName ?: "工具调用",
+            style = MaterialTheme.typography.bodySmall,
+            color = CloverText2,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            when {
+                !bubble.toolDone -> "运行中"
+                bubble.toolSuccess == false -> "失败"
+                else -> "完成"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (bubble.toolSuccess == false) CloverError else CloverText3,
+        )
+        IconButton(
+            onClick = { onQuote(bubble) },
+            modifier = Modifier.size(28.dp),
         ) {
-            if (!bubble.toolDone && bubble.toolSuccess != false) {
-                CloverPulseIndicator(Modifier.size(10.dp), CloverAccent)
-            } else {
-                Box(
-                    Modifier.size(7.dp).clip(CircleShape).background(
-                        if (bubble.toolSuccess == false) CloverError else CloverLeaf,
-                    ),
-                )
-            }
-            Spacer(Modifier.width(9.dp))
-            Text(
-                bubble.toolName ?: "工具调用",
-                style = MaterialTheme.typography.bodySmall,
-                color = CloverText2,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                when {
-                    !bubble.toolDone -> "运行中"
-                    bubble.toolSuccess == false -> "失败"
-                    else -> "完成"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = if (bubble.toolSuccess == false) CloverError else CloverText3,
-            )
-            IconButton(
-                onClick = { onQuote(bubble) },
-                modifier = Modifier.size(28.dp),
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Outlined.Reply,
-                    contentDescription = "回复工具结果",
-                    tint = CloverText3,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
-            IconButton(
-                onClick = { onCopy(bubble) },
-                modifier = Modifier.size(28.dp),
-            ) {
-                Icon(
-                    Icons.Outlined.ContentCopy,
-                    contentDescription = "复制工具结果",
-                    tint = CloverText3,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
             Icon(
-                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = if (expanded) "收起工具详情" else "展开工具详情",
+                Icons.AutoMirrored.Outlined.Reply,
+                contentDescription = "回复工具结果",
                 tint = CloverText3,
-                modifier = Modifier.padding(start = 2.dp).size(18.dp),
+                modifier = Modifier.size(16.dp),
             )
         }
-        DropdownMenu(
-            expanded = menuExpanded,
-            onDismissRequest = { menuExpanded = false },
+        IconButton(
+            onClick = { onCopy(bubble) },
+            modifier = Modifier.size(28.dp),
         ) {
-            DropdownMenuItem(
-                text = { Text("回复") },
-                onClick = {
-                    menuExpanded = false
-                    onQuote(bubble)
-                },
-                leadingIcon = {
-                    Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null, tint = CloverText2)
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("复制") },
-                onClick = {
-                    menuExpanded = false
-                    onCopy(bubble)
-                },
-                leadingIcon = {
-                    Icon(Icons.Outlined.ContentCopy, contentDescription = null, tint = CloverText2)
-                },
+            Icon(
+                Icons.Outlined.ContentCopy,
+                contentDescription = "复制工具结果",
+                tint = CloverText3,
+                modifier = Modifier.size(16.dp),
             )
         }
+        Icon(
+            if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+            contentDescription = if (expanded) "收起工具详情" else "展开工具详情",
+            tint = CloverText3,
+            modifier = Modifier.padding(start = 2.dp).size(18.dp),
+        )
     }
     AnimatedVisibility(visible = expanded) {
         Column(Modifier.fillMaxWidth().padding(start = 16.dp, bottom = 4.dp)) {

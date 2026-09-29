@@ -152,7 +152,10 @@ class AppUpdateRepository(private val context: Context) {
     }.getOrNull()
 
     suspend fun download(update: AvailableUpdate, onProgress: (Int) -> Unit = {}): Result<File> = withContext(Dispatchers.IO) {
-        val directory = File(context.cacheDir, "updates").apply { mkdirs() }
+        val externalFiles = context.getExternalFilesDir(null)
+            ?: error("App external files directory is unavailable")
+        // Keep the APK under the directory exposed by res/xml/file_paths.xml.
+        val directory = File(externalFiles, "apk-updates").apply { mkdirs() }
         val safeTag = update.release.tagName.replace(Regex("[^A-Za-z0-9._-]"), "_")
         val target = File(directory, "luckyagent-$safeTag.apk")
         val partial = File(directory, "$safeTag.apk.part")
