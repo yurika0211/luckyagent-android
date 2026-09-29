@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package com.luckyagent.android.ui.screens
 
 import android.content.Context
@@ -17,7 +19,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -75,6 +80,8 @@ import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -100,6 +107,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
@@ -783,6 +791,7 @@ private fun BubbleRow(
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
 ) {
+    var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     val isUser = bubble.role.equals("user", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
     Row(
@@ -813,16 +822,24 @@ private fun BubbleRow(
                         )
                         Spacer(Modifier.height(4.dp))
                     }
-                    Column(
-                        if (isUser) {
-                            Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(CloverUserBubble)
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
-                        } else {
-                            Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                        },
-                    ) {
+                    Box {
+                        Column(
+                            if (isUser) {
+                                Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(CloverUserBubble)
+                                    .pointerInput(bubble.id) {
+                                        detectTapGestures(onLongPress = { menuExpanded = true })
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            } else {
+                                Modifier
+                                    .pointerInput(bubble.id) {
+                                        detectTapGestures(onLongPress = { menuExpanded = true })
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            },
+                        ) {
                         bubble.quote?.let { quote ->
                             QuoteCard(quote = quote, compact = true)
                             Spacer(Modifier.height(8.dp))
@@ -864,38 +881,59 @@ private fun BubbleRow(
                     if (bubble.createdAt != null || bubble.usage != null) {
                         MessageMetadata(bubble)
                     }
-                    // Quick actions row for discoverability on touch devices.
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 2.dp),
-                    ) {
-                        IconButton(
-                            onClick = { onQuote(bubble) },
-                            modifier = Modifier.size(28.dp),
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Outlined.Reply,
-                                contentDescription = "回复",
-                                tint = CloverText3,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        }
-                        IconButton(
-                            onClick = { onCopy(bubble) },
-                            modifier = Modifier.size(28.dp),
-                        ) {
-                            Icon(
-                                Icons.Outlined.ContentCopy,
-                                contentDescription = "复制",
-                                tint = CloverText3,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        }
+                        MessageActionMenu(
+                            expanded = menuExpanded,
+                            onDismiss = { menuExpanded = false },
+                            onQuote = { onQuote(bubble) },
+                            onCopy = { onCopy(bubble) },
+                        )
                     }
                 }
             }
         }
+    }
+}
+
+
+@Composable
+private fun MessageActionMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onQuote: () -> Unit,
+    onCopy: () -> Unit,
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+    ) {
+        DropdownMenuItem(
+            text = { Text("引用") },
+            onClick = {
+                onQuote()
+                onDismiss()
+            },
+            leadingIcon = {
+                Icon(
+                    Icons.AutoMirrored.Outlined.Reply,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+        )
+        DropdownMenuItem(
+            text = { Text("复制") },
+            onClick = {
+                onCopy()
+                onDismiss()
+            },
+            leadingIcon = {
+                Icon(
+                    Icons.Outlined.ContentCopy,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+        )
     }
 }
 
@@ -1113,67 +1151,57 @@ private fun ToolPart(
     onCopy: (ChatBubble) -> Unit,
 ) {
     var expanded by remember(bubble.id) { mutableStateOf(false) }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded }
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (!bubble.toolDone && bubble.toolSuccess != false) {
-            CloverPulseIndicator(Modifier.size(10.dp), CloverAccent)
-        } else {
-            Box(
-                Modifier.size(7.dp).clip(CircleShape).background(
-                    if (bubble.toolSuccess == false) CloverError else CloverLeaf,
-                ),
-            )
-        }
-        Spacer(Modifier.width(9.dp))
-        Text(
-            bubble.toolName ?: "工具调用",
-            style = MaterialTheme.typography.bodySmall,
-            color = CloverText2,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            when {
-                !bubble.toolDone -> "运行中"
-                bubble.toolSuccess == false -> "失败"
-                else -> "完成"
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = if (bubble.toolSuccess == false) CloverError else CloverText3,
-        )
-        IconButton(
-            onClick = { onQuote(bubble) },
-            modifier = Modifier.size(28.dp),
+    var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = { expanded = !expanded },
+                    onLongClick = { menuExpanded = true },
+                )
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (!bubble.toolDone && bubble.toolSuccess != false) {
+                CloverPulseIndicator(Modifier.size(10.dp), CloverAccent)
+            } else {
+                Box(
+                    Modifier.size(7.dp).clip(CircleShape).background(
+                        if (bubble.toolSuccess == false) CloverError else CloverLeaf,
+                    ),
+                )
+            }
+            Spacer(Modifier.width(9.dp))
+            Text(
+                bubble.toolName ?: "工具调用",
+                style = MaterialTheme.typography.bodySmall,
+                color = CloverText2,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                when {
+                    !bubble.toolDone -> "运行中"
+                    bubble.toolSuccess == false -> "失败"
+                    else -> "完成"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (bubble.toolSuccess == false) CloverError else CloverText3,
+            )
             Icon(
-                Icons.AutoMirrored.Outlined.Reply,
-                contentDescription = "回复工具结果",
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "收起工具详情" else "展开工具详情",
                 tint = CloverText3,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.padding(start = 2.dp).size(18.dp),
             )
         }
-        IconButton(
-            onClick = { onCopy(bubble) },
-            modifier = Modifier.size(28.dp),
-        ) {
-            Icon(
-                Icons.Outlined.ContentCopy,
-                contentDescription = "复制工具结果",
-                tint = CloverText3,
-                modifier = Modifier.size(16.dp),
-            )
-        }
-        Icon(
-            if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-            contentDescription = if (expanded) "收起工具详情" else "展开工具详情",
-            tint = CloverText3,
-            modifier = Modifier.padding(start = 2.dp).size(18.dp),
+        MessageActionMenu(
+            expanded = menuExpanded,
+            onDismiss = { menuExpanded = false },
+            onQuote = { onQuote(bubble) },
+            onCopy = { onCopy(bubble) },
         )
     }
     AnimatedVisibility(visible = expanded) {
