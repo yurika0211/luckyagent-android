@@ -2094,6 +2094,32 @@ private fun mediaTypeLabel(type: String): String = when (type.lowercase()) {
 }
 
 @Composable
+private fun SessionWorkingBadge() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(CloverAccent.copy(alpha = 0.14f))
+            .padding(horizontal = 7.dp, vertical = 2.dp),
+    ) {
+        Box(
+            Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(CloverAccent),
+        )
+        Text(
+            "Working",
+            style = MaterialTheme.typography.labelSmall,
+            color = CloverAccent,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
 private fun SessionDrawer(
     state: AppUiState,
     onClose: () -> Unit,
@@ -2265,6 +2291,7 @@ private fun SessionDrawer(
                     }
                     items(sessions, key = { it.id }) { session ->
                         val selected = session.id == state.settings.sessionId
+                        val working = session.id in state.workingSessionIds
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -2272,7 +2299,7 @@ private fun SessionDrawer(
                                 .background(if (selected) CloverUserBubble else CloverSurface)
                                 .border(
                                     1.dp,
-                                    if (selected) CloverAccent else CloverLine,
+                                    if (selected) CloverAccent else if (working) CloverAccent.copy(alpha = 0.45f) else CloverLine,
                                     RoundedCornerShape(12.dp),
                                 )
                                 .clickable { onSelect(session.id) }
@@ -2280,13 +2307,20 @@ private fun SessionDrawer(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text(
-                                    session.title?.takeIf { it.isNotBlank() } ?: session.id,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        session.title?.takeIf { it.isNotBlank() } ?: session.id,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    if (working) {
+                                        Spacer(Modifier.width(8.dp))
+                                        SessionWorkingBadge()
+                                    }
+                                }
                                 Text(
                                     session.id,
                                     style = MaterialTheme.typography.labelSmall,

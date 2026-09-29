@@ -153,6 +153,8 @@ data class AppUiState(
     val sessionsLoading: Boolean = false,
     val sessionsError: String? = null,
     val sessionQuery: String = "",
+    /** Session IDs currently running an agent turn (foreground or background). */
+    val workingSessionIds: Set<String> = emptySet(),
     val bubbles: List<ChatBubble> = emptyList(),
     val composer: String = "",
     val pendingMedia: List<PendingMedia> = emptyList(),
@@ -444,17 +446,30 @@ class AppViewModel(
 
     private fun isCurrentSessionRunActive(): Boolean = activeRuns[currentSessionId()]?.isNotEmpty() == true
 
+    private fun workingSessionIdsSnapshot(): Set<String> =
+        activeRuns.filterValues { it.isNotEmpty() }.keys.toSet()
+
+    private fun publishWorkingSessions() {
+        val working = workingSessionIdsSnapshot()
+        _ui.update { current ->
+            if (current.workingSessionIds == working) current
+            else current.copy(workingSessionIds = working)
+        }
+    }
+
     private fun registerRun(handle: WsChatHandle) {
         val runs = sessionRuns(handle.sessionId)
         val existing = runs[handle.requestId]
         if (existing != null) {
             if (handle.ownsLease && !existing.handle.ownsLease) {
                 runs[handle.requestId] = ActiveRun(handle)
+                publishWorkingSessions()
             }
             return
         }
         runs[handle.requestId] = ActiveRun(handle)
         foregroundRequestIds.putIfAbsent(handle.sessionId, handle.requestId)
+        publishWorkingSessions()
     }
 
     private fun eventRequestId(event: WsEvent): String? =
@@ -476,6 +491,7 @@ class AppViewModel(
         } else if (foregroundRequestIds[event.sessionId] == requestId) {
             foregroundRequestIds[event.sessionId] = runs.keys.first()
         }
+        publishWorkingSessions()
         return true
     }
 
@@ -485,6 +501,7 @@ class AppViewModel(
             if (run.handle.ownsLease) container.wsClient.release(run.handle.connectionId)
         }
         foregroundRequestIds.remove(sessionId)
+        publishWorkingSessions()
     }
 
     private fun finishBackgroundRun(sessionId: String) {
