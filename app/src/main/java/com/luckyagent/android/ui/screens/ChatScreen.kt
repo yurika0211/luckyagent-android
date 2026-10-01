@@ -148,6 +148,7 @@ import com.luckyagent.android.ui.theme.CloverLeaf
 import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
+import com.luckyagent.android.ui.theme.CloverSurfaceBorder
 import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
@@ -175,6 +176,8 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.BorderStroke
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
 import com.luckyagent.android.ui.util.quoteRoleLabel
@@ -645,7 +648,16 @@ private fun ChatConversation(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(timeline, key = { it.key }) { item ->
+                items(
+                    items = timeline,
+                    key = { it.key },
+                    contentType = { item ->
+                        when (item) {
+                            is ChatTimelineItem.Message -> "message"
+                            is ChatTimelineItem.Process -> "process"
+                        }
+                    },
+                ) { item ->
                     when (item) {
                         is ChatTimelineItem.Message -> BubbleRow(
                             bubble = item.bubble,
@@ -1298,12 +1310,19 @@ private fun ComposerBar(
     val attachmentActivity = state.activityLine?.takeIf {
         it.contains("下载") || it.contains("附件")
     }
-    Column(
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = .96f),
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        tonalElevation = 2.dp,
+        shadowElevation = 4.dp,
+        border = BorderStroke(1.dp, CloverSurfaceBorder.copy(alpha = .8f)),
+    ) {
+      Column(
         Modifier
             .fillMaxWidth()
-            .background(CloverBg)
-        .padding(horizontal = 12.dp, vertical = 10.dp),
-    ) {
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+      ) {
         HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
         state.pendingQuote?.let { quote ->
             QuoteCard(
@@ -1429,7 +1448,16 @@ private fun ComposerBar(
                 )
             }
         }
-        Row(verticalAlignment = Alignment.Bottom) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .65f),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, CloverSurfaceBorder.copy(alpha = .9f)),
+        ) {
+          Row(
+            Modifier.padding(horizontal = 2.dp, vertical = 1.dp),
+            verticalAlignment = Alignment.Bottom,
+          ) {
             IconButton(onClick = onToggleAttachment, modifier = Modifier.padding(end = 2.dp)) {
                 Icon(
                     if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
@@ -1501,7 +1529,9 @@ private fun ComposerBar(
                     )
                 }
             }
+          }
         }
+      }
     }
 }
 
@@ -1529,16 +1559,20 @@ private fun AttachmentAction(
     label: String,
     onClick: () -> Unit,
 ) {
-    Column(
-        Modifier
-            .width(76.dp)
-            .clickable(onClick = onClick)
-            .padding(vertical = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+    Surface(
+        modifier = Modifier.width(76.dp).clickable(onClick = onClick),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .72f),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, CloverSurfaceBorder.copy(alpha = .75f)),
     ) {
-        Icon(icon, contentDescription = label, tint = CloverText2, modifier = Modifier.size(20.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        Column(
+            Modifier.padding(vertical = 7.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Icon(icon, contentDescription = label, tint = CloverText2, modifier = Modifier.size(20.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        }
     }
 }
 

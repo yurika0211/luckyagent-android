@@ -253,6 +253,7 @@ class AppViewModel(
     private var historyMessages: List<ProviderMessage> = emptyList()
     private var historyStartIndex = 0
     private var assistantBufferId: String? = null
+    private var assistantBufferIndex: Int? = null
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
@@ -916,12 +917,15 @@ class AppViewModel(
         assistantPending.setLength(0)
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
-            val idx = list.indexOfLast { it.id == id }
+            val cachedIndex = assistantBufferIndex
+                ?.takeIf { it in list.indices && list[it].id == id }
+            val idx = cachedIndex ?: list.indexOfLast { it.id == id }
             if (idx >= 0) {
                 list[idx] = list[idx].copy(content = list[idx].content + piece, streaming = true)
             } else {
                 list += ChatBubble(id = id, role = "assistant", content = piece, streaming = true)
             }
+            assistantBufferIndex = if (idx >= 0) idx else list.lastIndex
             st.copy(bubbles = list, isResponding = true)
         }
     }
@@ -943,7 +947,7 @@ class AppViewModel(
                 bubble.role == "assistant" && !bubble.streaming
             }
             val hasUserAfterLastAssistant = lastAssistantIndex >= 0 &&
-                list.drop(lastAssistantIndex + 1).any { bubble -> bubble.role == "user" }
+                list.subList(lastAssistantIndex + 1, list.size).any { bubble -> bubble.role == "user" }
             val duplicateHistoryAnswer = id == null &&
                 !hasUserAfterLastAssistant &&
                 lastAssistantIndex >= 0 &&
@@ -988,6 +992,7 @@ class AppViewModel(
             st.copy(bubbles = list, isResponding = false)
         }
         assistantBufferId = null
+        assistantBufferIndex = null
     }
 
     private fun mediaKey(media: ChatMedia): String {
@@ -1021,6 +1026,7 @@ class AppViewModel(
         assistantFlushJob = null
         assistantPending.setLength(0)
         assistantBufferId = null
+        assistantBufferIndex = null
     }
 
     private fun pushBubble(bubble: ChatBubble) {

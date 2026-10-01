@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
@@ -67,10 +68,6 @@ import com.luckyagent.android.ui.screens.SkillsScreen
 import com.luckyagent.android.ui.screens.TasksScreen
 import com.luckyagent.android.ui.screens.TrajectoryScreen
 import com.luckyagent.android.ui.theme.CloverAccent
-import com.luckyagent.android.ui.theme.CloverBg
-import com.luckyagent.android.ui.theme.CloverBgSide
-import com.luckyagent.android.ui.theme.CloverLine
-import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import kotlinx.coroutines.launch
@@ -129,7 +126,7 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
                         modifier = Modifier
                             .widthIn(max = AppNavDrawerWidth)
                             .fillMaxHeight(),
-                        drawerContainerColor = CloverBgSide,
+                        drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                     ) {
                         NavigationDrawerContent(
                             state = state,
@@ -163,7 +160,7 @@ private fun AppScaffold(
 ) {
     CompositionLocalProvider(LocalOpenNavigationDrawer provides openNavigation) {
         Scaffold(
-            containerColor = CloverBg,
+            containerColor = MaterialTheme.colorScheme.background,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
         ) { _ ->
             Row(
@@ -176,14 +173,15 @@ private fun AppScaffold(
                         modifier = Modifier
                             .width(AppNavRailWidth)
                             .fillMaxHeight()
-                            .background(CloverBgSide),
-                        containerColor = CloverBgSide,
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .verticalScroll(rememberScrollState()),
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
                     ) {
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(16.dp))
                         Box(
                             Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(14.dp))
                                 .background(CloverAccent),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -194,7 +192,7 @@ private fun AppScaffold(
                                 fontWeight = FontWeight.Bold,
                             )
                         }
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(16.dp))
                         navItems.forEach { item ->
                             NavigationRailItem(
                                 selected = state.destination == item.dest,
@@ -237,14 +235,14 @@ private fun NavigationDrawerContent(
             .fillMaxHeight()
             .verticalScroll(scroll)
             .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(16.dp),
+            .padding(horizontal = 14.dp, vertical = 16.dp),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                Modifier.size(48.dp).clip(CircleShape).background(CloverAccent),
+                Modifier.size(48.dp).clip(RoundedCornerShape(16.dp)).background(CloverAccent),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -298,7 +296,7 @@ private fun NavigationDrawerContent(
             Text(state.socketState.name.lowercase(), style = MaterialTheme.typography.labelSmall, color = CloverAccent)
         }
         Spacer(Modifier.height(12.dp))
-        HorizontalDivider(color = CloverLine)
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Text(
             "WORKSPACE",
             style = MaterialTheme.typography.labelSmall,
@@ -311,7 +309,13 @@ private fun NavigationDrawerContent(
                 Modifier
                     .fillMaxWidth()
                     .clip(MaterialTheme.shapes.small)
-                    .background(if (state.destination == item.dest) CloverSurface2 else CloverBgSide)
+                    .background(
+                        if (state.destination == item.dest) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = .55f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        },
+                    )
                     .clickable { onSelect(item.dest) }
                     .padding(horizontal = 12.dp, vertical = 13.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -319,7 +323,7 @@ private fun NavigationDrawerContent(
                 Icon(
                     item.icon,
                     contentDescription = null,
-                    tint = if (state.destination == item.dest) CloverAccent else CloverText2,
+                    tint = if (state.destination == item.dest) MaterialTheme.colorScheme.primary else CloverText2,
                 )
                 Text(
                     item.label,
@@ -330,7 +334,7 @@ private fun NavigationDrawerContent(
             }
         }
         Spacer(Modifier.height(24.dp))
-        HorizontalDivider(color = CloverLine)
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Text(
             "Profile & connection settings",
             style = MaterialTheme.typography.bodySmall,

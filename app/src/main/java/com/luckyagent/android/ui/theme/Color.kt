@@ -23,6 +23,7 @@ val CloverCodeBg = Color(0xFF1E2218)
 val CloverCodeFg = Color(0xFFE8ECDC)
 val CloverToolBg = Color(0xFFEDF1E9)
 val CloverWarning = Color(0xFFB54708)
+val CloverSurfaceBorder = Color(0xFFDCE6DC)
 
 // Dark (styles.css [data-theme="dark"])
 val CloverDarkBg = Color(0xFF171C18)

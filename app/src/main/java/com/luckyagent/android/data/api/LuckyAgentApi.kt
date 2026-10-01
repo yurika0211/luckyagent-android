@@ -6,6 +6,8 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.OpenableColumns
+import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.data.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -18,7 +20,39 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
+import okio.BufferedSink
 import java.util.concurrent.TimeUnit
+
+/** Streams picker content into OkHttp without holding a full attachment in RAM. */
+private class ContentResolverRequestBody(
+    private val resolver: ContentResolver,
+    private val uri: Uri,
+    private val mime: String,
+) : okhttp3.RequestBody() {
+    override fun contentType() = mime.toMediaType()
+
+    override fun contentLength(): Long = runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(cursor.getColumnIndexOrThrow(OpenableColumns.SIZE)) else -1L
+        } ?: -1L
+    }.getOrDefault(-1L)
+
+    override fun writeTo(sink: BufferedSink) {
+        val input = resolver.openInputStream(uri) ?: error("无法读取所选文件")
+        input.use {
+            val buffer = ByteArray(16 * 1024)
+            var total = 0L
+            val output = sink.outputStream()
+            while (true) {
+                val read = it.read(buffer)
+                if (read < 0) break
+                total += read
+                require(total <= 31L * 1024L * 1024L) { "文件不能超过 31 MB" }
+                output.write(buffer, 0, read)
+            }
+        }
+    }
+}
 
 class LuckyAgentApi(
     private val settingsRepository: SettingsRepository,
@@ -51,7 +85,11 @@ class LuckyAgentApi(
             req.header("Accept", "application/json")
             chain.proceed(req.build())
         }
-        .addInterceptor(logging)
+        .apply {
+            // BASIC logging is useful during local development, but it adds
+            // work to every request and is unnecessary in a release build.
+            if (BuildConfig.DEBUG) addInterceptor(logging)
+        }
         .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -59,21 +97,11 @@ class LuckyAgentApi(
     suspend fun uploadAttachment(resolver: ContentResolver, uri: Uri, fileName: String): Result<MediaAttachment> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val bytes = resolver.openInputStream(uri)?.use { input ->
-                    val output = java.io.ByteArrayOutputStream()
-                    val buffer = ByteArray(16 * 1024)
-                    var total = 0
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        total += read
-                        require(total <= 31 * 1024 * 1024) { "文件不能超过 31 MB" }
-                        output.write(buffer, 0, read)
-                    }
-                    output.toByteArray()
-                } ?: error("无法读取所选文件")
                 val mime = resolver.getType(uri) ?: "application/octet-stream"
-                val fileBody = bytes.toRequestBody(mime.toMediaType())
+                val fileBody = ContentResolverRequestBody(resolver, uri, mime)
+                fileBody.contentLength().takeIf { it >= 0L }?.let { length ->
+                    require(length <= MaxUploadBytes) { "文件不能超过 31 MB" }
+                }
                 val multipart = MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", fileName, fileBody)
@@ -87,6 +115,10 @@ class LuckyAgentApi(
                 }
             }
         }
+
+    private companion object {
+        const val MaxUploadBytes = 31L * 1024L * 1024L
+    }
 
     fun enqueueAttachmentDownload(context: Context, attachment: MediaAttachment): Result<Long> = runCatching {
         val rawUrl = attachment.fileUrl?.trim().orEmpty()

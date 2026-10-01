@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -22,9 +24,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
-import com.luckyagent.android.ui.theme.CloverAccent
-import com.luckyagent.android.ui.theme.CloverSurface
-import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 
@@ -38,43 +37,54 @@ fun ScreenHeader(
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val openNavigation = LocalOpenNavigationDrawer.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 20.dp),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.SpaceBetween,
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = .86f),
+        tonalElevation = 1.dp,
+        shadowElevation = 1.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .75f)),
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = eyebrow.uppercase(),
-                style = MaterialTheme.typography.labelSmall,
-                color = CloverAccent,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 1.2.sp,
-            )
-            Text(
-                text = title,
-                style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp, lineHeight = 34.sp),
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-            if (!subtitle.isNullOrBlank()) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = CloverText2,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-        }
         Row(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
-            content = actions,
-        )
-        if (openNavigation != null) {
-            IconButton(onClick = openNavigation) {
-                Icon(Icons.Outlined.Menu, contentDescription = "Open navigation")
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Surface(
+                modifier = Modifier.size(width = 5.dp, height = 48.dp),
+                color = MaterialTheme.colorScheme.primary,
+                shape = RoundedCornerShape(999.dp),
+            ) {}
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = eyebrow.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.2.sp,
+                )
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 27.sp, lineHeight = 32.sp),
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CloverText2,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                content = actions,
+            )
+            if (openNavigation != null) {
+                IconButton(onClick = openNavigation) {
+                    Icon(Icons.Outlined.Menu, contentDescription = "Open navigation")
+                }
             }
         }
     }
@@ -91,9 +101,10 @@ fun CloverCard(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = MaterialTheme.shapes.large,
-            color = CloverSurface,
+            color = MaterialTheme.colorScheme.surface,
             tonalElevation = 0.dp,
-            shadowElevation = 2.dp,
+            shadowElevation = 1.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .72f)),
         ) {
             Column(
                 Modifier.padding(18.dp),
@@ -108,7 +119,7 @@ fun CloverCard(
 fun MetaChip(text: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
-        color = CloverSurface2.copy(alpha = 0.82f),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f),
         shape = RoundedCornerShape(999.dp),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
