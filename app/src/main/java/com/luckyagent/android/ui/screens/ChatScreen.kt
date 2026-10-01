@@ -609,6 +609,14 @@ private fun ChatConversation(
             snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
             listState.scrollToItem(anchor.first.coerceIn(0, timeline.lastIndex), anchor.second)
         }
+        LaunchedEffect(state.settings.sessionId) {
+            snapshotFlow { listState.isScrollInProgress to listState.firstVisibleItemIndex }
+                .collect { (scrolling, firstVisibleIndex) ->
+                    if (scrolling && firstVisibleIndex <= 1) {
+                        vm.loadMoreHistory()
+                    }
+                }
+        }
         LaunchedEffect(timeline.size, timeline.lastOrNull()) {
             if (timeline.isEmpty() || restoredSession != state.settings.sessionId || listState.isScrollInProgress) return@LaunchedEffect
             val layout = listState.layoutInfo
@@ -661,6 +669,25 @@ private fun ChatConversation(
                     }
                 }
                 item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
+            }
+            if (state.historyLoading && timeline.isEmpty()) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(24.dp),
+                    strokeWidth = 2.dp,
+                    color = CloverAccent,
+                )
+            }
+            if (state.historyLoadingMore) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 6.dp)
+                        .size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = CloverAccent,
+                )
             }
             if (timeline.size > 1) {
                 // Mini scroll rail: compact pill so it doesn't dominate the bubble area.

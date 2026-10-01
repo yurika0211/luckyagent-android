@@ -156,6 +156,12 @@ data class AppUiState(
     /** Session IDs currently running an agent turn (foreground or background). */
     val workingSessionIds: Set<String> = emptySet(),
     val bubbles: List<ChatBubble> = emptyList(),
+    val historyLoading: Boolean = false,
+    val historyLoadingMore: Boolean = false,
+    val historyHasMore: Boolean = false,
+    val historyOffset: Int = 0,
+    val historyMessageCount: Int? = null,
+    val historyError: String? = null,
     val composer: String = "",
     val pendingMedia: List<PendingMedia> = emptyList(),
     val socketState: SocketState = SocketState.Idle,
@@ -243,6 +249,8 @@ class AppViewModel(
 
     private var eventsJob: Job? = null
     private var settingsReconnectJob: Job? = null
+    private var historyPageJob: Job? = null
+    private var historyPageGeneration = 0
     private var taskPollingJob: Job? = null
     private var backgroundPollingJob: Job? = null
     private var assistantBufferId: String? = null
@@ -257,6 +265,13 @@ class AppViewModel(
 
     private val activeRuns = mutableMapOf<String, LinkedHashMap<String, ActiveRun>>()
     private val foregroundRequestIds = mutableMapOf<String, String>()
+    private data class LoadedHistory(
+        val messages: List<ProviderMessage>,
+        val startIndex: Int,
+    )
+
+    private var loadedHistorySessionId: String? = null
+    private var loadedHistory: LoadedHistory? = null
     private var appInForeground = false
     private var updateDownloadJob: Job? = null
     private var attachmentNoticeJob: Job? = null
@@ -1307,11 +1322,22 @@ class AppViewModel(
     fun selectSession(id: String) {
         val target = id.ifBlank { "android-main" }
         container.settingsRepository.update { it.copy(sessionId = target) }
+        historyPageGeneration++
+        historyPageJob?.cancel()
+        historyPageJob = null
+        loadedHistorySessionId = null
+        loadedHistory = null
         resetAssistantStream()
         toolStepIndex.clear()
         _ui.update {
             it.copy(
                 bubbles = emptyList(),
+                historyLoading = true,
+                historyLoadingMore = false,
+                historyHasMore = false,
+                historyOffset = 0,
+                historyMessageCount = null,
+                historyError = null,
                 isResponding = activeRuns[target]?.isNotEmpty() == true,
                 progressSteps = emptyList(),
                 pendingQuote = null,
@@ -1322,17 +1348,42 @@ class AppViewModel(
     }
 
     fun loadHistory(sessionId: String = currentSessionId()) {
+        if (currentSessionId() == sessionId) {
+            historyPageGeneration++
+            historyPageJob?.cancel()
+            historyPageJob = null
+        }
         viewModelScope.launch {
-            val result = container.api.sessionHistory(sessionId)
+            _ui.update {
+                if (currentSessionId() == sessionId) {
+                    it.copy(historyLoading = true, historyError = null)
+                } else {
+                    it
+                }
+            }
+            val result = container.api.sessionHistory(sessionId, limit = SESSION_HISTORY_PAGE_SIZE, offset = 0)
             result.onSuccess { history ->
                 if (currentSessionId() != sessionId) return@onSuccess
                 resetAssistantStream()
                 toolStepIndex.clear()
-                val bubbles = historyToBubbles(history.messages)
+                val returned = history.returned ?: history.messages.size
+                val startIndex = history.messageCount
+                    ?.let { (it - returned - (history.offset ?: 0)).coerceAtLeast(0) }
+                    ?: (history.offset ?: 0)
+                loadedHistorySessionId = sessionId
+                loadedHistory = LoadedHistory(history.messages, startIndex)
+                val bubbles = historyToBubbles(history.messages, startIndex)
                 val running = activeRuns[sessionId]?.isNotEmpty() == true
+                val hasMore = history.hasMore ?: (returned >= SESSION_HISTORY_PAGE_SIZE)
                 _ui.update {
                     it.copy(
                         bubbles = bubbles,
+                        historyLoading = false,
+                        historyLoadingMore = false,
+                        historyHasMore = hasMore,
+                        historyOffset = (history.offset ?: 0) + returned,
+                        historyMessageCount = history.messageCount,
+                        historyError = null,
                         activityLine = if (running) "Agent running · history loaded" else "loaded ${bubbles.size} messages",
                         isResponding = running,
                         progressSteps = emptyList(),
@@ -1340,15 +1391,109 @@ class AppViewModel(
                     )
                 }
             }.onFailure { e ->
-                _ui.update { it.copy(activityLine = "history: ${e.message}") }
+                if (currentSessionId() == sessionId) {
+                    _ui.update {
+                        it.copy(
+                            historyLoading = false,
+                            historyLoadingMore = false,
+                            historyError = e.message ?: "Failed to load history",
+                            activityLine = "history: ${e.message}",
+                        )
+                    }
+                }
             }
         }
     }
 
-    private fun historyToBubbles(messages: List<ProviderMessage>): List<ChatBubble> {
+    fun loadMoreHistory(sessionId: String = currentSessionId()) {
+        val state = _ui.value
+        if (currentSessionId() != sessionId ||
+            state.historyLoading ||
+            state.historyLoadingMore ||
+            !state.historyHasMore
+        ) {
+            return
+        }
+        if (historyPageJob?.isActive == true) return
+        if (loadedHistorySessionId != sessionId) return
+        val loaded = loadedHistory ?: return
+        val offset = state.historyOffset
+        if (offset < 0) return
+
+        val generation = historyPageGeneration
+        historyPageJob = viewModelScope.launch {
+            try {
+                _ui.update {
+                    if (currentSessionId() == sessionId) {
+                        it.copy(historyLoadingMore = true, historyError = null)
+                    } else {
+                        it
+                    }
+                }
+                val result = container.api.sessionHistory(
+                    sessionId,
+                    limit = SESSION_HISTORY_PAGE_SIZE,
+                    offset = offset,
+                )
+                result.onSuccess { history ->
+                    if (currentSessionId() != sessionId) return@onSuccess
+                    val returned = history.returned ?: history.messages.size
+                    if (returned <= 0) {
+                        _ui.update {
+                            it.copy(
+                                historyLoadingMore = false,
+                                historyHasMore = false,
+                                historyError = null,
+                            )
+                        }
+                        return@onSuccess
+                    }
+                    // Keep the original page's absolute start so existing
+                    // bubble keys remain stable when older messages are
+                    // prepended. This also works with older servers that do
+                    // not return message_count.
+                    val pageStart = loaded.startIndex - returned
+                    val merged = history.messages + loaded.messages
+                    loadedHistory = LoadedHistory(merged, pageStart)
+                    val hasMore = history.hasMore ?: (returned >= SESSION_HISTORY_PAGE_SIZE)
+                    val bubbles = historyToBubbles(merged, pageStart)
+                    _ui.update {
+                        it.copy(
+                            bubbles = bubbles,
+                            historyLoadingMore = false,
+                            historyHasMore = hasMore,
+                            historyOffset = offset + returned,
+                            historyMessageCount = history.messageCount ?: it.historyMessageCount,
+                            historyError = null,
+                            activityLine = "loaded ${bubbles.size} messages",
+                        )
+                    }
+                }.onFailure { e ->
+                    if (currentSessionId() == sessionId) {
+                        _ui.update {
+                            it.copy(
+                                historyLoadingMore = false,
+                                historyError = e.message ?: "Failed to load older history",
+                                activityLine = "history: ${e.message}",
+                            )
+                        }
+                    }
+                }
+            } finally {
+                if (historyPageGeneration == generation) {
+                    historyPageJob = null
+                }
+            }
+        }
+    }
+
+    private fun historyToBubbles(
+        messages: List<ProviderMessage>,
+        messageIndexOffset: Int = 0,
+    ): List<ChatBubble> {
         val bubbles = mutableListOf<ChatBubble>()
         messages.forEachIndexed { index, message ->
-            message.toBubbles(index).forEach { bubble ->
+            message.toBubbles(messageIndexOffset + index).forEach { bubble ->
                 val callIndex = if (message.role == "tool" && bubble.role == "tool" && !message.toolCallId.isNullOrBlank()) {
                     bubbles.indexOfLast { it.role == "tool" && it.stepId == message.toolCallId }
                 } else -1
@@ -2184,12 +2329,23 @@ class AppViewModel(
             val result = container.api.createSession(title)
             result.onSuccess { session ->
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
+                historyPageGeneration++
+                historyPageJob?.cancel()
+                historyPageJob = null
+                loadedHistorySessionId = null
+                loadedHistory = null
                 foregroundRequestIds.remove(session.id)
                 resetAssistantStream()
                 toolStepIndex.clear()
                 _ui.update {
                     it.copy(
                         bubbles = emptyList(),
+                        historyLoading = false,
+                        historyLoadingMore = false,
+                        historyHasMore = false,
+                        historyOffset = 0,
+                        historyMessageCount = 0,
+                        historyError = null,
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
                         activityLine = "new session · ${session.id}",
                         pendingQuote = null,
@@ -2296,7 +2452,9 @@ class AppViewModel(
                     )
                 } else {
                     // Fallback: keep raw JSON for diagnostics without blocking UI empty state message
-                    val raw = container.api.getJson("/api/v1/sessions/$sessionId")
+                    val raw = container.api.getJson(
+                        "/api/v1/sessions/$sessionId?limit=$SESSION_HISTORY_PAGE_SIZE&offset=0",
+                    )
                     it.copy(
                         trajectoryLoading = false,
                         trajectory = null,
@@ -2309,6 +2467,7 @@ class AppViewModel(
     }
 
     private companion object {
+        const val SESSION_HISTORY_PAGE_SIZE = 40
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
         val artifactPathPattern = Regex(

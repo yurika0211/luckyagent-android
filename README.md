@@ -33,7 +33,7 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
   - 发送 / 停止（cancel）
   - Agent 运行期间普通消息、命令、页面操作、切换会话和修改连接配置不会中断当前任务；只有 Stop 或 `/stop` 会取消
 - **Sessions**
-  - 抽屉搜索、切换 session、加载历史（含历史 tool_calls）
+  - 抽屉搜索、切换 session、加载历史（首屏分页、向上加载更多、含历史 tool_calls）
 - **Settings**
   - API Base / API Key / Session
   - Bearer vs `X-API-Key`
@@ -45,7 +45,6 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 
 ## 还缺什么
 
-- 会话历史分页 / 向上加载更多
 - Memory graph 真正可视化（力导向或列表关系图）
 - 附件上传（图片等多模态）
 - 证书 pinning / 正式 release 签名密钥（CI 已支持可选 secrets 签名）
