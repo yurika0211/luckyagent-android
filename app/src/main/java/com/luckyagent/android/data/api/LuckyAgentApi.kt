@@ -225,11 +225,19 @@ class LuckyAgentApi(
             }
         }
 
-    suspend fun sessionHistory(sessionId: String, limit: Int = 100): Result<SessionHistory> =
+    suspend fun sessionHistory(
+        sessionId: String,
+        limit: Int = 40,
+        offset: Int = 0,
+    ): Result<SessionHistory> =
         withContext(Dispatchers.IO) {
             runCatching {
+                val query = buildMap {
+                    put("limit", limit.coerceIn(1, 500).toString())
+                    put("offset", offset.coerceAtLeast(0).toString())
+                }
                 val request = Request.Builder()
-                    .url(url("/api/v1/sessions/$sessionId", mapOf("limit" to limit.toString())))
+                    .url(url("/api/v1/sessions/$sessionId", query))
                     .get()
                     .build()
                 client.newCall(request).execute().use { resp ->

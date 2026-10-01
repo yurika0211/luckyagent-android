@@ -24,6 +24,7 @@ data class RuntimeSession(
 data class SessionHistory(
     val id: String? = null,
     val title: String? = null,
+    @SerialName("message_count") val messageCount: Int? = null,
     val messages: List<ProviderMessage> = emptyList(),
     val limit: Int? = null,
     val offset: Int? = null,

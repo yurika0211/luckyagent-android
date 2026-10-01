@@ -100,6 +100,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
@@ -152,6 +153,7 @@ import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -588,8 +590,22 @@ private fun ChatConversation(
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
         val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
+        val latestHistoryState by rememberUpdatedState(state.historyHasMore to state.historyLoadingMore)
         var lastAutoScrollPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
         var restoredSession by remember { mutableStateOf("") }
+        LaunchedEffect(state.settings.sessionId) {
+            var wasNearTop = false
+            snapshotFlow { listState.firstVisibleItemIndex }
+                .distinctUntilChanged()
+                .collect { firstVisible ->
+                    val nearTop = firstVisible <= 2
+                    val (hasMore, loadingMore) = latestHistoryState
+                    if (nearTop && !wasNearTop && hasMore && !loadingMore) {
+                        vm.loadMoreHistory()
+                    }
+                    wasNearTop = nearTop
+                }
+        }
         LaunchedEffect(state.settings.sessionId) {
             snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
                 .collect { (index, offset) ->
@@ -661,6 +677,15 @@ private fun ChatConversation(
                     }
                 }
                 item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
+            }
+            if (state.historyLoading || state.historyLoadingMore) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(10.dp)
+                        .size(18.dp),
+                    strokeWidth = 2.dp,
+                )
             }
             if (timeline.size > 1) {
                 // Mini scroll rail: compact pill so it doesn't dominate the bubble area.

@@ -156,6 +156,9 @@ data class AppUiState(
     /** Session IDs currently running an agent turn (foreground or background). */
     val workingSessionIds: Set<String> = emptySet(),
     val bubbles: List<ChatBubble> = emptyList(),
+    val historyLoading: Boolean = false,
+    val historyLoadingMore: Boolean = false,
+    val historyHasMore: Boolean = false,
     val composer: String = "",
     val pendingMedia: List<PendingMedia> = emptyList(),
     val socketState: SocketState = SocketState.Idle,
@@ -245,6 +248,10 @@ class AppViewModel(
     private var settingsReconnectJob: Job? = null
     private var taskPollingJob: Job? = null
     private var backgroundPollingJob: Job? = null
+    private var historyJob: Job? = null
+    private var historySessionId: String? = null
+    private var historyMessages: List<ProviderMessage> = emptyList()
+    private var historyStartIndex = 0
     private var assistantBufferId: String? = null
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
@@ -1306,49 +1313,101 @@ class AppViewModel(
 
     fun selectSession(id: String) {
         val target = id.ifBlank { "android-main" }
+        historyJob?.cancel()
+        historySessionId = target
+        historyMessages = emptyList()
+        historyStartIndex = 0
         container.settingsRepository.update { it.copy(sessionId = target) }
         resetAssistantStream()
         toolStepIndex.clear()
         _ui.update {
             it.copy(
-                bubbles = emptyList(),
+                historyLoading = true,
+                historyLoadingMore = false,
+                historyHasMore = false,
                 isResponding = activeRuns[target]?.isNotEmpty() == true,
                 progressSteps = emptyList(),
                 pendingQuote = null,
+                activityLine = "loading history…",
             )
         }
         container.wsClient.replaySession(target)
         loadHistory(target)
     }
 
-    fun loadHistory(sessionId: String = currentSessionId()) {
-        viewModelScope.launch {
-            val result = container.api.sessionHistory(sessionId)
+    fun loadHistory(sessionId: String = currentSessionId(), reset: Boolean = true) {
+        val target = sessionId.ifBlank { "android-main" }
+        if (target != currentSessionId()) return
+        if (!reset && (_ui.value.historyLoading || _ui.value.historyLoadingMore || !_ui.value.historyHasMore)) return
+
+        val offset = if (reset) 0 else historyMessages.size
+        if (reset) {
+            historyJob?.cancel()
+            historySessionId = target
+            historyMessages = emptyList()
+            historyStartIndex = 0
+        }
+        val loadingMore = !reset
+        _ui.update {
+            it.copy(
+                historyLoading = reset,
+                historyLoadingMore = loadingMore,
+                activityLine = if (reset) "loading history…" else "loading older history…",
+            )
+        }
+
+        historyJob = viewModelScope.launch {
+            val result = container.api.sessionHistory(target, limit = 40, offset = offset)
             result.onSuccess { history ->
-                if (currentSessionId() != sessionId) return@onSuccess
+                if (currentSessionId() != target || historySessionId != target) return@onSuccess
                 resetAssistantStream()
                 toolStepIndex.clear()
-                val bubbles = historyToBubbles(history.messages)
-                val running = activeRuns[sessionId]?.isNotEmpty() == true
+                if (reset) {
+                    historyMessages = history.messages
+                    historyStartIndex = (
+                        (history.messageCount ?: history.messages.size) -
+                            offset -
+                            history.messages.size
+                        ).coerceAtLeast(0)
+                } else {
+                    historyMessages = history.messages + historyMessages
+                    historyStartIndex = (historyStartIndex - history.messages.size).coerceAtLeast(0)
+                }
+                val bubbles = historyToBubbles(historyMessages, historyStartIndex)
+                val running = activeRuns[target]?.isNotEmpty() == true
                 _ui.update {
                     it.copy(
                         bubbles = bubbles,
                         activityLine = if (running) "Agent running · history loaded" else "loaded ${bubbles.size} messages",
                         isResponding = running,
+                        historyLoading = false,
+                        historyLoadingMore = false,
+                        historyHasMore = history.hasMore == true,
                         progressSteps = emptyList(),
                         pendingQuote = null,
                     )
                 }
             }.onFailure { e ->
-                _ui.update { it.copy(activityLine = "history: ${e.message}") }
+                if (currentSessionId() != target || historySessionId != target) return@onFailure
+                _ui.update {
+                    it.copy(
+                        historyLoading = false,
+                        historyLoadingMore = false,
+                        activityLine = "history: ${e.message}",
+                    )
+                }
             }
         }
     }
 
-    private fun historyToBubbles(messages: List<ProviderMessage>): List<ChatBubble> {
+    fun loadMoreHistory() {
+        loadHistory(currentSessionId(), reset = false)
+    }
+
+    private fun historyToBubbles(messages: List<ProviderMessage>, startIndex: Int = 0): List<ChatBubble> {
         val bubbles = mutableListOf<ChatBubble>()
         messages.forEachIndexed { index, message ->
-            message.toBubbles(index).forEach { bubble ->
+            message.toBubbles(startIndex + index).forEach { bubble ->
                 val callIndex = if (message.role == "tool" && bubble.role == "tool" && !message.toolCallId.isNullOrBlank()) {
                     bubbles.indexOfLast { it.role == "tool" && it.stepId == message.toolCallId }
                 } else -1
@@ -2183,6 +2242,10 @@ class AppViewModel(
         viewModelScope.launch {
             val result = container.api.createSession(title)
             result.onSuccess { session ->
+                historyJob?.cancel()
+                historySessionId = session.id
+                historyMessages = emptyList()
+                historyStartIndex = 0
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
                 foregroundRequestIds.remove(session.id)
                 resetAssistantStream()
@@ -2190,6 +2253,9 @@ class AppViewModel(
                 _ui.update {
                     it.copy(
                         bubbles = emptyList(),
+                        historyLoading = false,
+                        historyLoadingMore = false,
+                        historyHasMore = false,
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
                         activityLine = "new session · ${session.id}",
                         pendingQuote = null,
