@@ -1,5 +1,7 @@
 package com.luckyagent.android.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -44,6 +46,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -91,6 +94,8 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
             ) {
                 Column(Modifier.weight(1.25f)) {
                     SettingsEndpointCard(s, vm)
+                    Spacer(Modifier.height(12.dp))
+                    SettingsSessionCard(s, vm)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsLiveCard(state, vm)
@@ -105,6 +110,7 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 SettingsEndpointCard(s, vm)
+                SettingsSessionCard(s, vm)
                 SettingsLiveCard(state, vm)
                 SettingsNotificationsCard(state, vm)
                 SettingsUpdateCard(state, vm)
@@ -223,7 +229,7 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(endpoint.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    Text(endpoint.apiBase, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 1)
+                    Text(endpoint.apiBase, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     if (active) Text("ACTIVE", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
                 }
                 if (!active) {
@@ -239,7 +245,6 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
                 }
             }
         }
-        SettingsField("Session ID", s.sessionId, { v -> vm.updateSettings { it.copy(sessionId = v) } })
     }
     editing?.let { endpoint ->
         RuntimeEndpointDialog(
@@ -258,6 +263,31 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun SettingsSessionCard(s: ClientSettings, vm: AppViewModel) {
+    val context = LocalContext.current
+    CloverCard {
+        Text("Session", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Messages are loaded from this session on the active runtime.",
+            color = CloverText2,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Box(Modifier.weight(1f)) {
+                SettingsField("Session ID", s.sessionId, { v -> vm.updateSettings { it.copy(sessionId = v) } })
+            }
+            TextButton(
+                onClick = {
+                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                    clipboard?.setPrimaryClip(ClipData.newPlainText("luckyagent-session-id", s.sessionId))
+                },
+                enabled = s.sessionId.isNotBlank(),
+            ) { Text("复制") }
+        }
     }
 }
 
@@ -334,7 +364,7 @@ private fun SettingsField(label: String, value: String, onValueChange: (String) 
 @Composable
 private fun SettingsLiveCard(state: AppUiState, vm: AppViewModel) {
     CloverCard {
-        Text("Live checks", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("Diagnostics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = vm::probeHealth) {
                 Icon(Icons.Outlined.HealthAndSafety, contentDescription = null)

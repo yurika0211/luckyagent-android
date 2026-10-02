@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -124,7 +125,7 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
 private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSummary>, vm: AppViewModel) {
     state.backgroundError?.let { ErrorLine(it) }
 
-    BackgroundOverview(state)
+    BackgroundOverview(state, onOpenSettings = { vm.navigate(com.luckyagent.android.ui.AppDestination.Settings) })
     BackgroundWorkers(state)
     BackgroundHeartbeat(state)
 
@@ -197,7 +198,7 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
 }
 
 @Composable
-private fun BackgroundOverview(state: AppUiState) {
+private fun BackgroundOverview(state: AppUiState, onOpenSettings: () -> Unit) {
     val dashboard = state.backgroundDashboard ?: return
     CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -212,6 +213,9 @@ private fun BackgroundOverview(state: AppUiState) {
                 )
             }
             MetaChip(if (dashboard.started) "running" else "stopped")
+        }
+        if (!dashboard.started) {
+            TextButton(onClick = onOpenSettings) { Text("查看配置") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             BackgroundMetric("Ready", dashboard.queue.ready.toString())

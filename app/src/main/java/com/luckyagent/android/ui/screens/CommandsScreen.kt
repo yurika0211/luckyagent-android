@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.api.RuntimeCommand
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
+import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
@@ -202,7 +203,16 @@ fun CommandsScreen(state: AppUiState, vm: AppViewModel) {
                 ) { Text(if (state.commandExecuting) "Running…" else "Run command") }
             },
             dismissButton = {
-                TextButton(onClick = { selectedCommand = null }) { Text("Cancel") }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            vm.updateComposer("/${command.name} ")
+                            selectedCommand = null
+                            vm.navigate(AppDestination.Chat)
+                        },
+                    ) { Text("Fill chat") }
+                    TextButton(onClick = { selectedCommand = null }) { Text("Cancel") }
+                }
             },
         )
     }

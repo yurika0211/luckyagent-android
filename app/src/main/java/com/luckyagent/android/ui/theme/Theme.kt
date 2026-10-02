@@ -12,8 +12,8 @@ import androidx.compose.ui.unit.dp
 
 private val CloverShapes = Shapes(
     small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(18.dp),
-    large = RoundedCornerShape(26.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
 )
 
 private val LightColors = lightColorScheme(

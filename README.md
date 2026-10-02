@@ -66,7 +66,7 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 | topbar + composer | `ChatTopBar` + `ComposerBar` |
 | 四叶草绿主题 | `CloverTheme` |
 
-主题色：bg `#f9faf4` / side `#eef1e5` / surface `#ffffff` / text `#16190f` / accent `#3f8a37`。
+主题色：bg `#f8f5ee` / side `#f2efe8` / surface `#fffcf7` / text `#2b2925` / accent `#356f42`。
 
 ## 鉴权
 

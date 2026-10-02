@@ -39,18 +39,18 @@ fun ScreenHeader(
     val openNavigation = LocalOpenNavigationDrawer.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = .86f),
-        tonalElevation = 1.dp,
-        shadowElevation = 1.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .75f)),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = .72f),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f)),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Surface(
-                modifier = Modifier.size(width = 5.dp, height = 48.dp),
+                modifier = Modifier.size(width = 3.dp, height = 38.dp),
                 color = MaterialTheme.colorScheme.primary,
                 shape = RoundedCornerShape(999.dp),
             ) {}
@@ -64,7 +64,7 @@ fun ScreenHeader(
                 )
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 27.sp, lineHeight = 32.sp),
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp, lineHeight = 34.sp),
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 if (!subtitle.isNullOrBlank()) {
@@ -100,15 +100,15 @@ fun CloverCard(
     ) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large,
+            shape = MaterialTheme.shapes.medium,
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 0.dp,
-            shadowElevation = 1.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .72f)),
+            shadowElevation = 0.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f)),
         ) {
             Column(
-                Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 content = content,
             )
         }

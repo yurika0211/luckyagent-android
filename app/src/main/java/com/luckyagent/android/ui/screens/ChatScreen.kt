@@ -17,6 +17,7 @@ import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -96,6 +97,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -175,6 +177,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Surface
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
 import com.luckyagent.android.ui.util.quoteRoleLabel
@@ -590,6 +593,20 @@ private fun ChatConversation(
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
         val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
+        val atBottom by remember {
+            derivedStateOf {
+                val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+                lastVisible == null ||
+                    (lastVisible.index >= listState.layoutInfo.totalItemsCount - 1 &&
+                        lastVisible.offset + lastVisible.size <= listState.layoutInfo.viewportEndOffset + 48)
+            }
+        }
+        val unreadCount by remember(timeline) {
+            derivedStateOf {
+                val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                (timeline.size - lastVisible - 1).coerceAtLeast(0)
+            }
+        }
         val latestHistoryState by rememberUpdatedState(state.historyHasMore to state.historyLoadingMore)
         var lastAutoScrollPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
         var restoredSession by remember { mutableStateOf("") }
@@ -696,42 +713,38 @@ private fun ChatConversation(
                     strokeWidth = 2.dp,
                 )
             }
-            if (timeline.size > 1) {
-                // Mini scroll rail: compact pill so it doesn't dominate the bubble area.
+            if (!atBottom && timeline.size > 1) {
+                // Only show the return-to-bottom affordance after the user leaves the tail.
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(end = 6.dp, bottom = 6.dp)
+                        .padding(end = 12.dp, bottom = 12.dp)
                         .clip(RoundedCornerShape(999.dp))
-                        .background(CloverSurface.copy(alpha = .82f))
+                        .background(CloverSurface.copy(alpha = .96f))
                         .border(0.5.dp, CloverLine.copy(alpha = .45f), RoundedCornerShape(999.dp)),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(width = 22.dp, height = 20.dp)
-                            .clickable { scrollScope.launch { listState.animateScrollToItem(0) } },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Outlined.ExpandLess,
-                            contentDescription = "到顶",
-                            modifier = Modifier.size(13.dp),
-                            tint = CloverText3,
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(width = 22.dp, height = 20.dp)
+                            .heightIn(min = 44.dp)
+                            .padding(horizontal = 14.dp)
                             .clickable { scrollScope.launch { listState.animateScrollToItem(timeline.size) } },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             Icons.Outlined.ExpandMore,
-                            contentDescription = "到底",
-                            modifier = Modifier.size(13.dp),
+                            contentDescription = "回到底部",
+                            modifier = Modifier.size(16.dp),
                             tint = CloverText3,
                         )
+                        if (unreadCount > 0) {
+                            Text(
+                                unreadCount.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CloverAccent,
+                                modifier = Modifier.padding(start = 18.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -772,6 +785,8 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
     val live = state.socketState == SocketState.Connected || state.socketState == SocketState.Running
     val connectionLabel = if (live) "live" else state.socketState.name.lowercase()
     val connectionColor = if (live) CloverLeaf else CloverError
+    val currentSession = state.sessions.firstOrNull { it.id == state.settings.sessionId }
+    val sessionTitle = currentSession?.title?.takeIf { it.isNotBlank() } ?: "未命名会话"
     Column(
         Modifier
             .fillMaxWidth()
@@ -791,10 +806,16 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
                 }
             }
             Column(Modifier.weight(1f)) {
-                Text("Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    sessionTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 val sid = state.settings.sessionId
                 Text(
-                    if (sid.isBlank()) "No session" else sid.take(18) + if (sid.length > 18) "…" else "",
+                    if (sid.isBlank()) "未选择会话" else sid.take(18) + if (sid.length > 18) "…" else "",
                     style = MaterialTheme.typography.labelSmall,
                     color = CloverText3,
                 )
@@ -1057,7 +1078,7 @@ private fun MessageMetadata(bubble: ChatBubble) {
             horizontalArrangement = Arrangement.End,
         ) {
             Text(
-                summary,
+                "运行详情 · $summary",
                 style = MaterialTheme.typography.labelSmall,
                 color = CloverText3,
                 maxLines = 1,
@@ -1445,7 +1466,17 @@ private fun ComposerBar(
                 )
             }
         }
-        Row(verticalAlignment = Alignment.Bottom) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = CloverSurface,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, CloverLine),
+            shadowElevation = 1.dp,
+        ) {
+        Row(
+            Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
             IconButton(onClick = onToggleAttachment, modifier = Modifier.padding(end = 2.dp)) {
                 Icon(
                     if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
@@ -1466,7 +1497,7 @@ private fun ComposerBar(
                     .padding(horizontal = 4.dp, vertical = 13.dp),
                 decorationBox = { inner ->
                     if (state.composer.isEmpty()) {
-                        Text("Message or /command", color = CloverText3)
+                        Text("输入消息，或输入 /command", color = CloverText3)
                     }
                     inner()
                 },
@@ -1517,6 +1548,7 @@ private fun ComposerBar(
                     )
                 }
             }
+        }
         }
     }
 }

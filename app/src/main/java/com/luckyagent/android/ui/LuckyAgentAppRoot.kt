@@ -53,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -68,6 +69,7 @@ import com.luckyagent.android.ui.screens.SkillsScreen
 import com.luckyagent.android.ui.screens.TasksScreen
 import com.luckyagent.android.ui.screens.TrajectoryScreen
 import com.luckyagent.android.ui.theme.CloverAccent
+import com.luckyagent.android.ui.theme.CloverLeaf
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import kotlinx.coroutines.launch
@@ -94,6 +96,12 @@ private val navItems = listOf(
     NavSpec(AppDestination.Skills, "Skills", Icons.Outlined.Extension),
     NavSpec(AppDestination.Memory, "Memory", Icons.Outlined.AccountTree),
     NavSpec(AppDestination.Settings, "Settings", Icons.Outlined.Settings),
+)
+
+private val navGroups = listOf(
+    "WORKSPACE" to navItems.take(1),
+    "RUNTIME" to navItems.slice(1..8),
+    "SYSTEM" to navItems.takeLast(1),
 )
 
 @Composable
@@ -186,7 +194,7 @@ private fun AppScaffold(
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
-                                "L",
+                                "✣",
                                 color = MaterialTheme.colorScheme.onPrimary,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
@@ -246,7 +254,7 @@ private fun NavigationDrawerContent(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    "L",
+                    "✣",
                     color = MaterialTheme.colorScheme.onPrimary,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
@@ -297,40 +305,37 @@ private fun NavigationDrawerContent(
         }
         Spacer(Modifier.height(12.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Text(
-            "WORKSPACE",
-            style = MaterialTheme.typography.labelSmall,
-            color = CloverText3,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(start = 12.dp, top = 20.dp, bottom = 8.dp),
-        )
-        navItems.forEach { item ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(MaterialTheme.shapes.small)
-                    .background(
-                        if (state.destination == item.dest) {
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = .55f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        },
+        navGroups.forEach { (groupLabel, groupItems) ->
+            Text(
+                groupLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 12.dp, top = 20.dp, bottom = 8.dp),
+            )
+            groupItems.forEach { item ->
+                val selected = state.destination == item.dest
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.small)
+                        .background(if (selected) CloverLeaf.copy(alpha = .22f) else Color.Transparent)
+                        .clickable { onSelect(item.dest) }
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        item.icon,
+                        contentDescription = item.label,
+                        tint = if (selected) MaterialTheme.colorScheme.primary else CloverText2,
                     )
-                    .clickable { onSelect(item.dest) }
-                    .padding(horizontal = 12.dp, vertical = 13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    item.icon,
-                    contentDescription = null,
-                    tint = if (state.destination == item.dest) MaterialTheme.colorScheme.primary else CloverText2,
-                )
-                Text(
-                    item.label,
-                    modifier = Modifier.padding(start = 14.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = if (state.destination == item.dest) FontWeight.SemiBold else FontWeight.Normal,
-                )
+                    Text(
+                        item.label,
+                        modifier = Modifier.padding(start = 14.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                }
             }
         }
         Spacer(Modifier.height(24.dp))

@@ -10,8 +10,8 @@ val CloverTypography = Typography(
     headlineSmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 22.sp,
-        lineHeight = 28.sp,
+        fontSize = 28.sp,
+        lineHeight = 34.sp,
         letterSpacing = (-0.2).sp,
     ),
     titleLarge = TextStyle(
