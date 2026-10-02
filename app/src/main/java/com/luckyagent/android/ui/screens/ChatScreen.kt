@@ -148,7 +148,6 @@ import com.luckyagent.android.ui.theme.CloverLeaf
 import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
-import com.luckyagent.android.ui.theme.CloverSurfaceBorder
 import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
@@ -176,8 +175,6 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.Surface
-import androidx.compose.foundation.BorderStroke
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
 import com.luckyagent.android.ui.util.quoteRoleLabel
@@ -851,7 +848,7 @@ private fun BubbleRow(
                         .padding(vertical = 2.dp),
                     horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
                 ) {
-                    if (!isUser) {
+                    if (!isUser && !bubble.role.equals("assistant", ignoreCase = true)) {
                         Text(
                             bubble.role.ifBlank { "assistant" },
                             style = MaterialTheme.typography.labelSmall,
@@ -861,21 +858,11 @@ private fun BubbleRow(
                     }
                     Box {
                         Column(
-                            if (isUser) {
-                                Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(CloverUserBubble)
-                                    .pointerInput(bubble.id) {
-                                        detectTapGestures(onLongPress = { menuExpanded = true })
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                            } else {
-                                Modifier
-                                    .pointerInput(bubble.id) {
-                                        detectTapGestures(onLongPress = { menuExpanded = true })
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                            },
+                            Modifier
+                                .pointerInput(bubble.id) {
+                                    detectTapGestures(onLongPress = { menuExpanded = true })
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
                         ) {
                         bubble.quote?.let { quote ->
                             QuoteCard(quote = quote, compact = true)
@@ -915,15 +902,15 @@ private fun BubbleRow(
                             }
                         }
                     }
-                    if (bubble.createdAt != null || bubble.usage != null) {
-                        MessageMetadata(bubble)
-                    }
                         MessageActionMenu(
                             expanded = menuExpanded,
                             onDismiss = { menuExpanded = false },
                             onQuote = { onQuote(bubble) },
                             onCopy = { onCopy(bubble) },
                         )
+                    }
+                    if (bubble.createdAt != null || bubble.usage != null) {
+                        MessageMetadata(bubble)
                     }
                 }
             }
@@ -1069,7 +1056,14 @@ private fun MessageMetadata(bubble: ChatBubble) {
                 .clickable(enabled = usage != null) { expanded = !expanded },
             horizontalArrangement = Arrangement.End,
         ) {
-            Text(summary, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+            Text(
+                summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
         }
         if (expanded && usage != null) {
             Column(
@@ -1128,12 +1122,23 @@ private fun ProcessTimeline(
     var expanded by remember(steps.first().id) { mutableStateOf(isResponding) }
     Column(Modifier.fillMaxWidth().padding(start = 14.dp)) {
         Row(
-            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 4.dp),
+            Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            CloverPulseIndicator(
+                modifier = Modifier.size(12.dp),
+                tint = if (isResponding) CloverLeaf else CloverText3,
+            )
+            Spacer(Modifier.width(8.dp))
             Text(
-                if (isResponding && steps.any { !it.toolDone && it.role == "tool" }) "执行中"
-                else "思考过程 · ${steps.size} 步",
+                when {
+                    isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"
+                    steps.size == 1 -> "思考过程"
+                    else -> "思考过程 · ${steps.size} 步"
+                },
                 style = MaterialTheme.typography.labelMedium,
                 color = CloverText3,
                 modifier = Modifier.weight(1f),
@@ -1145,10 +1150,9 @@ private fun ProcessTimeline(
                 modifier = Modifier.size(18.dp),
             )
         }
-        HorizontalDivider(color = CloverLine.copy(alpha = .65f))
         AnimatedVisibility(visible = expanded) {
             Column(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
+                Modifier.fillMaxWidth().padding(start = 20.dp, bottom = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 steps.forEach { step ->
@@ -1310,19 +1314,12 @@ private fun ComposerBar(
     val attachmentActivity = state.activityLine?.takeIf {
         it.contains("下载") || it.contains("附件")
     }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = .96f),
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        tonalElevation = 2.dp,
-        shadowElevation = 4.dp,
-        border = BorderStroke(1.dp, CloverSurfaceBorder.copy(alpha = .8f)),
-    ) {
-      Column(
+    Column(
         Modifier
             .fillMaxWidth()
+            .background(CloverBg)
             .padding(horizontal = 12.dp, vertical = 10.dp),
-      ) {
+    ) {
         HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
         state.pendingQuote?.let { quote ->
             QuoteCard(
@@ -1448,16 +1445,7 @@ private fun ComposerBar(
                 )
             }
         }
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .65f),
-            shape = RoundedCornerShape(20.dp),
-            border = BorderStroke(1.dp, CloverSurfaceBorder.copy(alpha = .9f)),
-        ) {
-          Row(
-            Modifier.padding(horizontal = 2.dp, vertical = 1.dp),
-            verticalAlignment = Alignment.Bottom,
-          ) {
+        Row(verticalAlignment = Alignment.Bottom) {
             IconButton(onClick = onToggleAttachment, modifier = Modifier.padding(end = 2.dp)) {
                 Icon(
                     if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
@@ -1529,9 +1517,7 @@ private fun ComposerBar(
                     )
                 }
             }
-          }
         }
-      }
     }
 }
 
@@ -1559,20 +1545,16 @@ private fun AttachmentAction(
     label: String,
     onClick: () -> Unit,
 ) {
-    Surface(
-        modifier = Modifier.width(76.dp).clickable(onClick = onClick),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .72f),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, CloverSurfaceBorder.copy(alpha = .75f)),
+    Column(
+        Modifier
+            .width(76.dp)
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Column(
-            Modifier.padding(vertical = 7.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            Icon(icon, contentDescription = label, tint = CloverText2, modifier = Modifier.size(20.dp))
-            Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
-        }
+        Icon(icon, contentDescription = label, tint = CloverText2, modifier = Modifier.size(20.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
     }
 }
 
