@@ -1194,6 +1194,24 @@ class AppViewModel(
         _ui.update { it.copy(pendingMedia = it.pendingMedia.filterNot { media -> media.id == id }) }
     }
 
+    fun retryPendingMedia(resolver: ContentResolver, id: String) {
+        val item = _ui.value.pendingMedia.firstOrNull { it.id == id } ?: return
+        _ui.update { state ->
+            state.copy(pendingMedia = state.pendingMedia.map {
+                if (it.id == id) it.copy(descriptor = null, error = null) else it
+            })
+        }
+        viewModelScope.launch {
+            mediaUploadSemaphore.withPermit {
+                container.api.uploadAttachment(resolver, Uri.parse(item.uri), item.fileName)
+            }.onSuccess { descriptor ->
+                _ui.update { state -> state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it }) }
+            }.onFailure { error ->
+                _ui.update { state -> state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it }) }
+            }
+        }
+    }
+
     fun updateSessionQuery(value: String) {
         _ui.update { it.copy(sessionQuery = value) }
     }

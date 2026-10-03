@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.api.GatewayStatus
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
+import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
@@ -81,6 +82,8 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
                     title = "No gateways reported",
                     body = "lh serve did not return gateway entries. Confirm msg-gateway is configured on the host.",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "打开 Settings",
+                    onAction = { vm.navigate(AppDestination.Settings) },
                 )
             }
             else -> {

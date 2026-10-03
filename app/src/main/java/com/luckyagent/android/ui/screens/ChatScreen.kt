@@ -762,6 +762,7 @@ private fun ChatConversation(
             onVisualPick = onVisualPick,
             onFilePick = onFilePick,
             onRemoveMedia = vm::removePendingMedia,
+            onRetryMedia = { id -> vm.retryPendingMedia(context.contentResolver, id) },
             onClearQuote = vm::clearQuote,
             isRecordingVoice = isRecordingVoice,
             recordingElapsedSec = recordingElapsedSec,
@@ -815,9 +816,21 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
                 )
                 val sid = state.settings.sessionId
                 Text(
-                    if (sid.isBlank()) "未选择会话" else sid.take(18) + if (sid.length > 18) "…" else "",
+                    buildString {
+                        if (sid.isBlank()) append("未选择会话")
+                        else {
+                            append(sid.take(18))
+                            if (sid.length > 18) append("…")
+                            (currentSession?.updatedAt ?: currentSession?.createdAt)?.let {
+                                append(" · 活跃 ")
+                                append(formatMessageTime(it))
+                            }
+                        }
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = CloverText3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Row(
@@ -1321,6 +1334,7 @@ private fun ComposerBar(
     onVisualPick: () -> Unit,
     onFilePick: () -> Unit,
     onRemoveMedia: (String) -> Unit,
+    onRetryMedia: (String) -> Unit,
     onClearQuote: () -> Unit,
     isRecordingVoice: Boolean,
     recordingElapsedSec: Int,
@@ -1448,7 +1462,9 @@ private fun ComposerBar(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                state.pendingMedia.forEach { media -> PendingMediaChip(media, onRemove = { onRemoveMedia(media.id) }) }
+                state.pendingMedia.forEach { media ->
+                    PendingMediaChip(media, onRemove = { onRemoveMedia(media.id) }, onRetry = { onRetryMedia(media.id) })
+                }
             }
         }
         if (activityWorking) {
@@ -2115,7 +2131,7 @@ private fun sameMediaOrigin(url: String, baseUrl: String): Boolean {
 }
 
 @Composable
-private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit) {
+private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit, onRetry: () -> Unit) {
     Row(
         Modifier
             .widthIn(max = 230.dp)
@@ -2149,7 +2165,9 @@ private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit) {
             )
         }
         when {
-            media.error != null -> Icon(Icons.Outlined.ErrorOutline, contentDescription = "上传失败", tint = CloverError, modifier = Modifier.size(17.dp))
+            media.error != null -> IconButton(onClick = onRetry, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Outlined.Refresh, contentDescription = "重试上传", tint = CloverError, modifier = Modifier.size(17.dp))
+            }
             media.descriptor == null -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp, color = CloverAccent)
             else -> Icon(Icons.Outlined.Check, contentDescription = "上传完成", tint = CloverLeaf, modifier = Modifier.size(17.dp))
         }
@@ -2401,6 +2419,19 @@ private fun SessionDrawer(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
+                                (session.updatedAt ?: session.createdAt)?.let { timestamp ->
+                                    Text(
+                                        buildString {
+                                            append("活跃 ")
+                                            append(formatMessageTime(timestamp))
+                                            session.messageCount?.let { append(" · ${it} 条消息") }
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = CloverText3,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                             IconButton(onClick = { onRename(session) }) {
                                 Icon(Icons.Outlined.Edit, contentDescription = "Rename", tint = CloverText2)

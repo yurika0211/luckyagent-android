@@ -31,17 +31,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.api.ToolTraceRecord
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
+import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.TrajectoryFilter
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.DetailDisclosure
+import com.luckyagent.android.ui.components.StatusChip
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
@@ -165,6 +167,8 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                     title = "No session selected",
                     body = "Open Chat, pick a session, then return here to inspect tool calls.",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "打开 Chat",
+                    onAction = { vm.navigate(AppDestination.Chat) },
                 )
             }
             !state.trajectoryLoading && state.trajectoryError == null && records.isEmpty() && trace?.tools.isNullOrEmpty() -> {
@@ -224,7 +228,7 @@ private fun TrajectoryEventCard(record: ToolTraceRecord) {
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
-            MetaChip(if (ok) "success" else "failure")
+            StatusChip(if (ok) "success" else "failure")
             record.durationMs?.let {
                 Spacer(Modifier.width(6.dp))
                 MetaChip("${it} ms")
@@ -233,28 +237,10 @@ private fun TrajectoryEventCard(record: ToolTraceRecord) {
         if (!record.annotation.isNullOrBlank()) {
             Text(record.annotation, color = CloverText2, style = MaterialTheme.typography.bodyMedium)
         }
-        PayloadBlock("Arguments", record.arguments)
-        PayloadBlock("Result", record.result)
+        DetailDisclosure("Arguments", record.arguments, json = true, previewLines = 2)
+        DetailDisclosure("Result", record.result, json = true, previewLines = 3)
         if (!record.error.isNullOrBlank()) {
             Text(record.error, color = CloverError, style = MaterialTheme.typography.bodyMedium)
         }
-    }
-}
-
-@Composable
-private fun PayloadBlock(label: String, value: String?) {
-    val text = value?.trim().orEmpty()
-    if (text.isEmpty()) return
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 5.dp),
-    ) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-            color = MaterialTheme.colorScheme.onSurface,
-        )
     }
 }

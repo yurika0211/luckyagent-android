@@ -63,6 +63,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.DetailDisclosure
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverAccent
@@ -229,7 +230,7 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(endpoint.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    Text(endpoint.apiBase, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    DetailDisclosure("完整地址", endpoint.apiBase, previewLines = 2)
                     if (active) Text("ACTIVE", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
                 }
                 if (!active) {
@@ -383,8 +384,8 @@ private fun SettingsLiveCard(state: AppUiState, vm: AppViewModel) {
                 SocketState.Connecting, SocketState.Reconnecting -> "WS connecting"
                 else -> "WS idle"
             })
-            state.healthText?.let { MetaChip(it.take(48)) }
         }
+        state.healthText?.let { DetailDisclosure("Health 响应", it, json = true, previewLines = 1) }
         state.activityLine?.let { Text(it, color = CloverText2, style = MaterialTheme.typography.bodyMedium) }
     }
 }

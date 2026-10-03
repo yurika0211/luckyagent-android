@@ -36,6 +36,7 @@ import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.DetailDisclosure
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
@@ -117,6 +118,8 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
                     title = "No skills loaded",
                     body = "The runtime returned an empty skills list.",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "刷新",
+                    onAction = vm::refreshSkills,
                 )
             }
             !state.skillsLoading && filtered.isEmpty() -> {
@@ -158,7 +161,10 @@ private fun SkillCard(skill: SkillSummary) {
         }
         val blurb = skill.summary?.takeIf { it.isNotBlank() } ?: skill.description
         if (!blurb.isNullOrBlank()) {
-            Text(blurb, color = CloverText2, style = MaterialTheme.typography.bodyMedium)
+            Text(blurb, color = CloverText2, style = MaterialTheme.typography.bodyMedium, maxLines = 3)
+            if (skill.description != null && skill.description != blurb) {
+                DetailDisclosure("完整说明", skill.description, previewLines = 3)
+            }
         }
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -175,19 +181,14 @@ private fun SkillCard(skill: SkillSummary) {
         if (skill.tools.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Tools", style = MaterialTheme.typography.labelSmall, color = CloverText3)
-                skill.tools.take(8).forEach { tool ->
-                    Text(
-                        buildString {
-                            append(tool.fullName ?: tool.name)
-                            if (tool.enabled == false) append(" · off")
-                            if (tool.registered == false) append(" · missing")
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                val toolText = skill.tools.joinToString("\n") { tool ->
+                    buildString {
+                        append(tool.fullName ?: tool.name)
+                        if (tool.enabled == false) append(" · off")
+                        if (tool.registered == false) append(" · missing")
+                    }
                 }
-                if (skill.tools.size > 8) {
-                    Text("+${skill.tools.size - 8} more", color = CloverText3, style = MaterialTheme.typography.labelSmall)
-                }
+                DetailDisclosure("工具列表（${skill.tools.size}）", toolText, previewLines = 4)
             }
         }
         if (skill.unhealthyTools.isNotEmpty()) {

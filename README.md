@@ -45,11 +45,10 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 
 ## 还缺什么
 
-- 会话历史分页 / 向上加载更多
-- Memory graph 真正可视化（力导向或列表关系图）
-- 附件上传（图片等多模态）
 - 证书 pinning / 正式 release 签名密钥（CI 已支持可选 secrets 签名）
-- Trajectory 结构化时间线 UI（部分已卡片化，细节可继续对齐 GUI）
+- Trajectory 仍需真机检查长 JSON、复制和筛选交互
+- Memory graph 仍需真机检查窄屏缩放、节点详情和图例可读性
+- Session 时间戳、附件失败重试等本轮 UI 改动仍需真机回归
 
 ## UI 对照 GUI
 

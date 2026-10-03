@@ -8,6 +8,22 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +60,9 @@ fun ScreenHeader(
         shadowElevation = 0.dp,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f)),
     ) {
+        BoxWithConstraints {
+        val compact = maxWidth < 480.dp || LocalDensity.current.fontScale > 1.2f
+        Column {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -76,7 +95,7 @@ fun ScreenHeader(
                     )
                 }
             }
-            Row(
+            if (!compact) Row(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 content = actions,
@@ -86,6 +105,14 @@ fun ScreenHeader(
                     Icon(Icons.Outlined.Menu, contentDescription = "Open navigation")
                 }
             }
+        }
+        if (compact) Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = actions,
+        )
+        }
         }
     }
 }
@@ -134,7 +161,7 @@ fun MetaChip(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
+fun EmptyState(title: String, body: String, modifier: Modifier = Modifier, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -143,6 +170,49 @@ fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
     ) {
         Text(title, style = MaterialTheme.typography.titleMedium)
         Text(body, style = MaterialTheme.typography.bodyMedium, color = CloverText2)
+        if (actionLabel != null && onAction != null) TextButton(onClick = onAction) { Text(actionLabel) }
+    }
+}
+
+/** Collapsed by default; the full value remains selectable and copyable. */
+@Composable
+fun DetailDisclosure(label: String, value: String?, json: Boolean = false, previewLines: Int = 0) {
+    if (value.isNullOrBlank()) return
+    var expanded by remember(label, value) { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val formatted = remember(value, json) {
+        if (json) runCatching {
+            Json { prettyPrint = true }.encodeToString(JsonElement.serializer(), Json.parseToJsonElement(value))
+        }.getOrDefault(value) else value
+    }
+    Column(Modifier.fillMaxWidth()) {
+        if (!expanded && previewLines > 0) Text(value, maxLines = previewLines, overflow = TextOverflow.Ellipsis, color = CloverText2)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.weight(1f)) {
+                Text(if (expanded) "收起 $label" else "查看$label")
+            }
+            TextButton(onClick = { clipboard.setText(AnnotatedString(formatted)) }) { Text("复制") }
+        }
+        if (expanded) SelectionContainer {
+            Text(
+                formatted,
+                modifier = Modifier.fillMaxWidth(),
+                style = if (json) MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace) else MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+}
+
+@Composable
+fun StatusChip(status: String) {
+    val color = when (status.lowercase()) {
+        "failed", "failure", "error", "blocked" -> MaterialTheme.colorScheme.error
+        "retrying", "warning" -> com.luckyagent.android.ui.theme.CloverWarning
+        "connected", "success", "completed", "done", "running", "active", "enabled", "healthy" -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(color = color.copy(alpha = .1f), shape = RoundedCornerShape(999.dp)) {
+        Text(status, color = color, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
     }
 }
 
