@@ -15,6 +15,8 @@ import androidx.lifecycle.viewModelScope
 import com.luckyagent.android.data.AppContainer
 import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.api.MediaAttachment
+import com.luckyagent.android.data.api.ModelRef
+import com.luckyagent.android.data.api.modelKindLabel
 import com.luckyagent.android.data.api.MemoryGraphEdge
 import com.luckyagent.android.data.api.MemoryGraphNode
 import com.luckyagent.android.data.api.MemoryStats
@@ -235,6 +237,12 @@ data class AppUiState(
     val cronError: String? = null,
     val pendingQuote: MessageQuote? = null,
     val snackbarMessage: String? = null,
+    val models: List<ModelRef> = emptyList(),
+    val activeModels: Map<String, ModelRef> = emptyMap(),
+    val modelsLoaded: Boolean = false,
+    val modelsLoading: Boolean = false,
+    val modelsError: String? = null,
+    val modelSwitchingKey: String? = null,
     val update: AppUpdateUiState = AppUpdateUiState(),
 )
 
@@ -273,9 +281,17 @@ class AppViewModel(
         viewModelScope.launch {
             container.settingsRepository.settings.collect { s ->
                 _ui.update { current ->
+                    val endpointChanged = current.settings.apiBase != s.apiBase ||
+                        current.settings.apiKey != s.apiKey ||
+                        current.settings.useBearer != s.useBearer
                     current.copy(
                         settings = s,
                         pendingQuote = if (current.settings.sessionId != s.sessionId) null else current.pendingQuote,
+                        models = if (endpointChanged) emptyList() else current.models,
+                        activeModels = if (endpointChanged) emptyMap() else current.activeModels,
+                        modelsLoaded = if (endpointChanged) false else current.modelsLoaded,
+                        modelsLoading = if (endpointChanged) false else current.modelsLoading,
+                        modelsError = if (endpointChanged) null else current.modelsError,
                     )
                 }
             }
@@ -298,6 +314,9 @@ class AppViewModel(
         observeWs()
         refreshSessions()
         connectSocket()
+        // Keep the composer chip useful as soon as the runtime is reachable; this is
+        // asynchronous and never gates sending a chat message.
+        loadModels()
     }
 
     private fun observeWs() {
@@ -1156,6 +1175,74 @@ class AppViewModel(
 
     fun consumeSnackbar() {
         _ui.update { it.copy(snackbarMessage = null) }
+    }
+
+    fun loadModels(force: Boolean = false) {
+        val current = _ui.value
+        if (current.modelsLoading || (!force && current.modelsLoaded)) return
+        _ui.update { it.copy(modelsLoading = true, modelsError = null) }
+        viewModelScope.launch {
+            container.api.listModels().onSuccess { models ->
+                val active = models
+                    .filter { it.current }
+                    .associateBy { it.kind.trim().lowercase() }
+                _ui.update {
+                    it.copy(
+                        models = models,
+                        activeModels = active,
+                        modelsLoaded = true,
+                        modelsLoading = false,
+                        modelsError = null,
+                    )
+                }
+            }.onFailure { error ->
+                _ui.update {
+                    it.copy(
+                        modelsLoaded = true,
+                        modelsLoading = false,
+                        modelsError = error.message ?: "加载模型列表失败",
+                    )
+                }
+            }
+        }
+    }
+
+    fun switchModel(model: ModelRef) {
+        val kind = model.kind.trim().lowercase()
+        val key = "$kind|${model.id}"
+        if (kind.isBlank() || model.id.isBlank() || _ui.value.modelSwitchingKey != null) return
+        if (_ui.value.activeModels[kind]?.id == model.id) return
+        _ui.update { it.copy(modelSwitchingKey = key, modelsError = null) }
+        viewModelScope.launch {
+            container.api.switchModel(kind = kind, model = model.id, provider = model.provider)
+                .onSuccess {
+                    _ui.update { state ->
+                        val nextModels = state.models.map { item ->
+                            when {
+                                item.kind.trim().lowercase() != kind -> item
+                                item.id == model.id -> item.copy(current = true)
+                                else -> item.copy(current = false)
+                            }
+                        }
+                        state.copy(
+                            models = nextModels,
+                            activeModels = state.activeModels + (kind to model.copy(current = true)),
+                            modelSwitchingKey = null,
+                            snackbarMessage = "${modelKindLabel(kind)}模型已切换：${model.displayName ?: model.id}",
+                        )
+                    }
+                    // Re-read server state so persisted selections and provider metadata stay authoritative.
+                    loadModels(force = true)
+                }
+                .onFailure { error ->
+                    _ui.update {
+                        it.copy(
+                            modelSwitchingKey = null,
+                            snackbarMessage = "切换${modelKindLabel(kind)}模型失败：${error.message ?: "请求失败"}",
+                        )
+                    }
+                }
+        }
     }
 
     fun updateComposer(value: String) {

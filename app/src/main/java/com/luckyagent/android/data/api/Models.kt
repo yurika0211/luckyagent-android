@@ -130,6 +130,53 @@ data class MediaAttachment(
 @Serializable
 data class UploadResponse(val attachments: List<MediaAttachment> = emptyList())
 
+/** Model kinds supported by the LuckyAgent runtime model switch API. */
+enum class FunctionalModelKind(val wireValue: String, val label: String) {
+    Chat("chat", "对话"),
+    Vision("vision", "视觉"),
+    Embedding("embedding", "向量"),
+    Transcription("transcription", "转写"),
+    Image("image", "生图"),
+    Tts("tts", "语音"),
+    Reranker("reranker", "重排"),
+}
+
+val FunctionalModelKinds: List<FunctionalModelKind> = FunctionalModelKind.entries
+
+fun modelKindLabel(kind: String): String =
+    FunctionalModelKind.entries.firstOrNull { it.wireValue == kind.lowercase() }?.label
+        ?: kind.ifBlank { "其他" }
+
+/** A model advertised by GET /api/v1/models. */
+@Serializable
+data class ModelRef(
+    val id: String,
+    val kind: String,
+    val provider: String? = null,
+    @SerialName("display_name") val displayName: String? = null,
+    @SerialName("api_base") val apiBase: String? = null,
+    val protocol: String? = null,
+    val capabilities: JsonElement? = null,
+    val current: Boolean = false,
+)
+
+@Serializable
+data class ModelsResponse(
+    val models: List<ModelRef> = emptyList(),
+    val count: Int? = null,
+)
+
+@Serializable
+data class SwitchModelRequest(
+    val kind: String,
+    val model: String,
+    val provider: String? = null,
+)
+
+/** Keeps grouping behavior deterministic for the composer sheet and unit tests. */
+fun modelsByKind(models: List<ModelRef>): Map<String, List<ModelRef>> =
+    models.groupBy { it.kind.trim().lowercase() }
+
 @Serializable
 data class ChatOutbound(
     val type: String = "chat",

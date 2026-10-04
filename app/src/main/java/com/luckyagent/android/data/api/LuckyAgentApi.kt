@@ -207,6 +207,42 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun listModels(kind: String? = null): Result<List<ModelRef>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val query = kind?.trim()?.takeIf { it.isNotEmpty() }?.let { mapOf("kind" to it) } ?: emptyMap()
+            val request = Request.Builder().url(url("/api/v1/models", query)).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("models ${resp.code}: $body")
+                json.decodeFromString(ModelsResponse.serializer(), body).models
+            }
+        }
+    }
+
+    suspend fun switchModel(kind: String, model: String, provider: String? = null): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                require(kind.isNotBlank()) { "model kind required" }
+                require(model.isNotBlank()) { "model id required" }
+                val payload = json.encodeToString(
+                    SwitchModelRequest(
+                        kind = kind,
+                        model = model,
+                        provider = provider?.takeIf { it.isNotBlank() },
+                    ),
+                )
+                val request = Request.Builder()
+                    .url(url("/api/v1/models/switch"))
+                    .post(payload.toRequestBody(jsonMedia))
+                    .header("Content-Type", "application/json")
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("model switch ${resp.code}: $body")
+                }
+            }
+        }
+
     suspend fun listSessions(query: String = ""): Result<List<RuntimeSession>> = withContext(Dispatchers.IO) {
         runCatching {
             val q = if (query.isBlank()) emptyMap() else mapOf("q" to query)

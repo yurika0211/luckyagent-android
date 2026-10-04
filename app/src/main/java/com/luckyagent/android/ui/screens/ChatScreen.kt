@@ -49,6 +49,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -89,6 +90,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -132,6 +134,10 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.data.api.FunctionalModelKinds
+import com.luckyagent.android.data.api.ModelRef
+import com.luckyagent.android.data.api.modelKindLabel
+import com.luckyagent.android.data.api.modelsByKind
 import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
@@ -752,6 +758,7 @@ private fun ChatConversation(
 
         ComposerBar(
             state = state,
+            vm = vm,
             onChange = vm::updateComposer,
             onSend = vm::sendComposer,
             onStop = vm::cancelRun,
@@ -1324,6 +1331,7 @@ private fun truncateToolOutput(text: String, maxLines: Int = 12): String {
 @Composable
 private fun ComposerBar(
     state: AppUiState,
+    vm: AppViewModel,
     onChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -1342,12 +1350,16 @@ private fun ComposerBar(
     onStopVoice: () -> Unit,
     onCancelVoice: () -> Unit,
 ) {
+    var showModelSheet by rememberSaveable { mutableStateOf(false) }
     val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
     val activityWorking = chatWorking || state.commandExecuting
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty() || state.pendingQuote != null
     val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
     val attachmentActivity = state.activityLine?.takeIf {
         it.contains("下载") || it.contains("附件")
+    }
+    LaunchedEffect(showModelSheet) {
+        if (showModelSheet) vm.loadModels()
     }
     Column(
         Modifier
@@ -1500,6 +1512,10 @@ private fun ComposerBar(
                     tint = CloverText2,
                 )
             }
+            ModelSwitchButton(
+                state = state,
+                onClick = { showModelSheet = true },
+            )
             BasicTextField(
                 value = state.composer,
                 onValueChange = onChange,
@@ -1566,6 +1582,232 @@ private fun ComposerBar(
             }
         }
         }
+        if (showModelSheet) {
+            ModelSwitchSheet(
+                state = state,
+                onDismiss = { showModelSheet = false },
+                onRetry = { vm.loadModels(force = true) },
+                onSelect = vm::switchModel,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModelSwitchButton(
+    state: AppUiState,
+    onClick: () -> Unit,
+) {
+    val activeChat = state.activeModels["chat"]
+        ?: state.models.firstOrNull { it.kind.equals("chat", ignoreCase = true) && it.current }
+    val label = activeChat?.displayName?.takeIf { it.isNotBlank() } ?: activeChat?.id ?: "选择模型"
+    Surface(
+        modifier = Modifier
+            .widthIn(max = 132.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+        color = CloverSurface2,
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = CloverText2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Icon(
+                Icons.Outlined.ExpandLess,
+                contentDescription = "切换模型",
+                tint = CloverText3,
+                modifier = Modifier.size(15.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModelSwitchSheet(
+    state: AppUiState,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    onSelect: (ModelRef) -> Unit,
+) {
+    val grouped = remember(state.models) { modelsByKind(state.models) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = CloverBg,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("模型", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text("切换后立即保存到服务器", style = MaterialTheme.typography.bodySmall, color = CloverText3)
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Outlined.Close, contentDescription = "关闭", tint = CloverText2)
+                }
+            }
+            if (state.modelsLoading) {
+                LinearProgressIndicator(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    color = CloverAccent,
+                )
+            }
+            state.modelsError?.let { error ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Outlined.ErrorOutline, contentDescription = null, tint = CloverError, modifier = Modifier.size(18.dp))
+                    Text(
+                        error,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CloverError,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    TextButton(onClick = onRetry) { Text("重试") }
+                }
+            }
+            if (state.modelsLoaded && !state.modelsLoading && state.models.isEmpty() && state.modelsError == null) {
+                Text(
+                    "服务器未返回可用模型",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = CloverText3,
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
+            }
+            FunctionalModelKinds.forEach { kind ->
+                ModelKindSection(
+                    kind = kind.wireValue,
+                    models = grouped[kind.wireValue].orEmpty(),
+                    active = state.activeModels[kind.wireValue],
+                    switchingKey = state.modelSwitchingKey,
+                    onSelect = onSelect,
+                )
+            }
+            val extraKinds = grouped.keys.filterNot { key -> FunctionalModelKinds.any { it.wireValue == key } }.sorted()
+            extraKinds.forEach { kind ->
+                ModelKindSection(
+                    kind = kind,
+                    models = grouped[kind].orEmpty(),
+                    active = state.activeModels[kind],
+                    switchingKey = state.modelSwitchingKey,
+                    onSelect = onSelect,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun ModelKindSection(
+    kind: String,
+    models: List<ModelRef>,
+    active: ModelRef?,
+    switchingKey: String?,
+    onSelect: (ModelRef) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(modelKindLabel(kind), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                active?.id ?: "未配置",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (active == null) CloverText3 else CloverAccent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (models.isEmpty()) {
+            Text(
+                "暂无可用模型",
+                style = MaterialTheme.typography.bodySmall,
+                color = CloverText3,
+                modifier = Modifier.padding(top = 5.dp, bottom = 2.dp),
+            )
+        } else {
+            models.forEach { model ->
+                val isCurrent = active?.id == model.id || (active == null && model.current)
+                ModelOptionRow(
+                    model = model,
+                    isCurrent = isCurrent,
+                    enabled = switchingKey == null && !isCurrent,
+                    switching = switchingKey == "${kind.lowercase()}|${model.id}",
+                    onClick = { onSelect(model) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelOptionRow(
+    model: ModelRef,
+    isCurrent: Boolean,
+    enabled: Boolean,
+    switching: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        when {
+            switching -> CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp, color = CloverAccent)
+            isCurrent -> Icon(Icons.Outlined.Check, contentDescription = "当前", tint = CloverAccent, modifier = Modifier.size(17.dp))
+            else -> Spacer(Modifier.size(17.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                model.displayName?.takeIf { it.isNotBlank() } ?: model.id,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled || isCurrent) CloverText else CloverText3,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val provider = model.provider?.takeIf { it.isNotBlank() }
+            if (provider != null && provider != model.id) {
+                Text(provider, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1)
+            }
+        }
+        if (isCurrent) Text("当前", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
     }
 }
 
