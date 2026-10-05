@@ -1182,7 +1182,9 @@ class AppViewModel(
         if (current.modelsLoading || (!force && current.modelsLoaded)) return
         _ui.update { it.copy(modelsLoading = true, modelsError = null) }
         viewModelScope.launch {
-            container.api.listModels().onSuccess { models ->
+            // force/refresh asks the server to re-probe the current API key.
+            // First load also benefits from server-side discover-on-list.
+            container.api.listModels(refresh = force).onSuccess { models ->
                 val active = models
                     .filter { it.current }
                     .associateBy { it.kind.trim().lowercase() }

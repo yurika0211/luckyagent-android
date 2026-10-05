@@ -1498,25 +1498,26 @@ private fun ComposerBar(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = CloverSurface,
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(22.dp),
             border = BorderStroke(1.dp, CloverLine),
-            shadowElevation = 1.dp,
+            shadowElevation = 0.dp,
         ) {
         Row(
-            Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.Bottom,
+            Modifier
+                .padding(horizontal = 2.dp, vertical = 2.dp)
+                .heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onToggleAttachment, modifier = Modifier.padding(end = 2.dp)) {
+            IconButton(
+                onClick = onToggleAttachment,
+                modifier = Modifier.size(40.dp),
+            ) {
                 Icon(
                     if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
                     contentDescription = if (showAttachmentOptions) "关闭附件选项" else "添加附件",
                     tint = CloverText2,
                 )
             }
-            ModelSwitchButton(
-                state = state,
-                onClick = { showModelSheet = true },
-            )
             BasicTextField(
                 value = state.composer,
                 onValueChange = onChange,
@@ -1526,16 +1527,29 @@ private fun ComposerBar(
                 ),
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = 48.dp, max = 140.dp)
-                    .padding(horizontal = 4.dp, vertical = 13.dp),
+                    .heightIn(min = 44.dp, max = 140.dp)
+                    .padding(horizontal = 2.dp, vertical = 12.dp),
                 decorationBox = { inner ->
                     if (state.composer.isEmpty()) {
-                        Text("输入消息，或输入 /command", color = CloverText3)
+                        Text(
+                            "输入消息或 /command",
+                            color = CloverText3,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                     inner()
                 },
             )
-            Spacer(Modifier.width(6.dp))
+            // Model picker sits immediately left of send/stop, compact enough
+            // not to reflow the placeholder.
+            ModelSwitchButton(
+                state = state,
+                onClick = { showModelSheet = true },
+                compact = true,
+            )
+            Spacer(Modifier.width(2.dp))
             if (chatWorking) {
                 if (isStopCommand) {
                     IconButton(
@@ -1598,35 +1612,57 @@ private fun ComposerBar(
 private fun ModelSwitchButton(
     state: AppUiState,
     onClick: () -> Unit,
+    compact: Boolean = false,
 ) {
     val activeChat = state.activeModels["chat"]
         ?: state.models.firstOrNull { it.kind.equals("chat", ignoreCase = true) && it.current }
-    val label = activeChat?.displayName?.takeIf { it.isNotBlank() } ?: activeChat?.id ?: "选择模型"
+    val rawLabel = activeChat?.displayName?.takeIf { it.isNotBlank() } ?: activeChat?.id ?: "模型"
+    // Keep the in-composer chip short so it stays left of send without crushing input.
+    val label = if (compact) {
+        rawLabel.substringAfterLast('/').let { short ->
+            if (short.length <= 14) short else short.take(13) + "…"
+        }
+    } else {
+        rawLabel
+    }
+    val switching = state.modelSwitchingKey?.startsWith("chat:") == true
     Surface(
         modifier = Modifier
-            .widthIn(max = 132.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick),
-        color = CloverSurface2,
-        shape = RoundedCornerShape(10.dp),
+            .widthIn(max = if (compact) 118.dp else 180.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(enabled = !switching, onClick = onClick),
+        color = if (compact) CloverSurface2 else CloverSurface.copy(alpha = 0.9f),
+        shape = RoundedCornerShape(999.dp),
+        border = BorderStroke(1.dp, CloverLine.copy(alpha = 0.9f)),
+        shadowElevation = 0.dp,
     ) {
         Row(
-            Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            Modifier.padding(
+                horizontal = if (compact) 8.dp else 10.dp,
+                vertical = if (compact) 6.dp else 5.dp,
+            ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
+            if (switching) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(11.dp),
+                    strokeWidth = 1.5.dp,
+                    color = CloverAccent,
+                )
+            }
             Text(
                 label,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 color = CloverText2,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Icon(
-                Icons.Outlined.ExpandLess,
+                Icons.Outlined.ExpandMore,
                 contentDescription = "切换模型",
                 tint = CloverText3,
-                modifier = Modifier.size(15.dp),
+                modifier = Modifier.size(if (compact) 14.dp else 16.dp),
             )
         }
     }
@@ -1657,7 +1693,10 @@ private fun ModelSwitchSheet(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text("模型", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                    Text("切换后立即保存到服务器", style = MaterialTheme.typography.bodySmall, color = CloverText3)
+                    Text("按当前 API Key 拉取可用模型，切换后保存", style = MaterialTheme.typography.bodySmall, color = CloverText3)
+                }
+                IconButton(onClick = onRetry, enabled = !state.modelsLoading) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = "刷新模型列表", tint = CloverText2)
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Outlined.Close, contentDescription = "关闭", tint = CloverText2)

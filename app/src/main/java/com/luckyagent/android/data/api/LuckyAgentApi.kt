@@ -207,9 +207,12 @@ class LuckyAgentApi(
         }
     }
 
-    suspend fun listModels(kind: String? = null): Result<List<ModelRef>> = withContext(Dispatchers.IO) {
+    suspend fun listModels(kind: String? = null, refresh: Boolean = false): Result<List<ModelRef>> = withContext(Dispatchers.IO) {
         runCatching {
-            val query = kind?.trim()?.takeIf { it.isNotEmpty() }?.let { mapOf("kind" to it) } ?: emptyMap()
+            val query = buildMap<String, String> {
+                kind?.trim()?.takeIf { it.isNotEmpty() }?.let { put("kind", it) }
+                if (refresh) put("refresh", "1")
+            }
             val request = Request.Builder().url(url("/api/v1/models", query)).get().build()
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
