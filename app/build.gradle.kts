@@ -14,8 +14,8 @@ android {
         applicationId = "com.luckyagent.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 34
-        versionName = "0.1.46"
+        versionCode = 35
+        versionName = "0.1.47"
         buildConfigField("String", "DEFAULT_API_BASE", "\"http://10.0.2.2:9090\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -84,6 +84,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
+    implementation("ru.noties:jlatexmath-android:0.2.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 

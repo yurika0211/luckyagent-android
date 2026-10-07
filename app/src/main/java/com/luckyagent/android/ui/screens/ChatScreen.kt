@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -500,6 +501,9 @@ fun ChatScreen(
                 )
             }
         } else {
+            BackHandler(enabled = drawerState.isOpen) {
+                scope.launch { drawerState.close() }
+            }
             ModalNavigationDrawer(
                 drawerState = drawerState,
                 gesturesEnabled = false,
@@ -726,10 +730,10 @@ private fun ChatConversation(
         else mapOf("X-API-Key" to state.settings.apiKey)
     }
     Box(Modifier.fillMaxSize()) {
+    ChatBackground(state.settings)
     Column(
         modifier
             .fillMaxSize()
-            .background(CloverBg)
             .imePadding(),
     ) {
         ChatTopBar(
@@ -805,7 +809,6 @@ private fun ChatConversation(
         }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            ChatBackground(state.settings)
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -825,6 +828,7 @@ private fun ChatConversation(
                     when (item) {
                         is ChatTimelineItem.Message -> BubbleRow(
                             bubble = item.bubble,
+                            avatarFile = state.settings.avatarFile,
                             imageHeaders = imageHeaders,
                             imageBaseUrl = state.settings.apiBase,
                             onDownload = { media -> vm.downloadAttachment(context, media) },
@@ -954,7 +958,7 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
     Column(
         Modifier
             .fillMaxWidth()
-            .background(CloverBg),
+            .background(CloverBg.copy(alpha = if (state.settings.chatBackgroundFile.isBlank()) 1f else 0.9f)),
     ) {
         HorizontalDivider(color = CloverLine.copy(alpha = .55f))
         Row(
@@ -1016,11 +1020,10 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
                     color = if (!live) CloverError else CloverText3,
                 )
             }
-            if (openNavigation != null) {
-                IconButton(onClick = openNavigation) {
-                    ProfileAvatar(state.settings.avatarFile)
-                }
-            }
+            ProfileAvatar(
+                fileName = state.settings.avatarFile,
+                onClick = openNavigation,
+            )
         }
         HorizontalDivider(color = CloverLine.copy(alpha = .55f))
     }
@@ -1037,7 +1040,7 @@ private fun ChatBackground(settings: com.luckyagent.android.data.settings.Client
         return
     }
     AsyncImage(
-        model = ImageRequest.Builder(context).data(file).crossfade(true).build(),
+        model = ImageRequest.Builder(context).data(file).memoryCacheKey(file.absolutePath + file.lastModified()).diskCacheKey(file.absolutePath + file.lastModified()).crossfade(true).build(),
         contentDescription = null,
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
@@ -1046,26 +1049,36 @@ private fun ChatBackground(settings: com.luckyagent.android.data.settings.Client
 }
 
 @Composable
-private fun ProfileAvatar(fileName: String) {
+private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null) {
     val context = LocalContext.current
     val file = fileName.takeIf { it.isNotBlank() }?.let {
         com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
     }?.takeIf { it.exists() }
+    val shape = Modifier
+        .size(32.dp)
+        .clip(CircleShape)
+        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
     if (file == null) {
-        Icon(Icons.Outlined.AccountCircle, contentDescription = "Profile and navigation", tint = CloverText2)
+        Icon(
+            Icons.Outlined.AccountCircle,
+            contentDescription = "打开导航",
+            tint = CloverText2,
+            modifier = shape,
+        )
         return
     }
     AsyncImage(
-        model = ImageRequest.Builder(context).data(file).crossfade(true).build(),
-        contentDescription = "Profile and navigation",
+        model = ImageRequest.Builder(context).data(file).memoryCacheKey(file.absolutePath + file.lastModified()).diskCacheKey(file.absolutePath + file.lastModified()).crossfade(true).build(),
+        contentDescription = "打开导航",
         contentScale = ContentScale.Crop,
-        modifier = Modifier.size(28.dp).clip(CircleShape),
+        modifier = shape,
     )
 }
 
 @Composable
 private fun BubbleRow(
     bubble: ChatBubble,
+    avatarFile: String,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
@@ -1078,6 +1091,7 @@ private fun BubbleRow(
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Top,
     ) {
         when {
             isSystem -> {
@@ -1089,6 +1103,10 @@ private fun BubbleRow(
                 )
             }
             else -> {
+                if (!isUser) {
+                    ProfileAvatar(fileName = avatarFile)
+                    Spacer(Modifier.width(8.dp))
+                }
                 Column(
                     Modifier
                         .widthIn(max = 520.dp)
@@ -1683,7 +1701,7 @@ private fun ComposerBar(
     Column(
         Modifier
             .fillMaxWidth()
-            .background(CloverBg)
+            .background(CloverBg.copy(alpha = if (state.settings.chatBackgroundFile.isBlank()) 1f else 0.94f))
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))

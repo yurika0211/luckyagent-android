@@ -276,6 +276,7 @@ data class AppUiState(
     /** Segments accepted locally but not yet acknowledged by the runtime collector. */
     val luckyPending: List<LuckyPendingSegment> = emptyList(),
     val snackbarMessage: String? = null,
+    val appearanceBusy: Boolean = false,
     val models: List<ModelRef> = emptyList(),
     val activeModels: Map<String, ModelRef> = emptyMap(),
     val modelsLoaded: Boolean = false,
@@ -297,6 +298,7 @@ class AppViewModel(
     private val _ui = MutableStateFlow(AppUiState(settings = container.settingsRepository.snapshot()))
     val ui: StateFlow<AppUiState> = _ui.asStateFlow()
 
+    private val backStack = ArrayDeque<AppDestination>()
     private var eventsJob: Job? = null
     private var settingsReconnectJob: Job? = null
     private var taskPollingJob: Job? = null
@@ -1559,6 +1561,11 @@ class AppViewModel(
     }
 
     fun navigate(dest: AppDestination) {
+        val current = _ui.value.destination
+        if (current != dest) {
+            backStack.addLast(current)
+            while (backStack.size > 12) backStack.removeFirst()
+        }
         _ui.update { it.copy(destination = dest) }
         ensureRuntimeWatch()
         when (dest) {
@@ -1576,6 +1583,23 @@ class AppViewModel(
             AppDestination.Chat -> Unit
             AppDestination.Settings -> Unit
         }
+    }
+
+    /** Closes a detail page, then walks back to the previous screen. */
+    fun handleSystemBack(): Boolean {
+        if (_ui.value.selectedTaskId != null) {
+            clearSelectedTask()
+            return true
+        }
+        if (_ui.value.selectedBackgroundTaskId != null) {
+            clearSelectedBackgroundTask()
+            return true
+        }
+        val previous = if (backStack.isEmpty()) null else backStack.removeLast()
+        if (previous == null) return false
+        _ui.update { it.copy(destination = previous) }
+        ensureRuntimeWatch()
+        return true
     }
 
     fun setAppForeground(value: Boolean) {
@@ -1884,19 +1908,15 @@ class AppViewModel(
     }
 
     fun setChatBackground(uri: android.net.Uri?) {
-        val context = container.appContext
-        if (uri == null) {
-            com.luckyagent.android.data.settings.AppearanceStore.clear(context, com.luckyagent.android.data.settings.AppearanceStore.BACKGROUND_FILE)
-            updateSettings { it.copy(chatBackgroundFile = "") }
-            return
-        }
-        val saved = com.luckyagent.android.data.settings.AppearanceStore.importImage(
-            context,
-            uri,
-            com.luckyagent.android.data.settings.AppearanceStore.BACKGROUND_FILE,
-            1600,
+        importAppearance(
+            uri = uri,
+            fileName = com.luckyagent.android.data.settings.AppearanceStore.BACKGROUND_FILE,
+            maxEdge = 1600,
+            apply = { settings, savedName -> settings.copy(chatBackgroundFile = savedName) },
+            cleared = "已恢复默认聊天背景",
+            saved = "聊天背景已更换，回到对话页就能看到",
+            failed = "这张图片没能换成背景，换一张 JPG 或 PNG 再试",
         )
-        if (saved) updateSettings { it.copy(chatBackgroundFile = com.luckyagent.android.data.settings.AppearanceStore.BACKGROUND_FILE) }
     }
 
     fun setChatBackgroundDim(dim: Int) {
@@ -1904,19 +1924,42 @@ class AppViewModel(
     }
 
     fun setAvatar(uri: android.net.Uri?) {
+        importAppearance(
+            uri = uri,
+            fileName = com.luckyagent.android.data.settings.AppearanceStore.AVATAR_FILE,
+            maxEdge = 512,
+            apply = { settings, savedName -> settings.copy(avatarFile = savedName) },
+            cleared = "已恢复默认头像",
+            saved = "头像已更换，对话页顶栏和助手消息旁会显示",
+            failed = "这张图片没能换成头像，换一张 JPG 或 PNG 再试",
+        )
+    }
+
+    private fun importAppearance(
+        uri: android.net.Uri?,
+        fileName: String,
+        maxEdge: Int,
+        apply: (com.luckyagent.android.data.settings.ClientSettings, String) -> com.luckyagent.android.data.settings.ClientSettings,
+        cleared: String,
+        saved: String,
+        failed: String,
+    ) {
+        if (_ui.value.appearanceBusy) return
         val context = container.appContext
         if (uri == null) {
-            com.luckyagent.android.data.settings.AppearanceStore.clear(context, com.luckyagent.android.data.settings.AppearanceStore.AVATAR_FILE)
-            updateSettings { it.copy(avatarFile = "") }
+            com.luckyagent.android.data.settings.AppearanceStore.clear(context, fileName)
+            updateSettings { apply(it, "") }
+            _ui.update { it.copy(snackbarMessage = cleared) }
             return
         }
-        val saved = com.luckyagent.android.data.settings.AppearanceStore.importImage(
-            context,
-            uri,
-            com.luckyagent.android.data.settings.AppearanceStore.AVATAR_FILE,
-            256,
-        )
-        if (saved) updateSettings { it.copy(avatarFile = com.luckyagent.android.data.settings.AppearanceStore.AVATAR_FILE) }
+        _ui.update { it.copy(appearanceBusy = true, snackbarMessage = "正在处理图片…") }
+        viewModelScope.launch {
+            val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.luckyagent.android.data.settings.AppearanceStore.importImage(context, uri, fileName, maxEdge)
+            }
+            if (ok) updateSettings { apply(it, fileName) }
+            _ui.update { it.copy(appearanceBusy = false, snackbarMessage = if (ok) saved else failed) }
+        }
     }
 
     fun updateSettings(transform: (com.luckyagent.android.data.settings.ClientSettings) -> com.luckyagent.android.data.settings.ClientSettings) {

@@ -12,6 +12,8 @@ internal sealed class MdBlock {
     data class Heading(val level: Int, val text: String) : MdBlock()
     data class ListItem(val text: String, val marker: String = "•") : MdBlock()
     data class Code(val body: String) : MdBlock()
+    data class Rule(val marker: String = "---") : MdBlock()
+    data class Math(val latex: String, val display: Boolean) : MdBlock()
     data class Image(val alt: String, val source: String) : MdBlock()
     data class Table(
         val rows: List<List<String>>,
@@ -91,6 +93,41 @@ internal fun splitMarkdownBlocks(
             i++
             continue
         }
+        if (line.trimStart().startsWith("$$")) {
+            flushPara()
+            val opener = line.trim()
+            val sameLine = opener.removePrefix("$$").removeSuffix("$$").trim()
+            if (opener.length > 4 && opener.endsWith("$$") && sameLine.isNotEmpty()) {
+                out += MdBlock.Math(sameLine, display = true)
+                i++
+                continue
+            }
+            i++
+            val math = StringBuilder()
+            if (opener.length > 2) math.append(opener.removePrefix("$$"))
+            while (i < lines.size && !lines[i].trimEnd().endsWith("$$")) {
+                if (math.isNotEmpty()) math.append('\n')
+                math.append(lines[i])
+                i++
+            }
+            if (i < lines.size) {
+                val closing = lines[i].trimEnd()
+                val before = closing.removeSuffix("$$")
+                if (before.isNotBlank()) {
+                    if (math.isNotEmpty()) math.append('\n')
+                    math.append(before)
+                }
+                i++
+            }
+            out += MdBlock.Math(math.toString().trim(), display = true)
+            continue
+        }
+        if (isThematicBreak(line)) {
+            flushPara()
+            out += MdBlock.Rule(line.trim())
+            i++
+            continue
+        }
         if (line.trimStart().startsWith("```")) {
             flushPara()
             i++
@@ -139,6 +176,15 @@ internal fun splitMarkdownBlocks(
     }
     flushPara()
     return out
+}
+
+/** CommonMark thematic break: 3 or more -, *, or _ with optional spaces. */
+internal fun isThematicBreak(line: String): Boolean {
+    val token = line.trim()
+    if (token.length < 3) return false
+    val marker = token.first()
+    if (marker != '-' && marker != '*' && marker != '_') return false
+    return token.all { it == marker || it == ' ' || it == '\t' } && token.count { it == marker } >= 3
 }
 
 private fun buildTable(header: List<String>, delimiter: List<String>): MdBlock.Table? {

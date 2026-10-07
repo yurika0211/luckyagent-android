@@ -6,9 +6,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -162,6 +164,22 @@ fun MarkdownText(
                     }
                 }
                 MdBlock.IncompleteTable -> Unit
+                is MdBlock.Rule -> {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp)
+                            .height(1.dp)
+                            .background(CloverLine),
+                    )
+                }
+                is MdBlock.Math -> {
+                    LatexBlock(
+                        latex = block.latex,
+                        display = block.display,
+                        color = color,
+                    )
+                }
                 is MdBlock.Heading -> {
                     Text(
                         text = inlineMarkdown(block.text),
@@ -188,9 +206,9 @@ fun MarkdownText(
                     )
                 }
                 is MdBlock.Paragraph -> {
-                    Text(
-                        text = inlineMarkdown(block.text),
-                        style = MaterialTheme.typography.bodyLarge.copy(color = color),
+                    RichMarkdownText(
+                        text = block.text,
+                        color = color,
                         modifier = Modifier.padding(vertical = 2.dp),
                     )
                 }
@@ -227,6 +245,105 @@ private fun sameOrigin(source: String, baseUrl: String): Boolean {
 
 private fun defaultPort(scheme: String?): Int = if (scheme.equals("https", true)) 443 else 80
 
+@Composable
+private fun RichMarkdownText(
+    text: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyLarge.copy(color = color),
+) {
+    val pieces = remember(text) { splitInlineMath(text) }
+    if (pieces.none { it.math }) {
+        Text(text = inlineMarkdown(text), style = style, color = color, modifier = modifier)
+        return
+    }
+    Column(modifier) {
+        pieces.chunkedByText().forEach { row ->
+            if (row.size == 1 && row[0].math && row[0].displayFence) {
+                LatexView(latex = row[0].value, display = true, color = color)
+            } else {
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    row.forEach { piece ->
+                        if (piece.math) {
+                            LatexView(
+                                latex = piece.value,
+                                display = piece.displaySize,
+                                inline = true,
+                                color = color,
+                            )
+                        } else if (piece.value.isNotEmpty()) {
+                            Text(text = inlineMarkdown(piece.value), style = style, color = color)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class InlinePiece(
+    val value: String,
+    val math: Boolean = false,
+    val displayFence: Boolean = false,
+    val displaySize: Boolean = false,
+)
+
+private fun splitInlineMath(text: String): List<InlinePiece> {
+    val pieces = mutableListOf<InlinePiece>()
+    var last = 0
+    for (match in inlinePattern.findAll(text)) {
+        if (match.range.first > last) pieces += InlinePiece(text.substring(last, match.range.first))
+        val token = match.value
+        if (token.startsWith("$")) {
+            val displayFence = token.startsWith("$$")
+            val latex = (if (displayFence) token.removeSurrounding("$$") else token.removeSurrounding("$"))
+                .trim()
+                .replace("\\$", "$")
+            pieces += InlinePiece(
+                value = latex,
+                math = true,
+                displayFence = displayFence,
+                displaySize = displayFence || latex.contains("\\displaystyle") || latex.contains("\\dfrac"),
+            )
+        } else {
+            pieces += InlinePiece(token)
+        }
+        last = match.range.last + 1
+    }
+    if (last < text.length) pieces += InlinePiece(text.substring(last))
+    return pieces
+}
+
+private fun List<InlinePiece>.chunkedByText(): List<List<InlinePiece>> {
+    val rows = mutableListOf<MutableList<InlinePiece>>()
+    var current = mutableListOf<InlinePiece>()
+    forEach { piece ->
+        if (!piece.math && piece.value.contains('\n')) {
+            val parts = piece.value.split('\n')
+            parts.forEachIndexed { index, part ->
+                if (part.isNotEmpty()) current += InlinePiece(part)
+                if (index < parts.lastIndex) {
+                    if (current.isNotEmpty()) rows += current
+                    current = mutableListOf()
+                }
+            }
+        } else {
+            current += piece
+        }
+    }
+    if (current.isNotEmpty()) rows += current
+    return rows
+}
+
+@Composable
+private fun LatexBlock(latex: String, display: Boolean, color: Color) {
+    LatexView(latex = latex, display = display, color = color, modifier = Modifier.fillMaxWidth())
+}
+
+private val inlinePattern = Regex(
+    """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\$\$[\s\S]+?\$\$)|(\$(?:\\\$|[^$\n])+\$)|(\[[^\]]+\]\([^)]+\))"""
+)
+
 private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
     // patterns: **bold**, *italic*, `code`, [label](url)
     val pattern = Regex(
@@ -250,11 +367,7 @@ private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString
                     ),
                 ) { append(token.removeSurrounding("`")) }
             }
-            token.startsWith("$") -> {
-                withStyle(SpanStyle(fontFamily = FontFamily.Monospace, color = Color(0xFF6B4FA1))) {
-                    append(token)
-                }
-            }
+            token.startsWith("$") -> append(renderLatex(token.trim('$')))
             token.startsWith("*") && token.endsWith("*") -> {
                 withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
                     append(token.removeSurrounding("*"))

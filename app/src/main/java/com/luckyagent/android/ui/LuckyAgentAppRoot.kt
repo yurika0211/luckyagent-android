@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Timeline
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -143,6 +144,18 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
     val scope = rememberCoroutineScope()
     val openNavigation: () -> Unit = remember(drawerState, scope) {
         { scope.launch { drawerState.open() }; Unit }
+    }
+    BackHandler(enabled = drawerState.isOpen) {
+        scope.launch { drawerState.close() }
+    }
+    BackHandler(
+        enabled = !drawerState.isOpen && (
+            state.destination != AppDestination.Chat ||
+                state.selectedTaskId != null ||
+                state.selectedBackgroundTaskId != null
+            ),
+    ) {
+        vm.handleSystemBack()
     }
 
     // Decide rail vs modal drawer from available width, not a bare configuration dp.

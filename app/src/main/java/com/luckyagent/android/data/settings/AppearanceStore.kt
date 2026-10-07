@@ -3,7 +3,9 @@ package com.luckyagent.android.data.settings
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
@@ -15,14 +17,7 @@ object AppearanceStore {
     fun file(context: Context, name: String): File = File(context.filesDir, name)
 
     fun importImage(context: Context, source: Uri, name: String, maxEdge: Int): Boolean {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(source)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            ?: return false
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
-        val sample = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge)
-        val bitmap = context.contentResolver.openInputStream(source)?.use {
-            BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-        } ?: return false
+        val bitmap = decode(context, source, maxEdge) ?: return false
         val scaled = scaleDown(bitmap, maxEdge)
         if (scaled !== bitmap) bitmap.recycle()
         val target = file(context, name)
@@ -36,6 +31,34 @@ object AppearanceStore {
         } finally {
             scaled.recycle()
             if (temp.exists()) temp.delete()
+        }
+    }
+
+    private fun decode(context: Context, source: Uri, maxEdge: Int): Bitmap? {
+        if (Build.VERSION.SDK_INT >= 28) {
+            val decoded = runCatching {
+                val decoderSource = ImageDecoder.createSource(context.contentResolver, source)
+                ImageDecoder.decodeBitmap(decoderSource) { decoder, info, _ ->
+                    val edge = max(info.size.width, info.size.height)
+                    if (edge > maxEdge) {
+                        val scale = maxEdge.toFloat() / edge
+                        decoder.setTargetSize(
+                            (info.size.width * scale).toInt().coerceAtLeast(1),
+                            (info.size.height * scale).toInt().coerceAtLeast(1),
+                        )
+                    }
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                }
+            }.getOrNull()
+            if (decoded != null) return decoded
+        }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(source)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            ?: return null
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val sample = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge)
+        return context.contentResolver.openInputStream(source)?.use {
+            BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
         }
     }
 

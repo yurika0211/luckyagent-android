@@ -74,6 +74,7 @@ import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
+import com.luckyagent.android.ui.theme.CloverError
 
 @Composable
 fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
@@ -103,7 +104,7 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsLiveCard(state, vm)
-                    SettingsAppearanceCard(s, vm)
+                    SettingsAppearanceCard(state, vm)
                     SettingsNotificationsCard(state, vm)
                     SettingsUpdateCard(state, vm)
                     SettingsAboutCard()
@@ -117,7 +118,7 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 SettingsEndpointCard(s, vm)
                 SettingsSessionCard(s, vm)
                 SettingsLiveCard(state, vm)
-                SettingsAppearanceCard(s, vm)
+                SettingsAppearanceCard(state, vm)
                 SettingsNotificationsCard(state, vm)
                 SettingsUpdateCard(state, vm)
                 SettingsAboutCard()
@@ -128,7 +129,8 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
 }
 
 @Composable
-private fun SettingsAppearanceCard(s: ClientSettings, vm: AppViewModel) {
+private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
+    val s = state.settings
     val context = LocalContext.current
     val backgroundPicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
@@ -144,7 +146,10 @@ private fun SettingsAppearanceCard(s: ClientSettings, vm: AppViewModel) {
     }?.takeIf { it.exists() }
     CloverCard {
         Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("只保存在这台手机上，不会上传。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        Text("只保存在这台手机上，不会上传。背景铺在整个对话页后面，头像出现在顶栏和助手消息旁边。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        state.snackbarMessage?.let { message ->
+            Text(message, color = if (message.contains("没能")) CloverError else CloverText, style = MaterialTheme.typography.bodyMedium)
+        }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             AppearancePreview(background, avatar)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -153,9 +158,12 @@ private fun SettingsAppearanceCard(s: ClientSettings, vm: AppViewModel) {
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = {
-                backgroundPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }) { Text("选择背景") }
+            OutlinedButton(
+                onClick = {
+                    backgroundPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                enabled = !state.appearanceBusy,
+            ) { Text(if (state.appearanceBusy) "处理中" else "选择背景") }
             if (background != null) TextButton(onClick = { vm.setChatBackground(null) }) { Text("恢复默认") }
         }
         if (background != null) {
@@ -167,9 +175,12 @@ private fun SettingsAppearanceCard(s: ClientSettings, vm: AppViewModel) {
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = {
-                avatarPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }) { Text("选择头像") }
+            OutlinedButton(
+                onClick = {
+                    avatarPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                enabled = !state.appearanceBusy,
+            ) { Text(if (state.appearanceBusy) "处理中" else "选择头像") }
             if (avatar != null) TextButton(onClick = { vm.setAvatar(null) }) { Text("恢复默认") }
         }
     }
@@ -184,7 +195,7 @@ private fun AppearancePreview(background: java.io.File?, avatar: java.io.File?) 
     ) {
         if (background != null) {
             coil.compose.AsyncImage(
-                model = coil.request.ImageRequest.Builder(context).data(background).build(),
+                model = coil.request.ImageRequest.Builder(context).data(background).memoryCacheKey(background.absolutePath + background.lastModified()).build(),
                 contentDescription = null,
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
@@ -193,7 +204,7 @@ private fun AppearancePreview(background: java.io.File?, avatar: java.io.File?) 
         Box(Modifier.padding(6.dp).size(22.dp).clip(CircleShape).background(CloverBg)) {
             if (avatar != null) {
                 coil.compose.AsyncImage(
-                    model = coil.request.ImageRequest.Builder(context).data(avatar).build(),
+                    model = coil.request.ImageRequest.Builder(context).data(avatar).memoryCacheKey(avatar.absolutePath + avatar.lastModified()).build(),
                     contentDescription = null,
                     contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),

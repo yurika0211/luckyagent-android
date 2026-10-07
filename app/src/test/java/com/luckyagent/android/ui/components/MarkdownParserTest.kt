@@ -67,10 +67,12 @@ class MarkdownParserTest {
     }
 
     @Test
-    fun treatsSetextLookingOneColumnTextAsParagraph() {
+    fun treatsSetextLookingOneColumnTextAsParagraphThenRule() {
         val blocks = splitMarkdownBlocks("Value\n---")
 
-        assertTrue(blocks.single() is MdBlock.Paragraph)
+        assertTrue(blocks[0] is MdBlock.Paragraph)
+        assertEquals("Value", (blocks[0] as MdBlock.Paragraph).text)
+        assertTrue(blocks[1] is MdBlock.Rule)
     }
 
     @Test
@@ -115,6 +117,45 @@ class MarkdownParserTest {
 
         assertEquals(listOf(4, 5, 6), headings.map { it.level })
         assertEquals(listOf("Four", "Five", "Six"), headings.map { it.text })
+    }
+
+    @Test
+    fun thematicBreakBecomesARule() {
+        val blocks = splitMarkdownBlocks("before\n\n---\n\nafter")
+
+        assertTrue(blocks[1] is MdBlock.Rule)
+        assertEquals("before", (blocks[0] as MdBlock.Paragraph).text)
+        assertEquals("after", (blocks[2] as MdBlock.Paragraph).text)
+    }
+
+    @Test
+    fun spacedDashesAndStarsAreRules() {
+        assertTrue(isThematicBreak("- - -"))
+        assertTrue(isThematicBreak("***"))
+        assertTrue(!isThematicBreak("--"))
+    }
+
+    @Test
+    fun displayMathIsItsOwnBlock() {
+        val block = splitMarkdownBlocks("$$\\frac{a}{b}$$").single() as MdBlock.Math
+
+        assertEquals("\\frac{a}{b}", block.latex)
+        assertTrue(block.display)
+    }
+
+    @Test
+    fun multilineDisplayMathKeepsTheBody() {
+        val block = splitMarkdownBlocks("$$\n\\sum_i x_i\n$$").single() as MdBlock.Math
+
+        assertTrue(block.display)
+        assertTrue(block.latex.contains("\\sum_i x_i"))
+    }
+
+    @Test
+    fun inlineDisplayStyleStaysInsideTheParagraph() {
+        val paragraph = splitMarkdownBlocks("area is $\\displaystyle \\frac{a}{b}$ here").single() as MdBlock.Paragraph
+
+        assertTrue(paragraph.text.contains("\\displaystyle"))
     }
 
     @Test
