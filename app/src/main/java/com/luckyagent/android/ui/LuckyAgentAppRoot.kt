@@ -107,7 +107,7 @@ private val navGroups = listOf(
 private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (dest) {
     AppDestination.Chat -> when {
         state.socketState == com.luckyagent.android.data.api.SocketState.Idle ||
-            state.socketState == com.luckyagent.android.data.api.SocketState.Disconnected -> CloverError
+            state.socketState == com.luckyagent.android.data.api.SocketState.Closed -> CloverError
         state.socketState == com.luckyagent.android.data.api.SocketState.Reconnecting -> CloverWarning
         else -> null
     }
