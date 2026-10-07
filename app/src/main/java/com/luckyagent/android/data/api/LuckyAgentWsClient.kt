@@ -211,7 +211,7 @@ class LuckyAgentWsClient(
             _state.value = if (isReconnect) SocketState.Reconnecting else SocketState.Connecting
             _lastError.value = null
             _reconnectInfo.value = if (isReconnect) {
-                "reconnect ${connection.reconnectAttempt.get()}/$MAX_RECONNECT"
+                "reconnect ${connection.reconnectAttempt.get()}"
             } else {
                 null
             }
@@ -305,10 +305,10 @@ class LuckyAgentWsClient(
     private fun scheduleReconnect(connection: ManagedConnection, reason: String) {
         if (connection.userClosed.get() || connections[connection.id] !== connection) return
         val attempt = connection.reconnectAttempt.incrementAndGet()
-        val delayMs = (500L * (1L shl (attempt - 1).coerceAtMost(4))).coerceAtMost(8000L)
+        val delayMs = (RECONNECT_BASE_MS * attempt).coerceAtMost(RECONNECT_MAX_MS)
         if (isCurrent(connection)) {
             _state.value = SocketState.Reconnecting
-            _reconnectInfo.value = "reconnect ${attempt.coerceAtMost(MAX_RECONNECT)}/$MAX_RECONNECT in ${delayMs}ms"
+            _reconnectInfo.value = "reconnect $attempt in ${delayMs}ms"
         }
         connection.reconnectJob?.cancel()
         connection.reconnectJob = scope.launch {
@@ -439,6 +439,7 @@ class LuckyAgentWsClient(
     }
 
     companion object {
-        const val MAX_RECONNECT = 8
+        const val RECONNECT_BASE_MS = 50L
+        const val RECONNECT_MAX_MS = 250L
     }
 }
