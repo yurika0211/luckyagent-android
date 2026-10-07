@@ -76,8 +76,7 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
 
     Column(
         Modifier
-            .fillMaxSize()
-            .background(CloverBg),
+            .fillMaxSize(),
     ) {
         ScreenHeader(
             eyebrow = "Capabilities",

@@ -91,8 +91,7 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
 
     Column(
         Modifier
-            .fillMaxSize()
-            .background(CloverBg),
+            .fillMaxSize(),
     ) {
         ScreenHeader(
             eyebrow = "Runtime",

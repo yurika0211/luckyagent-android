@@ -56,7 +56,7 @@ fun ScreenHeader(
     val openNavigation = LocalOpenNavigationDrawer.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = .72f),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = .62f),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f)),
@@ -129,7 +129,7 @@ fun CloverCard(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.surface,
+            color = MaterialTheme.colorScheme.surface.copy(alpha = .82f),
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f)),

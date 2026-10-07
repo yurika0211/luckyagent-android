@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -419,7 +420,7 @@ fun ChatScreen(
         }
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(CloverBg)) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
         // Fixed session pane only when the remaining chat area stays usable.
         val usePermanentSessionPane =
             maxWidth >= 900.dp &&
@@ -468,7 +469,7 @@ fun ChatScreen(
                             .width(sessionPaneWidth)
                             .widthIn(max = sessionPaneWidth)
                             .fillMaxHeight()
-                            .background(CloverBgSide)
+                            .background(CloverBgSide.copy(alpha = .9f))
                             .windowInsetsPadding(WindowInsets.safeDrawing),
                     ) {
                         sessionDrawer(true)
@@ -514,7 +515,7 @@ fun ChatScreen(
                 gesturesEnabled = false,
                 drawerContent = {
                     ModalDrawerSheet(
-                        drawerContainerColor = CloverBgSide,
+                        drawerContainerColor = CloverBgSide.copy(alpha = .92f),
                         modifier = Modifier
                             .widthIn(max = drawerMaxWidth)
                             .fillMaxHeight(),
@@ -735,7 +736,6 @@ private fun ChatConversation(
         else mapOf("X-API-Key" to state.settings.apiKey)
     }
     Box(Modifier.fillMaxSize()) {
-    ChatBackground(state.settings)
     Column(
         modifier
             .fillMaxSize()
@@ -963,7 +963,7 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
     Column(
         Modifier
             .fillMaxWidth()
-            .background(CloverBg.copy(alpha = if (hasWallpaper) 0.72f else 1f)),
+            .background(CloverBg.copy(alpha = if (hasWallpaper) 0.55f else 0.92f)),
     ) {
         if (!hasWallpaper) HorizontalDivider(color = CloverLine.copy(alpha = .55f))
         Row(
@@ -1385,47 +1385,76 @@ private fun ApprovalCard(
     val needsInput = approval.needsTextInput()
     val secure = approval.isSecureCredentialForm()
     var draft by rememberSaveable(approval.id) { mutableStateOf("") }
+    var expanded by rememberSaveable(approval.id) { mutableStateOf(needsInput) }
+    val headline = when {
+        secure -> "填写凭据"
+        needsInput -> "需要补充"
+        else -> approval.method?.takeIf { it.isNotBlank() } ?: "需要审批"
+    }
+    val summary = if (needsInput) {
+        approval.inputPrompt()
+    } else {
+        approval.summary?.ifBlank { null } ?: approval.reason?.ifBlank { null } ?: "外部工具请求权限"
+    }
+    val allow = approval.options.firstOrNull { option ->
+        val kind = option.kind.orEmpty().lowercase()
+        !kind.contains("reject") && !kind.contains("deny") && !kind.contains("cancel")
+    }
+    val deny = approval.options.firstOrNull { option ->
+        val kind = option.kind.orEmpty().lowercase()
+        kind.contains("reject") || kind.contains("deny") || kind.contains("cancel")
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = CloverSurface2,
-        border = BorderStroke(1.dp, CloverAccent.copy(alpha = .45f)),
+        shape = RoundedCornerShape(14.dp),
+        color = CloverSurface.copy(alpha = .9f),
+        border = BorderStroke(1.dp, CloverAccent.copy(alpha = .35f)),
     ) {
         Column(
-            Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    when {
-                        secure -> "填写凭据"
-                        needsInput -> "需要你补充信息"
-                        else -> "需要审批"
-                    },
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    approval.provider.uppercase(Locale.getDefault()),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CloverAccent,
-                )
-            }
-            Text(
-                if (needsInput) approval.inputPrompt() else (
-                    approval.summary?.ifBlank { null }
-                        ?: approval.method?.ifBlank { null }
-                        ?: "外部工具请求权限"
-                    ),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (!needsInput) {
-                approval.reason?.takeIf { it.isNotBlank() }?.let { reason ->
-                    Text(reason, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.weight(1f).clickable { expanded = !expanded }) {
+                    Text(headline, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(summary, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        contentDescription = if (expanded) "收起" else "展开",
+                        tint = CloverText3,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                if (!needsInput && allow != null) {
+                    TextButton(
+                        onClick = { onDecision(approval, allow.id, "") },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) { Text(allow.label, style = MaterialTheme.typography.labelMedium) }
+                }
+                if (!needsInput && deny != null) {
+                    TextButton(
+                        onClick = { onDecision(approval, deny.id, "") },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) { Text(deny.label, style = MaterialTheme.typography.labelMedium, color = CloverText2) }
                 }
             }
-            if (needsInput) {
+            if (expanded && !needsInput) {
+                approval.reason?.takeIf { it.isNotBlank() && it != summary }?.let { reason ->
+                    Text(reason, style = MaterialTheme.typography.bodySmall, color = CloverText2)
+                }
+                approval.params?.let { params ->
+                    Text(
+                        params.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CloverText3,
+                        maxLines = 6,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (expanded && needsInput) {
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -1448,26 +1477,26 @@ private fun ApprovalCard(
                     )
                 }
             }
-            if (approval.options.isEmpty()) {
-                Text("没有可用的审批选项", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            } else {
-                approval.options.forEach { option ->
-                    val negative = option.kind.orEmpty().lowercase().let { kind ->
-                        kind.contains("reject") || kind.contains("deny") || kind.contains("cancel")
-                    }
-                    val submit = option.kind.equals("submit", ignoreCase = true) || option.id.equals("submit", ignoreCase = true)
-                    val enabled = !submit || draft.isNotBlank()
-                    if (negative) {
-                        OutlinedButton(
-                            onClick = { onDecision(approval, option.id, "") },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text(option.label) }
-                    } else {
-                        Button(
-                            onClick = { onDecision(approval, option.id, if (needsInput) draft else "") },
-                            enabled = enabled,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text(option.label) }
+            if (expanded && needsInput) {
+                if (approval.options.isEmpty()) {
+                    Text("没有可用的审批选项", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        approval.options.forEach { option ->
+                            val negative = option.kind.orEmpty().lowercase().let { kind ->
+                                kind.contains("reject") || kind.contains("deny") || kind.contains("cancel")
+                            }
+                            val submit = option.kind.equals("submit", ignoreCase = true) || option.id.equals("submit", ignoreCase = true)
+                            val enabled = !submit || draft.isNotBlank()
+                            if (negative) {
+                                OutlinedButton(onClick = { onDecision(approval, option.id, "") }) { Text(option.label) }
+                            } else {
+                                Button(
+                                    onClick = { onDecision(approval, option.id, draft) },
+                                    enabled = enabled,
+                                ) { Text(option.label) }
+                            }
+                        }
                     }
                 }
             }
@@ -1704,14 +1733,11 @@ private fun ComposerBar(
     LaunchedEffect(showContextSheet) {
         if (showContextSheet) vm.refreshContextInspect()
     }
-    val hasWallpaper = state.settings.chatBackgroundFile.isNotBlank()
     Column(
         Modifier
             .fillMaxWidth()
-            .background(CloverBg.copy(alpha = if (hasWallpaper) 0.78f else 1f))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        if (!hasWallpaper) HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
         state.pendingQuote?.let { quote ->
             QuoteCard(
                 quote = quote,
@@ -1852,18 +1878,30 @@ private fun ComposerBar(
                 )
             }
         }
-        if (showLuckyCommands || state.luckyPending.any { it.error != null }) {
-            LuckyCommandRow(
+        if (state.luckyPending.any { it.error != null } || state.luckyActive) {
+            LuckyStatusLine(
                 active = state.luckyActive,
                 segments = state.luckySegments,
-                attachments = state.luckyAttachments,
                 pending = state.luckyPending,
-                onCommand = { action ->
-                    onChange(action)
-                    onSend()
-                    showLuckyCommands = false
-                },
                 onRetry = vm::retryLuckySegment,
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+        IconButton(
+            onClick = onToggleAttachment,
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(CloverSurface.copy(alpha = .94f)),
+        ) {
+            Icon(
+                if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
+                contentDescription = if (showAttachmentOptions) "关闭附件选项" else "添加附件",
+                tint = CloverText2,
             )
         }
         Surface(
@@ -1879,16 +1917,6 @@ private fun ComposerBar(
                 .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(
-                onClick = onToggleAttachment,
-                modifier = Modifier.size(40.dp),
-            ) {
-                Icon(
-                    if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
-                    contentDescription = if (showAttachmentOptions) "关闭附件选项" else "添加附件",
-                    tint = CloverText2,
-                )
-            }
             BasicTextField(
                 value = state.composer,
                 onValueChange = onChange,
@@ -1926,21 +1954,34 @@ private fun ComposerBar(
                 compact = true,
             )
             Spacer(Modifier.width(2.dp))
-            if (chatWorking) {
-                SendButton(
-                    enabled = hasInput,
-                    contentDescription = if (isStopCommand) "发送 /stop" else "发送，长按打开 Lucky",
-                    onClick = onSend,
-                    onLongClick = { showLuckyCommands = !showLuckyCommands },
+            Spacer(Modifier.width(4.dp))
+        }
+        }
+        Box(
+            Modifier.width(176.dp).height(if (showLuckyCommands) 176.dp else 44.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (showLuckyCommands) {
+                LuckyClover(
+                    onCommand = { action ->
+                        onChange(action)
+                        onSend()
+                        showLuckyCommands = false
+                    },
+                    onDismiss = { showLuckyCommands = false },
                 )
-            } else if (state.commandExecuting) {
-                IconButton(onClick = {}, enabled = false, modifier = Modifier.padding(start = 8.dp)) {
+            }
+            if (state.commandExecuting && !chatWorking) {
+                Box(
+                    Modifier.size(44.dp).clip(CircleShape).background(CloverSurface2),
+                    contentAlignment = Alignment.Center,
+                ) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 }
             } else {
                 SendButton(
-                    enabled = hasInput,
-                    contentDescription = "发送，长按打开 Lucky",
+                    enabled = hasInput || chatWorking && isStopCommand,
+                    contentDescription = if (isStopCommand) "发送 /stop" else "发送，长按打开 Lucky",
                     onClick = onSend,
                     onLongClick = { showLuckyCommands = !showLuckyCommands },
                 )
@@ -1966,6 +2007,68 @@ private fun ComposerBar(
 }
 
 @Composable
+private fun LuckyClover(
+    onCommand: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val leaves = listOf(
+        "/lucky on" to "开始" to Alignment.TopCenter,
+        "/lucky status" to "状态" to Alignment.CenterStart,
+        "/lucky off" to "提交" to Alignment.CenterEnd,
+        "/lucky cancel" to "放弃" to Alignment.BottomCenter,
+    )
+    Box(Modifier.size(176.dp)) {
+        Box(Modifier.matchParentSize().clickable(onClick = onDismiss))
+        leaves.forEach { (commandLabel, alignment) ->
+            val (command, label) = commandLabel
+            Surface(
+                onClick = { onCommand(command) },
+                modifier = Modifier.align(alignment),
+                shape = CircleShape,
+                color = CloverSurface.copy(alpha = .96f),
+                border = BorderStroke(1.dp, CloverAccent.copy(alpha = .45f)),
+                shadowElevation = 2.dp,
+            ) {
+                Text(
+                    label,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CloverAccent,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LuckyStatusLine(
+    active: Boolean,
+    segments: Int,
+    pending: List<com.luckyagent.android.ui.LuckyPendingSegment>,
+    onRetry: (String) -> Unit,
+) {
+    val failed = pending.filter { it.error != null }
+    val waiting = pending.count { it.error == null }
+    val text = when {
+        failed.isNotEmpty() -> "${failed.size} 段没送进"
+        waiting > 0 -> "$waiting 段发送中"
+        active -> "收集中 $segments 段"
+        else -> return
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, style = MaterialTheme.typography.labelSmall, color = if (failed.isNotEmpty()) CloverError else CloverText3, modifier = Modifier.weight(1f))
+        failed.firstOrNull()?.let { segment ->
+            TextButton(onClick = { onRetry(segment.id) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                Text("重试", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
 private fun SendButton(
     enabled: Boolean,
     contentDescription: String,
@@ -1974,8 +2077,7 @@ private fun SendButton(
 ) {
     Box(
         Modifier
-            .padding(start = 8.dp)
-            .size(40.dp)
+                .size(44.dp)
             .clip(CircleShape)
             .background(if (enabled) CloverAccent else CloverSurface2)
             .combinedClickable(

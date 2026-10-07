@@ -52,8 +52,7 @@ import com.luckyagent.android.ui.theme.CloverText3
 fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
     Column(
         Modifier
-            .fillMaxSize()
-            .background(CloverBg),
+            .fillMaxSize(),
     ) {
         ScreenHeader(
             eyebrow = "Channels",

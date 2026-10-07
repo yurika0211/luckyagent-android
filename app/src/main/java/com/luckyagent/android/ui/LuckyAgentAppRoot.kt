@@ -1,6 +1,12 @@
 package com.luckyagent.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -180,7 +186,7 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
                         modifier = Modifier
                             .widthIn(max = AppNavDrawerWidth)
                             .fillMaxHeight(),
-                        drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .88f),
                     ) {
                         NavigationDrawerContent(
                             state = state,
@@ -214,9 +220,11 @@ private fun AppScaffold(
 ) {
     CompositionLocalProvider(LocalOpenNavigationDrawer provides openNavigation) {
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = Color.Transparent,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
         ) { _ ->
+            Box(Modifier.fillMaxSize()) {
+            WallpaperLayer(state.settings)
             Row(
                 Modifier
                     .fillMaxSize()
@@ -229,7 +237,7 @@ private fun AppScaffold(
                             .fillMaxHeight()
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .verticalScroll(rememberScrollState()),
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .82f),
                     ) {
                         Spacer(Modifier.height(16.dp))
                         Box(
@@ -273,8 +281,33 @@ private fun AppScaffold(
                     }
                 }
             }
+            }
         }
     }
+}
+
+@Composable
+private fun WallpaperLayer(settings: com.luckyagent.android.data.settings.ClientSettings) {
+    val context = LocalContext.current
+    val file = settings.chatBackgroundFile.takeIf { it.isNotBlank() }?.let {
+        com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
+    }?.takeIf { it.exists() }
+    if (file == null) {
+        Box(Modifier.fillMaxSize().background(com.luckyagent.android.ui.theme.CloverBg))
+        return
+    }
+    AsyncImage(
+        model = ImageRequest.Builder(context)
+            .data(file)
+            .memoryCacheKey(file.absolutePath + file.lastModified())
+            .diskCacheKey(file.absolutePath + file.lastModified())
+            .crossfade(true)
+            .build(),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize(),
+    )
+    Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = settings.chatBackgroundDim.coerceIn(0, 70) / 100f)))
 }
 
 @Composable

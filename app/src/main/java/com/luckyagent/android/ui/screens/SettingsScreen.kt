@@ -83,7 +83,6 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(CloverBg)
             .verticalScroll(rememberScrollState()),
     ) {
         ScreenHeader(
@@ -146,7 +145,7 @@ private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
     }?.takeIf { it.exists() }
     CloverCard {
         Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("只保存在这台手机上，不会上传。背景铺满对话页，顶栏和输入栏是半透明的，文字放在浅色气泡里。头像在顶栏和助手消息旁边。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        Text("只保存在这台手机上，不会上传。背景铺在每个页面后面。输入区只留中间那条，长按发送键会在四周展开 Lucky 指令。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
         state.snackbarMessage?.let { message ->
             Text(message, color = if (message.contains("没能")) CloverError else CloverText, style = MaterialTheme.typography.bodyMedium)
         }

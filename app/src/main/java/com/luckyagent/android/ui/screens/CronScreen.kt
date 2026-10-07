@@ -42,8 +42,7 @@ import com.luckyagent.android.ui.theme.CloverText3
 fun CronScreen(state: AppUiState, vm: AppViewModel) {
     Column(
         Modifier
-            .fillMaxSize()
-            .background(CloverBg),
+            .fillMaxSize(),
     ) {
         ScreenHeader(
             eyebrow = "Runtime",

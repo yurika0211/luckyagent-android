@@ -100,8 +100,7 @@ fun TasksScreen(state: AppUiState, vm: AppViewModel) {
     val detail = state.selectedTask
     Column(
         Modifier
-            .fillMaxSize()
-            .background(CloverBg),
+            .fillMaxSize(),
     ) {
         ScreenHeader(
             eyebrow = "Runtime",

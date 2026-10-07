@@ -118,7 +118,7 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
     }
 
     LazyColumn(
-        Modifier.fillMaxSize().background(CloverBg),
+        Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -291,7 +291,7 @@ private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge
     val selectedUnresolvedStroke = remember { androidx.compose.ui.graphics.drawscope.Stroke(3f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(5f, 4f))) }
     val selectedStroke = remember { androidx.compose.ui.graphics.drawscope.Stroke(3f) }
     LaunchedEffect(nodes, edges) { positions = withContext(Dispatchers.Default) { forceLayout(nodes, edges) } }
-    Column(modifier.shadow(2.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(CloverSurface)) {
+    Column(modifier.shadow(2.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(CloverSurface.copy(alpha = .86f))) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Knowledge topology · ${nodes.size} nodes / ${edges.size} links", style = MaterialTheme.typography.labelMedium, color = CloverText2, modifier = Modifier.weight(1f))
             TextButton(onClick = { zoom = (zoom * 1.2f).coerceAtMost(4f) }) { Text("+") }
