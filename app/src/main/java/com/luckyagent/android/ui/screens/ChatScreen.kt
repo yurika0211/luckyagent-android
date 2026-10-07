@@ -143,6 +143,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.PendingApproval
+import com.luckyagent.android.data.api.inputPrompt
+import com.luckyagent.android.data.api.needsTextInput
 import com.luckyagent.android.data.api.FunctionalModelKinds
 import com.luckyagent.android.data.api.ModelRef
 import com.luckyagent.android.data.api.modelKindLabel
@@ -859,7 +861,8 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
                 val sid = state.settings.sessionId
                 Text(
                     buildString {
-                        if (sid.isBlank()) append("未选择会话")
+                        if (state.showingOfflineCache) append("离线，显示上次内容")
+                        else if (sid.isBlank()) append("未选择会话")
                         else {
                             append(sid.take(18))
                             if (sid.length > 18) append("…")
@@ -3103,6 +3106,15 @@ private fun SessionDrawer(
                 }
             },
         )
+
+        if (state.showingOfflineCache) {
+            Text(
+                "离线，显示上次内容",
+                style = MaterialTheme.typography.bodySmall,
+                color = CloverText3,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
 
         if (state.sessionsError != null) {
             Row(
