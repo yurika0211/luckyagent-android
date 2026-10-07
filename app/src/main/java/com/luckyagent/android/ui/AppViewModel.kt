@@ -1881,6 +1881,21 @@ class AppViewModel(
         refreshSessions()
     }
 
+    fun applyPairingQr(raw: String) {
+        val endpoint = try {
+            com.luckyagent.android.data.settings.PairingQr.parse(raw).toEndpoint()
+        } catch (error: Exception) {
+            _ui.update { it.copy(activityLine = error.message ?: "这不是 LuckyAgent 配对码") }
+            return
+        }
+        updateSettings { settings ->
+            val endpoints = settings.runtimeEndpoints + endpoint
+            settings.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = endpoint.id)
+        }
+        refreshSessions()
+        _ui.update { it.copy(activityLine = "已写入 ${endpoint.apiBase}，临时 key 在 API 重启后失效") }
+    }
+
     fun saveRuntimeEndpoint(endpoint: RuntimeEndpoint) {
         val normalized = endpoint.copy(
             name = endpoint.name.trim().ifBlank { "Runtime" },

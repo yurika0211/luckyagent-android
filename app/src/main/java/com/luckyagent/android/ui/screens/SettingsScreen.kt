@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.HealthAndSafety
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -349,11 +350,37 @@ private fun SettingsUpdateCard(state: AppUiState, vm: AppViewModel) {
 private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
     var editing by remember { mutableStateOf<RuntimeEndpoint?>(null) }
     var deleting by remember { mutableStateOf<RuntimeEndpoint?>(null) }
+    val context = LocalContext.current
+    val scanLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        com.journeyapps.barcodescanner.ScanContract(),
+    ) { result ->
+        val text = result.contents
+        if (!text.isNullOrBlank()) vm.applyPairingQr(text)
+    }
+    val cameraPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) scanLauncher.launch(pairingScanOptions())
+    }
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Runtime endpoints", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text("Manage hosts and switch the active runtime", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+            }
+            OutlinedButton(
+                onClick = {
+                    val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                        context,
+                        android.Manifest.permission.CAMERA,
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (granted) scanLauncher.launch(pairingScanOptions())
+                    else cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                },
+            ) {
+                Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("扫码")
             }
             OutlinedButton(
                 onClick = {
@@ -366,7 +393,7 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             }
         }
         Text(
-            "Each endpoint keeps its own API URL, key and optional WebSocket URL. Keys are stored encrypted on this device.",
+            "扫电脑上 lh qr 打出的码，会写入局域网地址和临时 key。这把 key 默认 24 小时，API 重启后立即失效。",
             color = CloverText2,
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -415,6 +442,15 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
+    }
+}
+
+private fun pairingScanOptions(): com.journeyapps.barcodescanner.ScanOptions {
+    return com.journeyapps.barcodescanner.ScanOptions().apply {
+        setDesiredBarcodeFormats(com.journeyapps.barcodescanner.ScanOptions.QR_CODE)
+        setPrompt("扫描 lh qr 打出的配对码")
+        setBeepEnabled(false)
+        setOrientationLocked(false)
     }
 }
 
