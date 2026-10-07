@@ -469,7 +469,7 @@ fun ChatScreen(
                             .width(sessionPaneWidth)
                             .widthIn(max = sessionPaneWidth)
                             .fillMaxHeight()
-                            .background(CloverBgSide.copy(alpha = .9f))
+                            .background(CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f))
                             .windowInsetsPadding(WindowInsets.safeDrawing),
                     ) {
                         sessionDrawer(true)
@@ -515,7 +515,7 @@ fun ChatScreen(
                 gesturesEnabled = false,
                 drawerContent = {
                     ModalDrawerSheet(
-                        drawerContainerColor = CloverBgSide.copy(alpha = .92f),
+                        drawerContainerColor = CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f),
                         modifier = Modifier
                             .widthIn(max = drawerMaxWidth)
                             .fillMaxHeight(),
@@ -963,7 +963,7 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
     Column(
         Modifier
             .fillMaxWidth()
-            .background(CloverBg.copy(alpha = if (hasWallpaper) 0.55f else 0.92f)),
+            .background(CloverBg.copy(alpha = state.settings.chromeOpacity.coerceIn(0, 100) / 100f)),
     ) {
         if (!hasWallpaper) HorizontalDivider(color = CloverLine.copy(alpha = .55f))
         Row(
@@ -1111,7 +1111,7 @@ private fun BubbleRow(
                         Column(
                             Modifier
                                 .clip(RoundedCornerShape(18.dp))
-                                .background(if (isUser) CloverUserBubble.copy(alpha = 0.92f) else CloverSurface.copy(alpha = 0.92f))
+                                .background(if (isUser) CloverUserBubble.copy(alpha = state.settings.bubbleOpacity.coerceIn(0, 100) / 100f) else CloverSurface.copy(alpha = state.settings.bubbleOpacity.coerceIn(0, 100) / 100f))
                                 .pointerInput(bubble.id) {
                                     detectTapGestures(onLongPress = { menuExpanded = true })
                                 }
@@ -1886,37 +1886,30 @@ private fun ComposerBar(
                 onRetry = vm::retryLuckySegment,
             )
         }
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-        IconButton(
-            onClick = onToggleAttachment,
-            modifier = Modifier
-                .size(44.dp)
-                .clip(CircleShape)
-                .background(CloverSurface.copy(alpha = .94f)),
-        ) {
-            Icon(
-                if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
-                contentDescription = if (showAttachmentOptions) "关闭附件选项" else "添加附件",
-                tint = CloverText2,
-            )
-        }
+        Box(Modifier.fillMaxWidth()) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            color = CloverSurface,
-            shape = RoundedCornerShape(22.dp),
-            border = BorderStroke(1.dp, CloverLine),
+            color = CloverSurface.copy(alpha = state.settings.composerOpacity.coerceIn(0, 100) / 100f),
+            shape = RoundedCornerShape(28.dp),
+            border = BorderStroke(1.dp, CloverLine.copy(alpha = .4f)),
             shadowElevation = 0.dp,
         ) {
         Row(
             Modifier
-                .padding(horizontal = 2.dp, vertical = 2.dp)
+                .padding(start = 2.dp, end = 52.dp, top = 2.dp, bottom = 2.dp)
                 .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            IconButton(
+                onClick = onToggleAttachment,
+                modifier = Modifier.size(44.dp),
+            ) {
+                Icon(
+                    if (showAttachmentOptions) Icons.Outlined.Close else Icons.Outlined.Add,
+                    contentDescription = if (showAttachmentOptions) "关闭附件选项" else "添加附件",
+                    tint = CloverText2,
+                )
+            }
             BasicTextField(
                 value = state.composer,
                 onValueChange = onChange,
@@ -1953,12 +1946,14 @@ private fun ComposerBar(
                 onClick = { showModelSheet = true },
                 compact = true,
             )
-            Spacer(Modifier.width(2.dp))
             Spacer(Modifier.width(4.dp))
         }
         }
         Box(
-            Modifier.width(176.dp).height(if (showLuckyCommands) 176.dp else 44.dp),
+            Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 4.dp)
+                .size(if (showLuckyCommands) 176.dp else 44.dp),
             contentAlignment = Alignment.Center,
         ) {
             if (showLuckyCommands) {

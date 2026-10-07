@@ -173,6 +173,13 @@ private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
                 valueRange = 0f..70f,
             )
         }
+        Text("组件透明度", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text("0 全透明，100 不透明。拖动后立刻生效。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        OpacitySlider("输入条", s.composerOpacity) { value -> vm.updateSettings { it.copy(composerOpacity = value) } }
+        OpacitySlider("消息气泡", s.bubbleOpacity) { value -> vm.updateSettings { it.copy(bubbleOpacity = value) } }
+        OpacitySlider("顶栏", s.chromeOpacity) { value -> vm.updateSettings { it.copy(chromeOpacity = value) } }
+        OpacitySlider("卡片", s.cardOpacity) { value -> vm.updateSettings { it.copy(cardOpacity = value) } }
+        OpacitySlider("侧栏", s.drawerOpacity) { value -> vm.updateSettings { it.copy(drawerOpacity = value) } }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = {
@@ -183,6 +190,16 @@ private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
             if (avatar != null) TextButton(onClick = { vm.setAvatar(null) }) { Text("恢复默认") }
         }
     }
+}
+
+@Composable
+private fun OpacitySlider(label: String, value: Int, onChange: (Int) -> Unit) {
+    Text("$label $value", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+    androidx.compose.material3.Slider(
+        value = value.toFloat(),
+        onValueChange = { onChange(it.toInt().coerceIn(0, 100)) },
+        valueRange = 0f..100f,
+    )
 }
 
 @Composable

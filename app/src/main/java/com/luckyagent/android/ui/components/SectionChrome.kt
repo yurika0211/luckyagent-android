@@ -46,6 +46,14 @@ import com.luckyagent.android.ui.theme.CloverText3
 
 val LocalOpenNavigationDrawer = compositionLocalOf<(() -> Unit)?> { null }
 
+data class SurfaceOpacity(
+    val chrome: Float = 0.62f,
+    val card: Float = 0.82f,
+    val drawer: Float = 0.90f,
+)
+
+val LocalSurfaceOpacity = compositionLocalOf { SurfaceOpacity() }
+
 @Composable
 fun ScreenHeader(
     eyebrow: String,
@@ -56,7 +64,7 @@ fun ScreenHeader(
     val openNavigation = LocalOpenNavigationDrawer.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = .62f),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = LocalSurfaceOpacity.current.chrome),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f)),
@@ -129,7 +137,7 @@ fun CloverCard(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.surface.copy(alpha = .82f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = LocalSurfaceOpacity.current.card),
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f)),

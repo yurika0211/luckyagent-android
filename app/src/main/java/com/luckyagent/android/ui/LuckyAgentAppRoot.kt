@@ -184,7 +184,7 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
                         modifier = Modifier
                             .widthIn(max = AppNavDrawerWidth)
                             .fillMaxHeight(),
-                        drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .88f),
+                        drawerContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f),
                     ) {
                         NavigationDrawerContent(
                             state = state,
@@ -216,7 +216,15 @@ private fun AppScaffold(
     useRail: Boolean,
     openNavigation: () -> Unit,
 ) {
-    CompositionLocalProvider(LocalOpenNavigationDrawer provides openNavigation) {
+    val surfaceOpacity = com.luckyagent.android.ui.components.SurfaceOpacity(
+        chrome = state.settings.chromeOpacity.coerceIn(0, 100) / 100f,
+        card = state.settings.cardOpacity.coerceIn(0, 100) / 100f,
+        drawer = state.settings.drawerOpacity.coerceIn(0, 100) / 100f,
+    )
+    CompositionLocalProvider(
+        LocalOpenNavigationDrawer provides openNavigation,
+        com.luckyagent.android.ui.components.LocalSurfaceOpacity provides surfaceOpacity,
+    ) {
         Scaffold(
             containerColor = Color.Transparent,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -235,7 +243,7 @@ private fun AppScaffold(
                             .fillMaxHeight()
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .verticalScroll(rememberScrollState()),
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .82f),
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f),
                     ) {
                         Spacer(Modifier.height(16.dp))
                         Box(

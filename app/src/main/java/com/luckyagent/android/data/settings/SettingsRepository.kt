@@ -39,6 +39,12 @@ data class ClientSettings(
     val chatBackgroundFile: String = "",
     val chatBackgroundDim: Int = 12,
     val avatarFile: String = "",
+    /** 0 全透明，100 不透明。 */
+    val composerOpacity: Int = 78,
+    val bubbleOpacity: Int = 92,
+    val chromeOpacity: Int = 62,
+    val cardOpacity: Int = 82,
+    val drawerOpacity: Int = 90,
 )
 
 /**
@@ -91,6 +97,11 @@ class SettingsRepository(context: Context) {
             chatBackgroundFile = prefs.getString(KEY_CHAT_BACKGROUND, "") ?: "",
             chatBackgroundDim = prefs.getInt(KEY_CHAT_BACKGROUND_DIM, 12).coerceIn(0, 70),
             avatarFile = prefs.getString(KEY_AVATAR, "") ?: "",
+            composerOpacity = prefs.getInt(KEY_COMPOSER_OPACITY, 78).coerceIn(0, 100),
+            bubbleOpacity = prefs.getInt(KEY_BUBBLE_OPACITY, 92).coerceIn(0, 100),
+            chromeOpacity = prefs.getInt(KEY_CHROME_OPACITY, 62).coerceIn(0, 100),
+            cardOpacity = prefs.getInt(KEY_CARD_OPACITY, 82).coerceIn(0, 100),
+            drawerOpacity = prefs.getInt(KEY_DRAWER_OPACITY, 90).coerceIn(0, 100),
         )
     }
 
@@ -144,6 +155,11 @@ class SettingsRepository(context: Context) {
             if (next.chatBackgroundFile != previous.chatBackgroundFile) putString(KEY_CHAT_BACKGROUND, next.chatBackgroundFile)
             if (next.chatBackgroundDim != previous.chatBackgroundDim) putInt(KEY_CHAT_BACKGROUND_DIM, next.chatBackgroundDim.coerceIn(0, 70))
             if (next.avatarFile != previous.avatarFile) putString(KEY_AVATAR, next.avatarFile)
+            if (next.composerOpacity != previous.composerOpacity) putInt(KEY_COMPOSER_OPACITY, next.composerOpacity.coerceIn(0, 100))
+            if (next.bubbleOpacity != previous.bubbleOpacity) putInt(KEY_BUBBLE_OPACITY, next.bubbleOpacity.coerceIn(0, 100))
+            if (next.chromeOpacity != previous.chromeOpacity) putInt(KEY_CHROME_OPACITY, next.chromeOpacity.coerceIn(0, 100))
+            if (next.cardOpacity != previous.cardOpacity) putInt(KEY_CARD_OPACITY, next.cardOpacity.coerceIn(0, 100))
+            if (next.drawerOpacity != previous.drawerOpacity) putInt(KEY_DRAWER_OPACITY, next.drawerOpacity.coerceIn(0, 100))
         }.apply()
         _settings.value = next
     }
@@ -204,5 +220,12 @@ class SettingsRepository(context: Context) {
         private const val KEY_CHAT_BACKGROUND = "chat_background_file"
         private const val KEY_CHAT_BACKGROUND_DIM = "chat_background_dim"
         private const val KEY_AVATAR = "avatar_file"
+        private const val KEY_COMPOSER_OPACITY = "composer_opacity"
+        private const val KEY_BUBBLE_OPACITY = "bubble_opacity"
+        private const val KEY_CHROME_OPACITY = "chrome_opacity"
+        private const val KEY_CARD_OPACITY = "card_opacity"
+        private const val KEY_DRAWER_OPACITY = "drawer_opacity"
     }
 }
+
+fun Int.opacityFraction(): Float = coerceIn(0, 100) / 100f
