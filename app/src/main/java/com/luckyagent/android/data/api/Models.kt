@@ -16,6 +16,10 @@ data class RuntimeSession(
     val id: String,
     val title: String? = null,
     @SerialName("message_count") val messageCount: Int? = null,
+    /** On-disk size when the server reports it (segment_v1 / legacy md). */
+    @SerialName("byte_size") val byteSize: Long? = null,
+    /** Session storage format: legacy_md or segment_v1. */
+    val format: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
 )
@@ -25,6 +29,10 @@ data class SessionHistory(
     val id: String? = null,
     val title: String? = null,
     @SerialName("message_count") val messageCount: Int? = null,
+    val format: String? = null,
+    @SerialName("byte_size") val byteSize: Long? = null,
+    /** True when message bodies were capped; pass include=full for complete text. */
+    @SerialName("content_truncated") val contentTruncated: Boolean? = null,
     val messages: List<ProviderMessage> = emptyList(),
     val limit: Int? = null,
     val offset: Int? = null,
@@ -44,6 +52,9 @@ data class ProviderMessage(
     val name: String? = null,
     @SerialName("tool_call_id") val toolCallId: String? = null,
     @SerialName("tool_calls") val toolCalls: List<HistoryToolCall> = emptyList(),
+    /** Present when large tool/assistant bodies are externalized server-side. */
+    @SerialName("blob_hash") val blobHash: String? = null,
+    @SerialName("blob_bytes") val blobBytes: Int? = null,
 )
 
 @Serializable

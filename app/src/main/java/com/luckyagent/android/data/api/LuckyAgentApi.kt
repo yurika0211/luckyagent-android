@@ -300,12 +300,17 @@ class LuckyAgentApi(
         sessionId: String,
         limit: Int = 40,
         offset: Int = 0,
+        /** When true, request full message bodies (include=full). Default uses server preview caps. */
+        includeFull: Boolean = false,
     ): Result<SessionHistory> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val query = buildMap {
                     put("limit", limit.coerceIn(1, 500).toString())
                     put("offset", offset.coerceAtLeast(0).toString())
+                    if (includeFull) {
+                        put("include", "full")
+                    }
                 }
                 val request = Request.Builder()
                     .url(url("/api/v1/sessions/$sessionId", query))
