@@ -78,7 +78,7 @@ import java.net.URLEncoder
 import java.io.File
 
 enum class AppDestination {
-    Chat, Tasks, Background, Cron, Commands, Trajectory, Gateways, Skills, Settings, Memory
+    Chat, Tasks, Background, Cron, Trajectory, Gateways, Skills, Settings, Memory
 }
 
 enum class TrajectoryFilter { All, Success, Failure }
@@ -200,7 +200,6 @@ data class AppUiState(
     val skillsError: String? = null,
     val skillsQuery: String = "",
     val commands: List<RuntimeCommand> = emptyList(),
-    val commandsLoading: Boolean = false,
     val commandsError: String? = null,
     val commandExecuting: Boolean = false,
     val commandExecution: CommandExecution? = null,
@@ -1064,7 +1063,6 @@ class AppViewModel(
                 startBackgroundPolling()
             }
             AppDestination.Cron -> refreshCron()
-            AppDestination.Commands -> refreshCommands()
             AppDestination.Memory -> refreshMemory()
             AppDestination.Skills -> refreshSkills()
             AppDestination.Gateways -> refreshGateways()
@@ -1900,7 +1898,7 @@ class AppViewModel(
             if (runtimeCommand == null) {
                 finishRuntimeCommand(
                     command = command.name,
-                    output = "未找到 Runtime 命令 /${command.name}。请在 Runtime → Commands 查看当前服务支持的命令。",
+                    output = "未找到 Runtime 命令 /${command.name}。请检查命令名或当前服务支持的命令。",
                     success = false,
                 )
                 return@launch
@@ -2307,27 +2305,6 @@ class AppViewModel(
 
     fun updateSkillsQuery(value: String) {
         _ui.update { it.copy(skillsQuery = value) }
-    }
-
-    fun refreshCommands() {
-        viewModelScope.launch {
-            _ui.update { it.copy(commandsLoading = true, commandsError = null) }
-            val result = container.api.listCommands()
-            _ui.update {
-                if (result.isSuccess) {
-                    it.copy(
-                        commandsLoading = false,
-                        commands = result.getOrDefault(emptyList()),
-                        commandsError = null,
-                    )
-                } else {
-                    it.copy(
-                        commandsLoading = false,
-                        commandsError = result.exceptionOrNull()?.message ?: "Unable to load commands",
-                    )
-                }
-            }
-        }
     }
 
     fun runCommand(command: RuntimeCommand, args: String) {

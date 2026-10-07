@@ -27,7 +27,6 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Assignment
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
@@ -60,7 +59,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
 import com.luckyagent.android.ui.screens.BackgroundScreen
-import com.luckyagent.android.ui.screens.CommandsScreen
 import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
 import com.luckyagent.android.ui.screens.MemoryScreen
@@ -90,7 +88,6 @@ private val navItems = listOf(
     NavSpec(AppDestination.Tasks, "Tasks", Icons.Outlined.Assignment),
     NavSpec(AppDestination.Background, "Background", Icons.Outlined.Assignment),
     NavSpec(AppDestination.Cron, "Cron", Icons.Outlined.Schedule),
-    NavSpec(AppDestination.Commands, "Commands", Icons.Outlined.Code),
     NavSpec(AppDestination.Trajectory, "Trace", Icons.Outlined.Timeline),
     NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
     NavSpec(AppDestination.Skills, "Skills", Icons.Outlined.Extension),
@@ -100,7 +97,7 @@ private val navItems = listOf(
 
 private val navGroups = listOf(
     "WORKSPACE" to navItems.take(1),
-    "RUNTIME" to navItems.slice(1..8),
+    "RUNTIME" to navItems.slice(1 until navItems.lastIndex),
     "SYSTEM" to navItems.takeLast(1),
 )
 
@@ -218,7 +215,6 @@ private fun AppScaffold(
                             AppDestination.Tasks -> TasksScreen(state = state, vm = vm)
                             AppDestination.Background -> BackgroundScreen(state = state, vm = vm)
                             AppDestination.Cron -> CronScreen(state = state, vm = vm)
-                            AppDestination.Commands -> CommandsScreen(state = state, vm = vm)
                             AppDestination.Trajectory -> TrajectoryScreen(state = state, vm = vm)
                             AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)
                             AppDestination.Skills -> SkillsScreen(state = state, vm = vm)

@@ -17,3 +17,4 @@
 
 # Kotlin/IDE build caches
 .kotlin/
+/public
