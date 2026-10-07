@@ -49,6 +49,7 @@ import com.luckyagent.android.data.settings.RuntimeEndpoint
 import com.luckyagent.android.data.update.AvailableUpdate
 import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.ui.util.MessageQuote
+import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.util.bubbleCopyText
 import com.luckyagent.android.ui.util.buildOutboundMessage
 import com.luckyagent.android.ui.util.quoteFromBubble
@@ -357,6 +358,7 @@ class AppViewModel(
                     }
                     "tool_call", "tool" -> if (foreground) handleToolCall(env.data)
                     "tool_result" -> if (foreground) handleToolResult(env.data)
+                    "compact" -> if (foreground) handleCompactEvent(env.data)
                     "cancel", "cancelled" -> {
                         if (!completeRun(event)) return@collect
                         if (foreground) {
@@ -649,6 +651,80 @@ class AppViewModel(
             }
             val next = upsertProgressStep(previous, ChatProgressStep("phase-$id", label, ProgressStatus.Active))
             current.copy(isResponding = true, activityLine = label, progressSteps = next)
+        }
+    }
+
+    /** WebSocket type=compact: show context compression progress in the chat chrome. */
+    private fun handleCompactEvent(data: kotlinx.serialization.json.JsonElement?) {
+        if (data == null) return
+        val phase = extractField(data, "phase")?.lowercase().orEmpty()
+        val message = extractField(data, "message")
+            ?.takeIf { it.isNotBlank() }
+            ?: when (phase) {
+                "start" -> "Compressing conversation context…"
+                "progress" -> "Compressing conversation context…"
+                "done" -> "Context compressed"
+                "degraded" -> "Context compressed (local fallback)"
+                "failed" -> "Context compression failed"
+                else -> "Compressing context…"
+            }
+        val pre = extractField(data, "pre_token_estimate")?.toIntOrNull()
+        val post = extractField(data, "post_token_estimate")?.toIntOrNull()
+        val detail = buildString {
+            append(message)
+            if (pre != null && post != null && pre > 0) {
+                append(" · ")
+                append(TokenFormat.compact(pre))
+                append("→")
+                append(TokenFormat.compact(post))
+            }
+        }
+        when (phase) {
+            "done", "degraded" -> {
+                upsertProgress(ChatProgressStep("compact", detail, ProgressStatus.Complete))
+                _ui.update { it.copy(activityLine = detail) }
+            }
+            "failed" -> {
+                upsertProgress(ChatProgressStep("compact", detail, ProgressStatus.Failed))
+                _ui.update { it.copy(activityLine = detail) }
+            }
+            else -> {
+                upsertProgress(ChatProgressStep("compact", detail, ProgressStatus.Active))
+                _ui.update { it.copy(isResponding = true, activityLine = detail) }
+            }
+        }
+    }
+
+    /** Manual compact via REST; shows the same progress chrome as auto compact. */
+    fun compactCurrentSession(forceLocal: Boolean = false) {
+        compactSession(currentSessionId(), forceLocal = forceLocal)
+    }
+
+    fun compactSession(sessionId: String, forceLocal: Boolean = false) {
+        val id = sessionId.trim().ifBlank { currentSessionId() }
+        viewModelScope.launch {
+            upsertProgress(ChatProgressStep("compact", "Compressing conversation context…", ProgressStatus.Active))
+            _ui.update { it.copy(activityLine = "Compressing conversation context…") }
+            val result = container.api.compactSession(id, forceLocal = forceLocal)
+            result.fold(
+                onSuccess = { body ->
+                    val title = body.display?.title?.takeIf { it.isNotBlank() } ?: "Context compressed"
+                    val subtitle = body.display?.subtitle?.takeIf { it.isNotBlank() }
+                        ?: listOfNotNull(
+                            body.preTokenEstimate?.let { "pre ${TokenFormat.compact(it)}" },
+                            body.postTokenEstimate?.let { "post ${TokenFormat.compact(it)}" },
+                            body.summarySource,
+                        ).joinToString(" · ").ifBlank { null }
+                    val line = listOfNotNull(title, subtitle).joinToString(" · ")
+                    upsertProgress(ChatProgressStep("compact", line, ProgressStatus.Complete))
+                    _ui.update { it.copy(activityLine = line) }
+                },
+                onFailure = { err ->
+                    val line = "Context compression failed · ${err.message ?: "error"}"
+                    upsertProgress(ChatProgressStep("compact", line, ProgressStatus.Failed))
+                    _ui.update { it.copy(activityLine = line) }
+                },
+            )
         }
     }
 

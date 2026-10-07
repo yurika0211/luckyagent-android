@@ -412,6 +412,10 @@ fun ChatScreen(
                     renameTarget = session
                     renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
                 },
+                onCompact = { session ->
+                    vm.compactSession(session.id)
+                    if (!usePermanentSessionPane) scope.launch { drawerState.close() }
+                },
                 onRefresh = vm::refreshSessions,
                 showClose = showClose,
             )
@@ -2513,6 +2517,7 @@ private fun SessionDrawer(
     onCreate: () -> Unit,
     onQueryChange: (String) -> Unit,
     onRename: (RuntimeSession) -> Unit,
+    onCompact: (RuntimeSession) -> Unit = {},
     onRefresh: () -> Unit,
     showClose: Boolean,
 ) {
@@ -2730,6 +2735,9 @@ private fun SessionDrawer(
                             }
                             IconButton(onClick = { onRename(session) }) {
                                 Icon(Icons.Outlined.Edit, contentDescription = "Rename", tint = CloverText2)
+                            }
+                            IconButton(onClick = { onCompact(session) }) {
+                                Icon(Icons.Outlined.Refresh, contentDescription = "Compact context", tint = CloverText2)
                             }
                         }
                     }

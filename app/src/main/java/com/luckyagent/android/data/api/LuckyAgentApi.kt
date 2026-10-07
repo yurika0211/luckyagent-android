@@ -324,6 +324,31 @@ class LuckyAgentApi(
             }
         }
 
+    /** POST /api/v1/sessions/{id}/compact — compress session history into a boundary. */
+    suspend fun compactSession(
+        sessionId: String,
+        dryRun: Boolean = false,
+        forceLocal: Boolean = false,
+    ): Result<CompactSessionResult> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = json.encodeToString(
+                    CompactSessionRequest.serializer(),
+                    CompactSessionRequest(dryRun = dryRun, forceLocal = forceLocal),
+                )
+                val request = Request.Builder()
+                    .url(url("/api/v1/sessions/$sessionId/compact"))
+                    .post(payload.toRequestBody(jsonMedia))
+                    .header("Content-Type", "application/json")
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("compact session ${resp.code}: $body")
+                    json.decodeFromString(CompactSessionResult.serializer(), body)
+                }
+            }
+        }
+
     /**
      * GET /api/v1/memory returns tier stats only.
      * Prefer /api/v1/memory/recall?q=... for readable entries.

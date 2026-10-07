@@ -40,6 +40,38 @@ data class SessionHistory(
     @SerialName("has_more") val hasMore: Boolean? = null,
 )
 
+/** POST /api/v1/sessions/{id}/compact response. */
+@Serializable
+data class CompactSessionResult(
+    @SerialName("boundary_id") val boundaryId: String? = null,
+    val trigger: String? = null,
+    val summary: String? = null,
+    @SerialName("from_message") val fromMessage: Int? = null,
+    @SerialName("to_message") val toMessage: Int? = null,
+    @SerialName("pre_token_estimate") val preTokenEstimate: Int? = null,
+    @SerialName("post_token_estimate") val postTokenEstimate: Int? = null,
+    @SerialName("summary_tokens") val summaryTokens: Int? = null,
+    @SerialName("dropped_messages") val droppedMessages: Int? = null,
+    @SerialName("retained_messages") val retainedMessages: Int? = null,
+    @SerialName("restored_attachments") val restoredAttachments: Int? = null,
+    @SerialName("summary_source") val summarySource: String? = null,
+    @SerialName("dry_run") val dryRun: Boolean? = null,
+    val display: CompactDisplay? = null,
+)
+
+@Serializable
+data class CompactDisplay(
+    val title: String? = null,
+    val subtitle: String? = null,
+    val message: String? = null,
+)
+
+@Serializable
+data class CompactSessionRequest(
+    @SerialName("dry_run") val dryRun: Boolean = false,
+    @SerialName("force_local") val forceLocal: Boolean = false,
+)
+
 @Serializable
 data class ProviderMessage(
     val role: String? = null,
