@@ -328,10 +328,10 @@ class LuckyAgentApi(
             }
         }
 
-    suspend fun renameSession(id: String, title: String): Result<RuntimeSession> =
+    suspend fun patchSession(id: String, patch: SessionPatchRequest): Result<RuntimeSession> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val payload = json.encodeToString(SessionPatchRequest(title = title))
+                val payload = json.encodeToString(patch)
                 val request = Request.Builder()
                     .url(url("/api/v1/sessions/$id"))
                     .patch(payload.toRequestBody(jsonMedia))
@@ -339,12 +339,34 @@ class LuckyAgentApi(
                     .build()
                 client.newCall(request).execute().use { resp ->
                     val body = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) error("rename session ${resp.code}: $body")
+                    if (!resp.isSuccessful) error("update session ${resp.code}: $body")
                     runCatching {
                         json.decodeFromString(RuntimeSession.serializer(), body)
                     }.getOrElse {
-                        RuntimeSession(id = id, title = title)
+                        RuntimeSession(
+                            id = id,
+                            title = patch.title,
+                            pinned = patch.pinned == true,
+                            project = patch.project,
+                        )
                     }
+                }
+            }
+        }
+
+    suspend fun renameSession(id: String, title: String): Result<RuntimeSession> =
+        patchSession(id, SessionPatchRequest(title = title))
+
+    suspend fun deleteSession(id: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val request = Request.Builder()
+                    .url(url("/api/v1/sessions/$id"))
+                    .delete()
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("delete session ${resp.code}: $body")
                 }
             }
         }

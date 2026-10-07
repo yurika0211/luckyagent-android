@@ -161,6 +161,7 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
             // Left-side app navigation (Material default / LTR). Do not force RTL just to flip the drawer.
             ModalNavigationDrawer(
                 drawerState = drawerState,
+                gesturesEnabled = false,
                 drawerContent = {
                     ModalDrawerSheet(
                         modifier = Modifier

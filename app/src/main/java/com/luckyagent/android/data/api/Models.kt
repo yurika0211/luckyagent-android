@@ -16,6 +16,8 @@ data class SessionsResponse(
 data class RuntimeSession(
     val id: String,
     val title: String? = null,
+    val pinned: Boolean = false,
+    val project: String? = null,
     @SerialName("message_count") val messageCount: Int? = null,
     /** On-disk size when the server reports it (segment_v1 / legacy md). */
     @SerialName("byte_size") val byteSize: Long? = null,
@@ -29,6 +31,8 @@ data class RuntimeSession(
 data class SessionHistory(
     val id: String? = null,
     val title: String? = null,
+    val pinned: Boolean = false,
+    val project: String? = null,
     @SerialName("message_count") val messageCount: Int? = null,
     val format: String? = null,
     @SerialName("byte_size") val byteSize: Long? = null,
@@ -194,6 +198,7 @@ enum class FunctionalModelKind(val wireValue: String, val label: String) {
     Image("image", "生图"),
     Tts("tts", "语音"),
     Reranker("reranker", "重排"),
+    Compact("compact", "压缩"),
 }
 
 val FunctionalModelKinds: List<FunctionalModelKind> = FunctionalModelKind.entries
@@ -382,6 +387,8 @@ data class SessionCreateRequest(
 @Serializable
 data class SessionPatchRequest(
     val title: String? = null,
+    val pinned: Boolean? = null,
+    val project: String? = null,
 )
 
 @Serializable

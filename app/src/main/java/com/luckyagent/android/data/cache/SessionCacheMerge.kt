@@ -102,6 +102,13 @@ fun mergeLatestPage(
 }
 
 /**
+ * History offset skips the newest N messages. The next older page therefore
+ * uses how many messages are already shown, not the oldest row's session index.
+ * Showing 60–99 of 100 requests offset=40 and receives 20–59.
+ */
+fun olderHistoryOffset(shownCount: Int): Int = shownCount.coerceAtLeast(0)
+
+/**
  * Prepend an older page. The page must end exactly where the cache begins.
  * A gap or overlap means the offset drifted and the caller should invalidate.
  */

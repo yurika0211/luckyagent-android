@@ -19,12 +19,13 @@ class ModelsTest {
         assertEquals(listOf("chat-a", "chat-b"), grouped["chat"]?.map(ModelRef::id))
         assertEquals(listOf("vision-a"), grouped["vision"]?.map(ModelRef::id))
         assertTrue("all runtime kinds are represented", FunctionalModelKinds.map { it.wireValue }.containsAll(
-            listOf("chat", "vision", "embedding", "transcription", "image", "tts", "reranker"),
+            listOf("chat", "vision", "embedding", "transcription", "image", "tts", "reranker", "compact"),
         ))
     }
 
     @Test
     fun kindLabelsHaveChineseFallback() {
+        assertEquals("压缩", modelKindLabel("compact"))
         assertEquals("对话", modelKindLabel("chat"))
         assertEquals("custom", modelKindLabel("custom"))
     }

@@ -9,7 +9,7 @@ import com.luckyagent.android.data.notification.ChatNotificationHelper
 import com.luckyagent.android.data.update.AppUpdateRepository
 
 class AppContainer(context: Context) {
-    private val appContext = context.applicationContext
+    val appContext = context.applicationContext
     val settingsRepository = SettingsRepository(appContext)
     val sessionCache = SessionCacheRepository(appContext)
     val api = LuckyAgentApi(settingsRepository)

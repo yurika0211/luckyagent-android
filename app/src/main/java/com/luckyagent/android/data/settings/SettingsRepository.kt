@@ -33,6 +33,12 @@ data class ClientSettings(
     val runtimeEndpoints: List<RuntimeEndpoint> = emptyList(),
     val activeRuntimeEndpointId: String = "",
     val notifyOnChatCompleted: Boolean = true,
+    val notifyOnCron: Boolean = true,
+    val notifyOnSubagent: Boolean = true,
+    val notifyOnBackground: Boolean = true,
+    val chatBackgroundFile: String = "",
+    val chatBackgroundDim: Int = 35,
+    val avatarFile: String = "",
 )
 
 /**
@@ -79,6 +85,12 @@ class SettingsRepository(context: Context) {
             runtimeEndpoints = endpoints,
             activeRuntimeEndpointId = activeId,
             notifyOnChatCompleted = prefs.getBoolean(KEY_NOTIFY_ON_CHAT_COMPLETED, true),
+            notifyOnCron = prefs.getBoolean(KEY_NOTIFY_ON_CRON, true),
+            notifyOnSubagent = prefs.getBoolean(KEY_NOTIFY_ON_SUBAGENT, true),
+            notifyOnBackground = prefs.getBoolean(KEY_NOTIFY_ON_BACKGROUND, true),
+            chatBackgroundFile = prefs.getString(KEY_CHAT_BACKGROUND, "") ?: "",
+            chatBackgroundDim = prefs.getInt(KEY_CHAT_BACKGROUND_DIM, 35).coerceIn(0, 70),
+            avatarFile = prefs.getString(KEY_AVATAR, "") ?: "",
         )
     }
 
@@ -126,6 +138,12 @@ class SettingsRepository(context: Context) {
             if (next.runtimeEndpoints != previous.runtimeEndpoints) putString(KEY_ENDPOINTS, json.encodeToString(next.runtimeEndpoints))
             if (next.activeRuntimeEndpointId != previous.activeRuntimeEndpointId) putString(KEY_ACTIVE_ENDPOINT, next.activeRuntimeEndpointId)
             if (next.notifyOnChatCompleted != previous.notifyOnChatCompleted) putBoolean(KEY_NOTIFY_ON_CHAT_COMPLETED, next.notifyOnChatCompleted)
+            if (next.notifyOnCron != previous.notifyOnCron) putBoolean(KEY_NOTIFY_ON_CRON, next.notifyOnCron)
+            if (next.notifyOnSubagent != previous.notifyOnSubagent) putBoolean(KEY_NOTIFY_ON_SUBAGENT, next.notifyOnSubagent)
+            if (next.notifyOnBackground != previous.notifyOnBackground) putBoolean(KEY_NOTIFY_ON_BACKGROUND, next.notifyOnBackground)
+            if (next.chatBackgroundFile != previous.chatBackgroundFile) putString(KEY_CHAT_BACKGROUND, next.chatBackgroundFile)
+            if (next.chatBackgroundDim != previous.chatBackgroundDim) putInt(KEY_CHAT_BACKGROUND_DIM, next.chatBackgroundDim.coerceIn(0, 70))
+            if (next.avatarFile != previous.avatarFile) putString(KEY_AVATAR, next.avatarFile)
         }.apply()
         _settings.value = next
     }
@@ -180,5 +198,11 @@ class SettingsRepository(context: Context) {
         private const val KEY_EVENT_CURSORS = "event_cursors"
         private const val KEY_SCROLL_ANCHORS = "scroll_anchors"
         private const val KEY_NOTIFY_ON_CHAT_COMPLETED = "notify_on_chat_completed"
+        private const val KEY_NOTIFY_ON_CRON = "notify_on_cron"
+        private const val KEY_NOTIFY_ON_SUBAGENT = "notify_on_subagent"
+        private const val KEY_NOTIFY_ON_BACKGROUND = "notify_on_background"
+        private const val KEY_CHAT_BACKGROUND = "chat_background_file"
+        private const val KEY_CHAT_BACKGROUND_DIM = "chat_background_dim"
+        private const val KEY_AVATAR = "avatar_file"
     }
 }

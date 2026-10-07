@@ -28,6 +28,8 @@ class SessionCacheRepository(
             RuntimeSession(
                 id = row.sessionId,
                 title = row.title,
+                pinned = row.pinned,
+                project = row.project,
                 messageCount = row.messageCount,
                 createdAt = row.createdAt,
                 updatedAt = row.updatedAt,
@@ -76,6 +78,8 @@ class SessionCacheRepository(
                     endpoint = endpoint,
                     sessionId = remote.id,
                     title = remote.title ?: existing?.title,
+                    pinned = remote.pinned,
+                    project = remote.project,
                     messageCount = remote.messageCount ?: existing?.messageCount ?: 0,
                     createdAt = remote.createdAt ?: existing?.createdAt,
                     updatedAt = remote.updatedAt ?: existing?.updatedAt,
@@ -125,6 +129,8 @@ class SessionCacheRepository(
                 endpoint = endpoint,
                 sessionId = sessionId,
                 title = title ?: existing?.title,
+                pinned = existing?.pinned ?: false,
+                project = existing?.project,
                 messageCount = capped.messageCount,
                 createdAt = createdAt ?: existing?.createdAt,
                 updatedAt = updatedAt ?: existing?.updatedAt,
@@ -137,6 +143,12 @@ class SessionCacheRepository(
             minOrdinal = capped.startIndex,
         )
         evictClosedSessions(endpoint)
+    }
+
+    suspend fun removeSession(apiBase: String, sessionId: String) {
+        val endpoint = endpointKey(apiBase)
+        dao.deleteMessages(endpoint, sessionId)
+        dao.deleteSession(endpoint, sessionId)
     }
 
     suspend fun invalidate(apiBase: String, sessionId: String) {

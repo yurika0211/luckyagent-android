@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.luckyagent.android.data.AppContainer
+import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.cache.HistorySync
 import com.luckyagent.android.data.cache.LatestMerge
@@ -20,6 +21,7 @@ import com.luckyagent.android.data.cache.MessagePage
 import com.luckyagent.android.data.cache.SessionCachePolicy
 import com.luckyagent.android.data.cache.historySyncAction
 import com.luckyagent.android.data.cache.mergeLatestPage
+import com.luckyagent.android.data.cache.olderHistoryOffset
 import com.luckyagent.android.data.cache.prependOlderPage
 import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ModelRef
@@ -45,6 +47,7 @@ import com.luckyagent.android.data.api.LuckyCommand
 import com.luckyagent.android.data.api.parseLuckyCommand
 import com.luckyagent.android.data.api.RuntimeCommand
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.data.api.SessionPatchRequest
 import com.luckyagent.android.data.api.SessionToolTrace
 import com.luckyagent.android.data.api.GatewayStatus
 import com.luckyagent.android.data.api.SkillSummary
@@ -298,6 +301,11 @@ class AppViewModel(
     private var settingsReconnectJob: Job? = null
     private var taskPollingJob: Job? = null
     private var backgroundPollingJob: Job? = null
+    private var cronPollingJob: Job? = null
+    private val taskFingerprints = mutableMapOf<String, String>()
+    private val backgroundFingerprints = mutableMapOf<String, String>()
+    private val cronFingerprints = mutableMapOf<String, String>()
+    private var progressWatchReady = false
     private var approvalPollingJob: Job? = null
     private var historyJob: Job? = null
     private var contextInspectJob: Job? = null
@@ -360,6 +368,7 @@ class AppViewModel(
             }
         }
         observeWs()
+        ensureRuntimeWatch()
         restoreCachedSession()
         refreshSessions()
         connectSocket()
@@ -492,11 +501,14 @@ class AppViewModel(
                     }
                     "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
                         val requestId = eventRequestId(event)
-                        if (requestId == null && event.sessionId == currentSessionId()) {
+                        if (requestId == null) {
                             val piece = extractFullResponse(env.data) ?: extractText(env.data)
                             if (!piece.isNullOrBlank()) {
-                                pushBubble(ChatBubble(id = env.id ?: "cron-${System.currentTimeMillis()}", role = "assistant", content = piece, createdAt = env.timestamp))
-                                refreshSessions()
+                                if (event.sessionId == currentSessionId()) {
+                                    pushBubble(ChatBubble(id = env.id ?: "cron-${System.currentTimeMillis()}", role = "assistant", content = piece, createdAt = env.timestamp))
+                                    refreshSessions()
+                                }
+                                notifyCronMessage(event.sessionId, env.id ?: env.eventId, piece)
                             }
                             return@collect
                         }
@@ -579,6 +591,7 @@ class AppViewModel(
                         }
                     }
                     "compact" -> if (foreground) handleCompactEvent(env.data)
+                    "task_event" -> handleTaskEvent(env.data)
                     "status", "info" -> {
                         val state = extractField(env.data, "state")
                         val message = extractField(env.data, "message") ?: extractText(env.data)
@@ -825,6 +838,113 @@ class AppViewModel(
         if (!settings.notifyOnChatCompleted) return
         val viewingCurrentChat = appInForeground && foreground && sessionId == currentSessionId() && _ui.value.destination == AppDestination.Chat
         if (!viewingCurrentChat) container.notifications.notifyCompleted(sessionId, requestId, content)
+    }
+
+    private fun noteTaskProgress(tasks: List<TaskSummary>) {
+        val settings = container.settingsRepository.snapshot()
+        val seen = tasks.map { it.id }.toSet()
+        tasks.forEach { task ->
+            val fingerprint = listOf(task.status, task.progress, task.runningChildren, task.completedChildren, task.failedChildren, task.lastActivityAt, task.error).joinToString("|")
+            val previous = taskFingerprints.put(task.id, fingerprint)
+            if (!progressWatchReady || previous == null || previous == fingerprint) return@forEach
+            val subagent = !task.parentId.isNullOrBlank() || task.source.equals("tool", true) || task.mode in setOf("single", "parallel", "pipeline", "debate", "auto")
+            val kind = if (subagent) RuntimeNoticeKind.Subagent else RuntimeNoticeKind.Background
+            val enabled = if (subagent) settings.notifyOnSubagent else settings.notifyOnBackground
+            val viewing = appInForeground && (
+                (subagent && _ui.value.destination == AppDestination.Tasks && _ui.value.selectedTaskId == task.id) ||
+                    (!subagent && _ui.value.destination == AppDestination.Background)
+                )
+            if (!enabled || viewing) return@forEach
+            val terminal = task.status.isTerminalTaskStatus()
+            val title = "LuckyAgent · ${if (subagent) "子代理" else "任务"} · ${task.description.ifBlank { task.id }}"
+            val body = buildString {
+                append(task.status)
+                if (task.progress > 0) append(" · ${(task.progress * 100).toInt().coerceIn(0, 100)}%")
+                if (task.childCount > 0) append(" · ${task.completedChildren}/${task.childCount}")
+                task.error?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it.take(80)) }
+            }
+            container.notifications.notifyTask(kind, task.id, title, body, task.metadata["session_id"].orEmpty(), terminal)
+        }
+        taskFingerprints.keys.retainAll(seen)
+        if (tasks.isNotEmpty() || progressWatchReady) progressWatchReady = true
+    }
+
+    private fun noteBackgroundProgress(tasks: List<AutonomyTaskSummary>) {
+        val settings = container.settingsRepository.snapshot()
+        val seen = tasks.map { it.id }.toSet()
+        val viewing = appInForeground && _ui.value.destination == AppDestination.Background
+        tasks.forEach { task ->
+            val fingerprint = listOf(task.state, task.attempts, task.continuations, task.lastActivityAt, task.error, task.resultPreview, task.verified).joinToString("|")
+            val previous = backgroundFingerprints.put(task.id, fingerprint)
+            if (!progressWatchReady || previous == null || previous == fingerprint || !settings.notifyOnBackground || viewing) return@forEach
+            val terminal = task.state.isTerminalTaskStatus() || task.state.equals("done", true) || task.state.equals("succeeded", true)
+            val title = "LuckyAgent · 后台任务 · ${task.title.ifBlank { task.id }}"
+            val body = listOfNotNull(task.state.ifBlank { null }, task.resultPreview?.take(80), task.error?.take(80)).joinToString(" · ")
+            container.notifications.notifyTask(RuntimeNoticeKind.Background, task.id, title, body, task.sessionId.orEmpty(), terminal)
+        }
+        backgroundFingerprints.keys.retainAll(seen)
+    }
+
+    private fun noteCronProgress(jobs: List<CronJob>) {
+        val settings = container.settingsRepository.snapshot()
+        val seen = jobs.map { it.id }.toSet()
+        jobs.forEach { job ->
+            val fingerprint = listOf(job.lastRun, job.runCount, job.errorCount, job.status, job.lastError).joinToString("|")
+            val previous = cronFingerprints.put(job.id, fingerprint)
+            if (!progressWatchReady || previous == null || previous == fingerprint || !settings.notifyOnCron) return@forEach
+            val sessionId = job.metadata["session_id"].orEmpty()
+            val viewing = appInForeground && _ui.value.destination == AppDestination.Chat && sessionId.isNotBlank() && sessionId == currentSessionId()
+            if (viewing) return@forEach
+            val body = job.lastError?.takeIf { it.isNotBlank() } ?: "已运行 ${job.runCount} 次"
+            container.notifications.notifyCron(sessionId, "${job.id}:${job.lastRun}:${job.runCount}", "${job.name.ifBlank { job.id }} · $body")
+        }
+        cronFingerprints.keys.retainAll(seen)
+    }
+
+    private fun notifyCronMessage(sessionId: String, eventId: String?, content: String) {
+        val settings = container.settingsRepository.snapshot()
+        if (!settings.notifyOnCron) return
+        val viewing = appInForeground && sessionId == currentSessionId() && _ui.value.destination == AppDestination.Chat
+        if (!viewing) container.notifications.notifyCron(sessionId, eventId, content)
+    }
+
+    private fun handleTaskEvent(data: kotlinx.serialization.json.JsonElement?) {
+        val taskId = extractField(data, "task_id").orEmpty()
+        if (taskId.isBlank()) return
+        val type = extractField(data, "type").orEmpty()
+        val status = extractField(data, "status").orEmpty()
+        val message = extractField(data, "message").orEmpty()
+        val description = extractField(data, "description").orEmpty()
+        val sessionId = extractField(data, "session_id").orEmpty()
+        val parentId = extractField(data, "parent_id").orEmpty()
+        val progress = extractField(data, "progress")?.toDoubleOrNull()
+        val terminal = status.isTerminalTaskStatus() || type.endsWith("completed") || type.endsWith("failed") || type.endsWith("cancelled")
+        val subagent = parentId.isNotBlank() || type.startsWith("task.child") || extractField(data, "mode").orEmpty() in setOf("single", "parallel", "pipeline", "debate", "auto")
+        if (_ui.value.destination == AppDestination.Tasks || subagent) {
+            viewModelScope.launch { refreshTasksNow() }
+        }
+        if (_ui.value.destination == AppDestination.Background) {
+            viewModelScope.launch { refreshBackgroundNow() }
+        }
+        val settings = container.settingsRepository.snapshot()
+        val kind = if (subagent) RuntimeNoticeKind.Subagent else RuntimeNoticeKind.Background
+        val enabled = if (subagent) settings.notifyOnSubagent else settings.notifyOnBackground
+        val viewing = appInForeground && (
+            (subagent && _ui.value.destination == AppDestination.Tasks) ||
+                (!subagent && _ui.value.destination == AppDestination.Background)
+            )
+        if (!enabled || viewing) {
+            if (terminal) container.notifications.cancelTask(kind, taskId)
+            return
+        }
+        val titleName = description.ifBlank { taskId }
+        val title = "LuckyAgent · ${if (subagent) "子代理" else "后台任务"} · $titleName"
+        val body = buildString {
+            append(status.ifBlank { type.ifBlank { "progress" } })
+            progress?.let { append(" · ${(it * 100).toInt().coerceIn(0, 100)}%") }
+            if (message.isNotBlank()) append(" · ").append(message.take(80))
+        }
+        container.notifications.notifyTask(kind, taskId, title, body, sessionId, terminal)
     }
 
     private fun ensureReplayedRun(event: WsEvent) {
@@ -1440,8 +1560,7 @@ class AppViewModel(
 
     fun navigate(dest: AppDestination) {
         _ui.update { it.copy(destination = dest) }
-        if (dest != AppDestination.Tasks) stopTaskPolling()
-        if (dest != AppDestination.Background) stopBackgroundPolling()
+        ensureRuntimeWatch()
         when (dest) {
             AppDestination.Tasks -> {
                 startTaskPolling()
@@ -1461,6 +1580,7 @@ class AppViewModel(
 
     fun setAppForeground(value: Boolean) {
         appInForeground = value
+        if (value) ensureRuntimeWatch() else stopRuntimeWatch()
     }
 
     fun checkForUpdates() {
@@ -1527,6 +1647,15 @@ class AppViewModel(
     fun openSessionFromNotification(sessionId: String) {
         navigate(AppDestination.Chat)
         selectSession(sessionId)
+    }
+
+    fun openDestinationFromNotification(destination: String) {
+        when (destination) {
+            "tasks" -> navigate(AppDestination.Tasks)
+            "background" -> navigate(AppDestination.Background)
+            "cron" -> navigate(AppDestination.Cron)
+            "chat" -> navigate(AppDestination.Chat)
+        }
     }
 
     fun quoteMessage(bubble: ChatBubble) {
@@ -1752,6 +1881,42 @@ class AppViewModel(
         val activeId = if (settings.activeRuntimeEndpointId == id) endpoints.first().id else settings.activeRuntimeEndpointId
         updateSettings { it.copy(runtimeEndpoints = endpoints, activeRuntimeEndpointId = activeId) }
         if (settings.activeRuntimeEndpointId == id) refreshSessions()
+    }
+
+    fun setChatBackground(uri: android.net.Uri?) {
+        val context = container.appContext
+        if (uri == null) {
+            com.luckyagent.android.data.settings.AppearanceStore.clear(context, com.luckyagent.android.data.settings.AppearanceStore.BACKGROUND_FILE)
+            updateSettings { it.copy(chatBackgroundFile = "") }
+            return
+        }
+        val saved = com.luckyagent.android.data.settings.AppearanceStore.importImage(
+            context,
+            uri,
+            com.luckyagent.android.data.settings.AppearanceStore.BACKGROUND_FILE,
+            1600,
+        )
+        if (saved) updateSettings { it.copy(chatBackgroundFile = com.luckyagent.android.data.settings.AppearanceStore.BACKGROUND_FILE) }
+    }
+
+    fun setChatBackgroundDim(dim: Int) {
+        updateSettings { it.copy(chatBackgroundDim = dim.coerceIn(0, 70)) }
+    }
+
+    fun setAvatar(uri: android.net.Uri?) {
+        val context = container.appContext
+        if (uri == null) {
+            com.luckyagent.android.data.settings.AppearanceStore.clear(context, com.luckyagent.android.data.settings.AppearanceStore.AVATAR_FILE)
+            updateSettings { it.copy(avatarFile = "") }
+            return
+        }
+        val saved = com.luckyagent.android.data.settings.AppearanceStore.importImage(
+            context,
+            uri,
+            com.luckyagent.android.data.settings.AppearanceStore.AVATAR_FILE,
+            256,
+        )
+        if (saved) updateSettings { it.copy(avatarFile = com.luckyagent.android.data.settings.AppearanceStore.AVATAR_FILE) }
     }
 
     fun updateSettings(transform: (com.luckyagent.android.data.settings.ClientSettings) -> com.luckyagent.android.data.settings.ClientSettings) {
@@ -2049,7 +2214,7 @@ class AppViewModel(
             syncLatestHistory(apiBase, sessionId)
             return
         }
-        val offset = historyStartIndex
+        val offset = olderHistoryOffset(historyMessages.size)
         if (offset <= 0) {
             _ui.update { it.copy(historyLoadingMore = false, historyHasMore = false) }
             return
@@ -2973,6 +3138,7 @@ class AppViewModel(
             .map { it.toTaskNode().summary }
         val merged = addChildCounts((unifiedSummaries + legacySummaries)
             .sortedByDescending { it.lastActivityAt.orEmpty() })
+        noteTaskProgress(merged)
         val errors = listOfNotNull(
             unified.exceptionOrNull()?.message?.let { "tasks: $it" },
             legacy.exceptionOrNull()?.message?.let { "legacy: $it" },
@@ -3000,11 +3166,24 @@ class AppViewModel(
         }
     }
 
+    private fun ensureRuntimeWatch() {
+        if (!appInForeground) return
+        startTaskPolling()
+        startBackgroundPolling()
+        startCronPolling()
+    }
+
+    private fun stopRuntimeWatch() {
+        stopTaskPolling()
+        stopBackgroundPolling()
+        stopCronPolling()
+    }
+
     private fun startTaskPolling() {
         if (taskPollingJob?.isActive == true) return
         taskPollingJob = viewModelScope.launch {
             _ui.update { it.copy(taskPolling = true) }
-            while (isActive && _ui.value.destination == AppDestination.Tasks) {
+            while (isActive && appInForeground) {
                 refreshTasksNow()
                 delay(TASK_POLL_INTERVAL_MS)
             }
@@ -3108,20 +3287,39 @@ class AppViewModel(
     }
 
     fun refreshCron() {
-        viewModelScope.launch {
-            _ui.update { it.copy(cronLoading = true, cronError = null) }
-            val result = container.api.listCronJobs()
-            val payload = result.getOrNull()
-            _ui.update {
-                it.copy(
-                    cronLoading = false,
-                    cronJobs = payload?.jobs ?: it.cronJobs,
-                    cronRunning = payload?.running ?: it.cronRunning,
-                    cronCount = payload?.count ?: it.cronCount,
-                    cronError = result.exceptionOrNull()?.message,
-                )
+        viewModelScope.launch { refreshCronNow() }
+    }
+
+    private suspend fun refreshCronNow() {
+        _ui.update { it.copy(cronLoading = true, cronError = null) }
+        val result = container.api.listCronJobs()
+        val payload = result.getOrNull()
+        val jobs = payload?.jobs ?: _ui.value.cronJobs
+        noteCronProgress(jobs)
+        _ui.update {
+            it.copy(
+                cronLoading = false,
+                cronJobs = jobs,
+                cronRunning = payload?.running ?: it.cronRunning,
+                cronCount = payload?.count ?: it.cronCount,
+                cronError = result.exceptionOrNull()?.message,
+            )
+        }
+    }
+
+    private fun startCronPolling() {
+        if (cronPollingJob?.isActive == true) return
+        cronPollingJob = viewModelScope.launch {
+            while (isActive && appInForeground) {
+                refreshCronNow()
+                delay(BACKGROUND_POLL_INTERVAL_MS)
             }
         }
+    }
+
+    private fun stopCronPolling() {
+        cronPollingJob?.cancel()
+        cronPollingJob = null
     }
 
     private suspend fun refreshBackgroundNow() {
@@ -3136,6 +3334,7 @@ class AppViewModel(
                 backgroundError = result.exceptionOrNull()?.message,
             )
         }
+        noteBackgroundProgress(dashboard?.tasks.orEmpty())
         val selectedId = _ui.value.selectedBackgroundTaskId
         if (selectedId != null && dashboard?.tasks?.any { task -> task.id == selectedId } == true) {
             loadBackgroundTaskNow(selectedId, showLoading = false)
@@ -3146,7 +3345,7 @@ class AppViewModel(
         if (backgroundPollingJob?.isActive == true) return
         backgroundPollingJob = viewModelScope.launch {
             _ui.update { it.copy(backgroundPolling = true) }
-            while (isActive && _ui.value.destination == AppDestination.Background) {
+            while (isActive && appInForeground) {
                 refreshBackgroundNow()
                 delay(BACKGROUND_POLL_INTERVAL_MS)
             }
@@ -3267,6 +3466,91 @@ class AppViewModel(
             }.onFailure { e ->
                 _ui.update { it.copy(activityLine = "rename: ${e.message}") }
             }
+        }
+    }
+
+    fun setSessionPinned(id: String, pinned: Boolean) {
+        if (id.isBlank()) return
+        viewModelScope.launch {
+            container.api.patchSession(id, SessionPatchRequest(pinned = pinned))
+                .onSuccess {
+                    _ui.update { state ->
+                        state.copy(
+                            sessions = state.sessions.map { session ->
+                                if (session.id == id) session.copy(pinned = pinned) else session
+                            },
+                            activityLine = if (pinned) "pinned · $id" else "unpinned · $id",
+                        )
+                    }
+                    refreshSessions()
+                }
+                .onFailure { e ->
+                    _ui.update { it.copy(activityLine = "pin: ${e.message}") }
+                }
+        }
+    }
+
+    fun setSessionProject(id: String, project: String) {
+        if (id.isBlank()) return
+        val trimmed = project.trim()
+        viewModelScope.launch {
+            container.api.patchSession(id, SessionPatchRequest(project = trimmed))
+                .onSuccess {
+                    _ui.update { state ->
+                        state.copy(
+                            sessions = state.sessions.map { session ->
+                                if (session.id == id) session.copy(project = trimmed.ifBlank { null }) else session
+                            },
+                            activityLine = if (trimmed.isEmpty()) "project cleared · $id" else "project · $trimmed",
+                        )
+                    }
+                    refreshSessions()
+                }
+                .onFailure { e ->
+                    _ui.update { it.copy(activityLine = "project: ${e.message}") }
+                }
+        }
+    }
+
+    fun deleteSession(id: String) {
+        if (id.isBlank()) return
+        viewModelScope.launch {
+            container.api.deleteSession(id)
+                .onSuccess {
+                    val apiBase = container.settingsRepository.snapshot().apiBase
+                    runCatching { container.sessionCache.removeSession(apiBase, id) }
+                    val remaining = _ui.value.sessions.filter { it.id != id }
+                    val current = container.settingsRepository.snapshot().sessionId
+                    if (current == id) {
+                        val next = remaining.firstOrNull()?.id.orEmpty()
+                        if (next.isNotEmpty()) {
+                            selectSession(next)
+                        } else {
+                            historyJob?.cancel()
+                            historySessionId = ""
+                            historyMessages = emptyList()
+                            container.settingsRepository.update { it.copy(sessionId = "") }
+                            _ui.update {
+                                it.copy(
+                                    bubbles = emptyList(),
+                                    historyLoading = false,
+                                    historyHasMore = false,
+                                    activityLine = "deleted · $id",
+                                )
+                            }
+                        }
+                    }
+                    _ui.update {
+                        it.copy(
+                            sessions = remaining,
+                            activityLine = "deleted · $id",
+                        )
+                    }
+                    refreshSessions()
+                }
+                .onFailure { e ->
+                    _ui.update { it.copy(activityLine = "delete: ${e.message}") }
+                }
         }
     }
 

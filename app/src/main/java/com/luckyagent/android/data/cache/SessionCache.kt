@@ -19,6 +19,8 @@ data class CachedSessionEntity(
     val endpoint: String,
     val sessionId: String,
     val title: String?,
+    val pinned: Boolean = false,
+    val project: String? = null,
     val messageCount: Int,
     val createdAt: String?,
     val updatedAt: String?,
@@ -50,6 +52,8 @@ data class CachedMessageEntity(
 data class CachedSessionRow(
     val sessionId: String,
     val title: String?,
+    val pinned: Boolean,
+    val project: String?,
     val messageCount: Int,
     val createdAt: String?,
     val updatedAt: String?,
@@ -62,10 +66,10 @@ data class CachedSessionRow(
 interface SessionCacheDao {
     @Query(
         """
-        SELECT sessionId, title, messageCount, createdAt, updatedAt, lastOpenedAt, reachedOldest, startIndex
+        SELECT sessionId, title, pinned, project, messageCount, createdAt, updatedAt, lastOpenedAt, reachedOldest, startIndex
         FROM cached_sessions
         WHERE endpoint = :endpoint
-        ORDER BY updatedAt DESC, lastOpenedAt DESC
+        ORDER BY pinned DESC, updatedAt DESC, lastOpenedAt DESC
         """,
     )
     suspend fun listSessions(endpoint: String): List<CachedSessionRow>
@@ -132,7 +136,7 @@ interface SessionCacheDao {
 
 @Database(
     entities = [CachedSessionEntity::class, CachedMessageEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class SessionCacheDatabase : RoomDatabase() {

@@ -78,6 +78,13 @@ class SessionCacheMergeTest {
     }
 
     @Test
+    fun olderOffsetSkipsShownMessagesNotTheOldestIndex() {
+        // 100 messages, screen shows 60–99. offset=60 would skip 40–59.
+        assertEquals(40, olderHistoryOffset(shownCount = 40))
+        assertEquals(0, olderHistoryOffset(shownCount = 0))
+    }
+
+    @Test
     fun olderPagePrependsWhenItEndsAtTheCacheStart() {
         val cached = page(
             start = 40,

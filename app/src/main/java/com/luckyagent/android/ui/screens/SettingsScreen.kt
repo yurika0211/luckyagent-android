@@ -3,6 +3,9 @@ package com.luckyagent.android.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,9 +13,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -100,6 +103,7 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsLiveCard(state, vm)
+                    SettingsAppearanceCard(s, vm)
                     SettingsNotificationsCard(state, vm)
                     SettingsUpdateCard(state, vm)
                     SettingsAboutCard()
@@ -113,6 +117,7 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 SettingsEndpointCard(s, vm)
                 SettingsSessionCard(s, vm)
                 SettingsLiveCard(state, vm)
+                SettingsAppearanceCard(s, vm)
                 SettingsNotificationsCard(state, vm)
                 SettingsUpdateCard(state, vm)
                 SettingsAboutCard()
@@ -123,27 +128,124 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
 }
 
 @Composable
+private fun SettingsAppearanceCard(s: ClientSettings, vm: AppViewModel) {
+    val context = LocalContext.current
+    val backgroundPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> if (uri != null) vm.setChatBackground(uri) }
+    val avatarPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> if (uri != null) vm.setAvatar(uri) }
+    val background = s.chatBackgroundFile.takeIf { it.isNotBlank() }?.let {
+        com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
+    }?.takeIf { it.exists() }
+    val avatar = s.avatarFile.takeIf { it.isNotBlank() }?.let {
+        com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
+    }?.takeIf { it.exists() }
+    CloverCard {
+        Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("只保存在这台手机上，不会上传。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            AppearancePreview(background, avatar)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(if (background != null) "聊天背景已设置" else "聊天背景使用默认浅色", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+                Text(if (avatar != null) "右上角使用自定义头像" else "右上角使用默认图标", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                backgroundPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }) { Text("选择背景") }
+            if (background != null) TextButton(onClick = { vm.setChatBackground(null) }) { Text("恢复默认") }
+        }
+        if (background != null) {
+            Text("遮罩 ${s.chatBackgroundDim}", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+            androidx.compose.material3.Slider(
+                value = s.chatBackgroundDim.toFloat(),
+                onValueChange = { vm.setChatBackgroundDim(it.toInt()) },
+                valueRange = 0f..70f,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                avatarPicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }) { Text("选择头像") }
+            if (avatar != null) TextButton(onClick = { vm.setAvatar(null) }) { Text("恢复默认") }
+        }
+    }
+}
+
+@Composable
+private fun AppearancePreview(background: java.io.File?, avatar: java.io.File?) {
+    val context = LocalContext.current
+    Box(
+        Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)).background(CloverBg),
+        contentAlignment = Alignment.TopEnd,
+    ) {
+        if (background != null) {
+            coil.compose.AsyncImage(
+                model = coil.request.ImageRequest.Builder(context).data(background).build(),
+                contentDescription = null,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Box(Modifier.padding(6.dp).size(22.dp).clip(CircleShape).background(CloverBg)) {
+            if (avatar != null) {
+                coil.compose.AsyncImage(
+                    model = coil.request.ImageRequest.Builder(context).data(avatar).build(),
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SettingsNotificationsCard(state: AppUiState, vm: AppViewModel) {
     val context = LocalContext.current
     val permissionMissing = android.os.Build.VERSION.SDK_INT >= 33 &&
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
     CloverCard {
-        Text("Notifications", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Notify when a response is complete", style = MaterialTheme.typography.bodyMedium)
-                Text("Sends one local notification for final results while you are away from the current chat.", color = CloverText2, style = MaterialTheme.typography.bodySmall)
-            }
-            Switch(
-                checked = state.settings.notifyOnChatCompleted,
-                onCheckedChange = { enabled ->
-                    vm.updateSettings { it.copy(notifyOnChatCompleted = enabled) }
-                    if (enabled && android.os.Build.VERSION.SDK_INT >= 33 && context is Activity) {
-                        ActivityCompat.requestPermissions(context, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
-                    }
-                },
-            )
-        }
+        Text("通知", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        NotificationToggle(
+            title = "对话完成",
+            body = "一轮对话出最终结果时通知。正在看这个会话的聊天页时不发。",
+            checked = state.settings.notifyOnChatCompleted,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnChatCompleted = enabled) }
+                requestNoticePermission(context, enabled)
+            },
+        )
+        NotificationToggle(
+            title = "定时消息",
+            body = "定时任务写进会话，或上次运行状态变化时通知。",
+            checked = state.settings.notifyOnCron,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnCron = enabled) }
+                requestNoticePermission(context, enabled)
+            },
+        )
+        NotificationToggle(
+            title = "子代理进度",
+            body = "子任务状态、进度或子任务数量变化时通知。正在看该任务时不发。",
+            checked = state.settings.notifyOnSubagent,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnSubagent = enabled) }
+                requestNoticePermission(context, enabled)
+            },
+        )
+        NotificationToggle(
+            title = "后台任务",
+            body = "后台任务和自主任务有进度变化时通知。正在看后台页时不发。",
+            checked = state.settings.notifyOnBackground,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnBackground = enabled) }
+                requestNoticePermission(context, enabled)
+            },
+        )
         if (permissionMissing) {
             Text("Android notification permission is off.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             TextButton(
@@ -152,6 +254,28 @@ private fun SettingsNotificationsCard(state: AppUiState, vm: AppViewModel) {
                 },
             ) { Text("Allow notifications") }
         }
+    }
+}
+
+@Composable
+private fun NotificationToggle(
+    title: String,
+    body: String,
+    checked: Boolean,
+    onChecked: (Boolean) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(body, color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = checked, onCheckedChange = onChecked)
+    }
+}
+
+private fun requestNoticePermission(context: android.content.Context, enabled: Boolean) {
+    if (enabled && android.os.Build.VERSION.SDK_INT >= 33 && context is Activity) {
+        ActivityCompat.requestPermissions(context, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
     }
 }
 

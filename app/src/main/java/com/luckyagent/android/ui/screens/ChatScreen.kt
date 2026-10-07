@@ -56,6 +56,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,6 +74,8 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Check
@@ -376,6 +379,10 @@ fun ChatScreen(
     val sessionDrawerWidth = 320.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var projectTarget by remember { mutableStateOf<RuntimeSession?>(null) }
+    var projectText by remember { mutableStateOf("") }
+    var deleteTarget by remember { mutableStateOf<RuntimeSession?>(null) }
+    var actionSession by remember { mutableStateOf<RuntimeSession?>(null) }
     var compactTarget by remember { mutableStateOf<RuntimeSession?>(null) }
 
     LaunchedEffect(isRecordingVoice, recordingStartedAtMs) {
@@ -433,6 +440,12 @@ fun ChatScreen(
                     renameTarget = session
                     renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
                 },
+                onProject = { session ->
+                    projectTarget = session
+                    projectText = session.project.orEmpty()
+                },
+                onPin = { session -> vm.setSessionPinned(session.id, !session.pinned) },
+                onLongPress = { session -> actionSession = session },
                 onRefresh = vm::refreshSessions,
                 onCompact = { session ->
                     compactTarget = session
@@ -489,6 +502,7 @@ fun ChatScreen(
         } else {
             ModalNavigationDrawer(
                 drawerState = drawerState,
+                gesturesEnabled = false,
                 drawerContent = {
                     ModalDrawerSheet(
                         drawerContainerColor = CloverBgSide,
@@ -561,6 +575,87 @@ fun ChatScreen(
             },
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    projectTarget?.let { session ->
+        val knownProjects = state.sessions.mapNotNull { it.project?.trim()?.takeIf { name -> name.isNotEmpty() } }.distinct()
+        AlertDialog(
+            onDismissRequest = { projectTarget = null },
+            title = { Text("项目分类") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = projectText,
+                        onValueChange = { projectText = it },
+                        singleLine = true,
+                        label = { Text("项目名") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (knownProjects.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        knownProjects.take(8).forEach { name ->
+                            TextButton(onClick = { projectText = name }) { Text(name) }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.setSessionProject(session.id, projectText)
+                        projectTarget = null
+                    },
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        vm.setSessionProject(session.id, "")
+                        projectTarget = null
+                    },
+                ) { Text("清除") }
+            },
+        )
+    }
+
+    deleteTarget?.let { session ->
+        val title = session.title?.takeIf { it.isNotBlank() } ?: session.id
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除会话") },
+            text = { Text("删除「$title」后，服务端记录和本地缓存都会去掉。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.deleteSession(session.id)
+                        deleteTarget = null
+                    },
+                ) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            },
+        )
+    }
+
+    actionSession?.let { session ->
+        val title = session.title?.takeIf { it.isNotBlank() } ?: session.id
+        AlertDialog(
+            onDismissRequest = { actionSession = null },
+            title = { Text(title) },
+            text = { Text("长按会话后可以删除。删除前还会再确认一次。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = session
+                        actionSession = null
+                    },
+                ) { Text("删除会话") }
+            },
+            dismissButton = {
+                TextButton(onClick = { actionSession = null }) { Text("取消") }
             },
         )
     }
@@ -710,6 +805,7 @@ private fun ChatConversation(
         }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            ChatBackground(state.settings)
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -922,12 +1018,49 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
             }
             if (openNavigation != null) {
                 IconButton(onClick = openNavigation) {
-                    Icon(Icons.Outlined.AccountCircle, contentDescription = "Profile and navigation", tint = CloverText2)
+                    ProfileAvatar(state.settings.avatarFile)
                 }
             }
         }
         HorizontalDivider(color = CloverLine.copy(alpha = .55f))
     }
+}
+
+@Composable
+private fun ChatBackground(settings: com.luckyagent.android.data.settings.ClientSettings) {
+    val context = LocalContext.current
+    val file = settings.chatBackgroundFile.takeIf { it.isNotBlank() }?.let {
+        com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
+    }?.takeIf { it.exists() }
+    if (file == null) {
+        Box(Modifier.fillMaxSize().background(CloverBg))
+        return
+    }
+    AsyncImage(
+        model = ImageRequest.Builder(context).data(file).crossfade(true).build(),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize(),
+    )
+    Box(Modifier.fillMaxSize().background(CloverBg.copy(alpha = settings.chatBackgroundDim.coerceIn(0, 70) / 100f)))
+}
+
+@Composable
+private fun ProfileAvatar(fileName: String) {
+    val context = LocalContext.current
+    val file = fileName.takeIf { it.isNotBlank() }?.let {
+        com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
+    }?.takeIf { it.exists() }
+    if (file == null) {
+        Icon(Icons.Outlined.AccountCircle, contentDescription = "Profile and navigation", tint = CloverText2)
+        return
+    }
+    AsyncImage(
+        model = ImageRequest.Builder(context).data(file).crossfade(true).build(),
+        contentDescription = "Profile and navigation",
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.size(28.dp).clip(CircleShape),
+    )
 }
 
 @Composable
@@ -1666,6 +1799,19 @@ private fun ComposerBar(
             }
         }
         var showLuckyCommands by rememberSaveable { mutableStateOf(false) }
+        if (state.outboundQueue.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                state.outboundQueue.forEach { item ->
+                    OutboundQueueChip(item = item, onRetry = { vm.retryOutboundMessage(item.id) })
+                }
+            }
+        }
         if (activityWorking) {
             Row(
                 Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
@@ -3107,6 +3253,9 @@ private fun SessionDrawer(
     onCreate: () -> Unit,
     onQueryChange: (String) -> Unit,
     onRename: (RuntimeSession) -> Unit,
+    onProject: (RuntimeSession) -> Unit = {},
+    onPin: (RuntimeSession) -> Unit = {},
+    onLongPress: (RuntimeSession) -> Unit = {},
     onRefresh: () -> Unit,
     onCompact: (RuntimeSession) -> Unit = {},
     showClose: Boolean,
@@ -3279,84 +3428,167 @@ private fun SessionDrawer(
                             )
                         }
                     }
-                    items(sessions, key = { it.id }) { session ->
-                        val selected = session.id == state.settings.sessionId
-                        val working = session.id in state.workingSessionIds
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(if (selected) CloverUserBubble else CloverSurface)
-                                .border(
-                                    1.dp,
-                                    if (selected) CloverAccent else if (working) CloverAccent.copy(alpha = 0.45f) else CloverLine,
-                                    RoundedCornerShape(12.dp),
-                                )
-                                .clickable { onSelect(session.id) }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        session.title?.takeIf { it.isNotBlank() } ?: session.id,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    if (working) {
-                                        Spacer(Modifier.width(6.dp))
-                                        SessionWorkingBadge()
-                                    }
-                                }
-                                Text(
-                                    session.id,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = CloverText3,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                (session.updatedAt ?: session.createdAt)?.let { timestamp ->
-                                    Text(
-                                        buildString {
-                                            append("活跃 ")
-                                            append(formatMessageTime(timestamp))
-                                            session.messageCount?.let { append(" · ${it} 条消息") }
-                                        },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = CloverText3,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
-                            IconButton(
-                                onClick = { onCompact(session) },
-                                modifier = Modifier.size(32.dp),
-                            ) {
-                                Icon(
-                                    Icons.Outlined.Compress,
-                                    contentDescription = "压缩上下文",
-                                    tint = CloverText3,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }
-                            IconButton(
-                                onClick = { onRename(session) },
-                                modifier = Modifier.size(32.dp),
-                            ) {
-                                Icon(
-                                    Icons.Outlined.Edit,
-                                    contentDescription = "Rename",
-                                    tint = CloverText2,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }
+                    sessionGroups(sessions).forEach { group ->
+                        item(key = "group-${group.name}") {
+                            Text(
+                                group.name,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = CloverText3,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            )
+                        }
+                        items(group.sessions, key = { it.id }) { session ->
+                            SessionDrawerRow(
+                                session = session,
+                                selected = session.id == state.settings.sessionId,
+                                working = session.id in state.workingSessionIds,
+                                onSelect = { onSelect(session.id) },
+                                onRename = { onRename(session) },
+                                onProject = { onProject(session) },
+                                onPin = { onPin(session) },
+                                onCompact = { onCompact(session) },
+                                onLongPress = { onLongPress(session) },
+                            )
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+private data class SessionGroup(val name: String, val sessions: List<RuntimeSession>)
+
+private fun sessionGroups(sessions: List<RuntimeSession>): List<SessionGroup> {
+    val pinned = sessions.filter { it.pinned }
+    val rest = sessions.filterNot { it.pinned }
+    val groups = mutableListOf<SessionGroup>()
+    if (pinned.isNotEmpty()) groups += SessionGroup("置顶", pinned)
+    val named = rest
+        .groupBy { it.project?.trim().orEmpty() }
+        .toSortedMap(compareBy { if (it.isEmpty()) "\uFFFF" else it.lowercase() })
+    named.forEach { (project, rows) ->
+        groups += SessionGroup(project.ifBlank { "未分类" }, rows)
+    }
+    return groups
+}
+
+@Composable
+private fun SessionDrawerRow(
+    session: RuntimeSession,
+    selected: Boolean,
+    working: Boolean,
+    onSelect: () -> Unit,
+    onRename: () -> Unit,
+    onProject: () -> Unit,
+    onPin: () -> Unit,
+    onCompact: () -> Unit,
+    onLongPress: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) CloverUserBubble else CloverSurface)
+            .border(
+                1.dp,
+                if (selected) CloverAccent else if (working) CloverAccent.copy(alpha = 0.45f) else CloverLine,
+                RoundedCornerShape(12.dp),
+            )
+            .combinedClickable(onClick = onSelect, onLongClick = onLongPress)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (session.pinned) {
+                    Icon(
+                        Icons.Outlined.PushPin,
+                        contentDescription = "已置顶",
+                        tint = CloverAccent,
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .size(14.dp),
+                    )
+                }
+                Text(
+                    session.title?.takeIf { it.isNotBlank() } ?: session.id,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (working) {
+                    Spacer(Modifier.width(6.dp))
+                    SessionWorkingBadge()
+                }
+            }
+            Text(
+                session.id,
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            (session.updatedAt ?: session.createdAt)?.let { timestamp ->
+                Text(
+                    buildString {
+                        append("活跃 ")
+                        append(formatMessageTime(timestamp))
+                        session.messageCount?.let { append(" · ${it} 条消息") }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Box {
+            var menuOpen by remember { mutableStateOf(false) }
+            IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Outlined.Edit,
+                    contentDescription = "管理会话",
+                    tint = CloverText2,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text(if (session.pinned) "取消置顶" else "置顶") },
+                    onClick = {
+                        menuOpen = false
+                        onPin()
+                    },
+                    leadingIcon = { Icon(Icons.Outlined.PushPin, contentDescription = null) },
+                )
+                DropdownMenuItem(
+                    text = { Text("项目分类") },
+                    onClick = {
+                        menuOpen = false
+                        onProject()
+                    },
+                    leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
+                )
+                DropdownMenuItem(
+                    text = { Text("修改名称") },
+                    onClick = {
+                        menuOpen = false
+                        onRename()
+                    },
+                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                )
+                DropdownMenuItem(
+                    text = { Text("压缩上下文") },
+                    onClick = {
+                        menuOpen = false
+                        onCompact()
+                    },
+                    leadingIcon = { Icon(Icons.Outlined.Compress, contentDescription = null) },
+                )
             }
         }
     }
