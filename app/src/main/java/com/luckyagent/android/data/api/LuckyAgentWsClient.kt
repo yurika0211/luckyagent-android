@@ -247,7 +247,7 @@ class LuckyAgentWsClient(
                         if (isCurrent(connection)) {
                             when (env.type) {
                                 "stream_chunk", "assistant_delta", "delta", "chunk",
-                                "tool_call", "tool", "running", "status", "reasoning",
+                                "tool_call", "tool", "running", "status", "reasoning", "approval",
                                 -> {
                                     val stateHint = (env.data as? kotlinx.serialization.json.JsonObject)
                                         ?.get("state")
@@ -349,6 +349,27 @@ class LuckyAgentWsClient(
         }
         if (trackLease && isCurrent(connection)) _state.value = SocketState.Running
         return WsChatHandle(connection.id, connection.config.sessionId, outboundId, ownsLease = trackLease)
+    }
+
+    fun sendApprovalResponse(sessionId: String, requestId: String, provider: String, decision: String, input: String = ""): Boolean {
+        val connection = connectionFor(sessionId) ?: return false
+        val payload = json.encodeToString(
+            ApprovalResponseOutbound.serializer(),
+            ApprovalResponseOutbound(
+                id = UUID.randomUUID().toString(),
+                sessionId = connection.config.sessionId,
+                data = ApprovalResponseOutboundData(
+                    requestId = requestId,
+                    provider = provider.ifBlank { "runtime" },
+                    decision = decision,
+                    input = input,
+                ),
+            ),
+        )
+        synchronized(connection) {
+            val ws = connection.socketRef.get() ?: return false
+            return ws.send(payload)
+        }
     }
 
     fun sendLucky(sessionId: String, action: String): Boolean {

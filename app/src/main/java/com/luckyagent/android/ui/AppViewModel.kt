@@ -37,6 +37,7 @@ import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.ContextInspectResponse
 import com.luckyagent.android.data.api.TokenUsage
+import com.luckyagent.android.data.api.ApprovalOption
 import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.LuckyAction
 import com.luckyagent.android.data.api.LuckyCommand
@@ -82,6 +83,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
@@ -365,12 +368,54 @@ class AppViewModel(
         loadModels()
     }
 
+    private fun handleApprovalEvent(data: kotlinx.serialization.json.JsonElement?) {
+        val obj = data as? kotlinx.serialization.json.JsonObject ?: return
+        fun text(key: String): String? = (obj[key] as? kotlinx.serialization.json.JsonPrimitive)
+            ?.content
+            ?.takeIf { it.isNotBlank() }
+        val id = text("request_id") ?: return
+        val kind = text("kind") ?: "approval"
+        val prompt = text("prompt") ?: text("reason") ?: text("summary")
+        val tool = text("tool")
+        val options = if (kind.equals("input", ignoreCase = true)) {
+            listOf(
+                ApprovalOption(id = "submit", label = "提交", kind = "submit"),
+                ApprovalOption(id = "cancel", label = "取消", kind = "cancel"),
+            )
+        } else {
+            listOf(
+                ApprovalOption(id = "allow", label = "允许", kind = "allow_once"),
+                ApprovalOption(id = "deny", label = "拒绝", kind = "deny"),
+            )
+        }
+        val approval = PendingApproval(
+            provider = text("provider") ?: "runtime",
+            id = id,
+            method = kind,
+            sessionId = text("session_id") ?: currentSessionId(),
+            reason = prompt,
+            summary = text("summary") ?: prompt,
+            params = buildJsonObject {
+                prompt?.let { put("prompt", it) }
+                tool?.let { put("tool", it) }
+                put("kind", kind)
+            },
+            options = options,
+        )
+        _ui.update { state ->
+            state.copy(
+                pendingApprovals = listOf(approval) + state.pendingApprovals.filterNot { it.id == id },
+                approvalsError = null,
+                activityLine = if (kind.equals("input", ignoreCase = true)) "需要你补充信息" else "需要审批",
+            )
+        }
+    }
+
     private fun startApprovalPolling() {
         approvalPollingJob?.cancel()
         approvalPollingJob = viewModelScope.launch {
             while (isActive) {
-                val shouldPoll = activeRuns.isNotEmpty() || _ui.value.pendingApprovals.isNotEmpty()
-                if (shouldPoll) refreshApprovalsInternal()
+                refreshApprovalsInternal()
                 delay(1500)
             }
         }
@@ -405,14 +450,27 @@ class AppViewModel(
 
     fun resolveApproval(approval: PendingApproval, decision: String, input: String = "") {
         viewModelScope.launch {
-            _ui.update { it.copy(approvalsError = null) }
+            _ui.update { it.copy(approvalsError = null, pendingApprovals = it.pendingApprovals.filterNot { item -> item.id == approval.id }) }
+            val sent = container.wsClient.sendApprovalResponse(
+                sessionId = approval.sessionId?.takeIf { it.isNotBlank() } ?: currentSessionId(),
+                requestId = approval.id,
+                provider = approval.provider,
+                decision = decision,
+                input = input,
+            )
+            if (sent) {
+                refreshApprovalsInternal()
+                return@launch
+            }
             container.api.resolveApproval(approval, decision, input)
-                .onSuccess {
-                    _ui.update { it.copy(pendingApprovals = it.pendingApprovals.filterNot { item -> item.id == approval.id }) }
-                    refreshApprovalsInternal()
-                }
+                .onSuccess { refreshApprovalsInternal() }
                 .onFailure { error ->
-                    _ui.update { it.copy(approvalsError = error.message ?: "审批处理失败") }
+                    _ui.update {
+                        it.copy(
+                            pendingApprovals = listOf(approval) + it.pendingApprovals.filterNot { item -> item.id == approval.id },
+                            approvalsError = error.message ?: "审批处理失败",
+                        )
+                    }
                 }
         }
     }
@@ -458,6 +516,8 @@ class AppViewModel(
                     }
                     "tool_call", "tool" -> if (foreground) handleToolCall(env.data)
                     "tool_result" -> if (foreground) handleToolResult(env.data)
+                    "approval", "approval_required" -> handleApprovalEvent(env.data)
+                    "approval_resolved" -> refreshApprovals()
                     "cancel", "cancelled" -> {
                         val requestId = eventRequestId(event)
                         if (!completeRun(event)) return@collect
@@ -514,6 +574,7 @@ class AppViewModel(
                         val state = extractField(env.data, "state")
                         val message = extractField(env.data, "message") ?: extractText(env.data)
                         when (state?.lowercase()) {
+                            "approval_resolved" -> refreshApprovals()
                             "thinking" -> if (foreground) updatePhase("thinking", "Thinking through the request")
                             "executing" -> if (foreground) updatePhase("executing", "Working on your request")
                             "lucky" -> if (event.sessionId == currentSessionId() && !message.isNullOrBlank()) {

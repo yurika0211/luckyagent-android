@@ -230,6 +230,22 @@ data class ChatOutbound(
 )
 
 @Serializable
+data class ApprovalResponseOutbound(
+    val type: String = "approval_response",
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
+    val data: ApprovalResponseOutboundData,
+)
+
+@Serializable
+data class ApprovalResponseOutboundData(
+    @SerialName("request_id") val requestId: String,
+    val provider: String = "runtime",
+    val decision: String,
+    val input: String = "",
+)
+
+@Serializable
 data class LuckyOutbound(
     val type: String = "lucky",
     val id: String,

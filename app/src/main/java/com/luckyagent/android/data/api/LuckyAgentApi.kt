@@ -237,7 +237,7 @@ class LuckyAgentApi(
                     ),
                 )
                 val request = Request.Builder()
-                    .url(url("/api/v1/approvals/resolve"))
+                    .url(url("/api/v1/approvals"))
                     .post(payload.toRequestBody(jsonMedia))
                     .build()
                 client.newCall(request).execute().use { resp ->
