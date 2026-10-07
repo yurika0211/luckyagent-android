@@ -391,7 +391,13 @@ class AppViewModel(
         val kind = text("kind") ?: "approval"
         val prompt = text("prompt") ?: text("reason") ?: text("summary")
         val tool = text("tool")
-        val options = if (kind.equals("input", ignoreCase = true)) {
+        val credential = kind.equals("credential", ignoreCase = true)
+        val options = if (credential) {
+            listOf(
+                ApprovalOption(id = "submit", label = "保存凭据", kind = "submit"),
+                ApprovalOption(id = "cancel", label = "取消", kind = "cancel"),
+            )
+        } else if (kind.equals("input", ignoreCase = true)) {
             listOf(
                 ApprovalOption(id = "submit", label = "提交", kind = "submit"),
                 ApprovalOption(id = "cancel", label = "取消", kind = "cancel"),
@@ -413,6 +419,8 @@ class AppViewModel(
                 prompt?.let { put("prompt", it) }
                 tool?.let { put("tool", it) }
                 put("kind", kind)
+                if (credential) put("secure", true)
+                (obj["fields"] as? kotlinx.serialization.json.JsonObject)?.let { put("fields", it) }
             },
             options = options,
         )
@@ -420,7 +428,11 @@ class AppViewModel(
             state.copy(
                 pendingApprovals = listOf(approval) + state.pendingApprovals.filterNot { it.id == id },
                 approvalsError = null,
-                activityLine = if (kind.equals("input", ignoreCase = true)) "需要你补充信息" else "需要审批",
+                activityLine = when {
+                    credential -> "需要填写凭据"
+                    kind.equals("input", ignoreCase = true) -> "需要你补充信息"
+                    else -> "需要审批"
+                },
             )
         }
     }

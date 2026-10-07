@@ -319,10 +319,18 @@ data class ApprovalResolutionRequest(
 )
 
 fun PendingApproval.needsTextInput(): Boolean {
-    if (method.equals("input", ignoreCase = true)) return true
+    if (method.equals("input", ignoreCase = true) || method.equals("credential", ignoreCase = true)) return true
     return options.any { option ->
         option.kind.equals("submit", ignoreCase = true) || option.id.equals("submit", ignoreCase = true)
     }
+}
+
+fun PendingApproval.isSecureCredentialForm(): Boolean {
+    if (method.equals("credential", ignoreCase = true)) return true
+    val obj = params as? JsonObject ?: return false
+    val kind = (obj["kind"] as? JsonPrimitive)?.content
+    val secure = (obj["secure"] as? JsonPrimitive)?.content
+    return kind.equals("credential", ignoreCase = true) || secure.equals("true", ignoreCase = true)
 }
 
 fun PendingApproval.inputPrompt(): String {

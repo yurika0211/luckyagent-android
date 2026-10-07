@@ -129,6 +129,9 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
@@ -147,6 +150,7 @@ import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.inputPrompt
+import com.luckyagent.android.data.api.isSecureCredentialForm
 import com.luckyagent.android.data.api.needsTextInput
 import com.luckyagent.android.data.api.FunctionalModelKinds
 import com.luckyagent.android.data.api.ModelRef
@@ -1379,6 +1383,7 @@ private fun ApprovalCard(
     onDecision: (PendingApproval, String, String) -> Unit,
 ) {
     val needsInput = approval.needsTextInput()
+    val secure = approval.isSecureCredentialForm()
     var draft by rememberSaveable(approval.id) { mutableStateOf("") }
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1392,7 +1397,11 @@ private fun ApprovalCard(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (needsInput) "需要你补充信息" else "需要审批",
+                    when {
+                        secure -> "填写凭据"
+                        needsInput -> "需要你补充信息"
+                        else -> "需要审批"
+                    },
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
@@ -1420,11 +1429,24 @@ private fun ApprovalCard(
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp),
-                    label = { Text("填写内容") },
-                    placeholder = { Text("输入后点提交") },
-                    minLines = 3,
+                    modifier = Modifier.fillMaxWidth().then(if (secure) Modifier else Modifier.heightIn(min = 88.dp)),
+                    label = { Text(if (secure) "凭据" else "填写内容") },
+                    placeholder = { Text(if (secure) "输入后只保存在本机加密库" else "输入后点提交") },
+                    visualTransformation = if (secure) PasswordVisualTransformation() else VisualTransformation.None,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (secure) KeyboardType.Password else KeyboardType.Text,
+                        imeAction = if (secure) ImeAction.Done else ImeAction.Default,
+                    ),
+                    singleLine = secure,
+                    minLines = if (secure) 1 else 3,
                 )
+                if (secure) {
+                    Text(
+                        "明文不会发给模型，也不会出现在聊天记录里。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CloverText2,
+                    )
+                }
             }
             if (approval.options.isEmpty()) {
                 Text("没有可用的审批选项", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
