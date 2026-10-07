@@ -595,6 +595,7 @@ private fun ChatConversation(
             state = state,
             onMenu = onOpenSessions,
             showMenu = showSessionMenu,
+            onReconnect = vm::connectSocket,
         )
 
         val listState = rememberLazyListState()
@@ -789,7 +790,7 @@ private fun ChatConversation(
 }
 
 @Composable
-private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean) {
+private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean, onReconnect: () -> Unit = {}) {
     val openNavigation = LocalOpenNavigationDrawer.current
     val live = state.socketState == SocketState.Connected || state.socketState == SocketState.Running
     val connectionLabel = if (live) "live" else state.socketState.name.lowercase()
@@ -844,9 +845,21 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
+                modifier = if (!live) {
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(onClick = onReconnect)
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                } else {
+                    Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                },
             ) {
                 Box(Modifier.size(6.dp).clip(CircleShape).background(connectionColor))
-                Text(connectionLabel, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                Text(
+                    if (!live) "点击重连" else connectionLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (!live) CloverError else CloverText3,
+                )
             }
             if (openNavigation != null) {
                 IconButton(onClick = openNavigation) {

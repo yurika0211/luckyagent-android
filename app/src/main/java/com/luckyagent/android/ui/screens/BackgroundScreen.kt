@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -181,6 +182,15 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
                     "No background tasks match the current filters."
                 },
                 modifier = Modifier.padding(16.dp),
+                icon = {
+                    Icon(
+                        Icons.Outlined.HourglassEmpty,
+                        contentDescription = null,
+                        tint = CloverText3,
+                        modifier = Modifier.size(48.dp),
+                    )
+                },
+                centered = state.backgroundTasks.isEmpty(),
             )
         }
         else -> {

@@ -69,7 +69,9 @@ import com.luckyagent.android.ui.screens.TrajectoryScreen
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverLeaf
 import com.luckyagent.android.ui.theme.CloverText2
+import com.luckyagent.android.ui.theme.CloverError
 import com.luckyagent.android.ui.theme.CloverText3
+import com.luckyagent.android.ui.theme.CloverWarning
 import kotlinx.coroutines.launch
 
 internal val AppNavRailWidth = 88.dp
@@ -100,6 +102,39 @@ private val navGroups = listOf(
     "RUNTIME" to navItems.slice(1 until navItems.lastIndex),
     "SYSTEM" to navItems.takeLast(1),
 )
+
+/** Returns a badge color when a page has a notable status, or null when things look normal. */
+private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (dest) {
+    AppDestination.Chat -> when {
+        state.socketState == com.luckyagent.android.data.api.SocketState.Idle ||
+            state.socketState == com.luckyagent.android.data.api.SocketState.Disconnected -> CloverError
+        state.socketState == com.luckyagent.android.data.api.SocketState.Reconnecting -> CloverWarning
+        else -> null
+    }
+    AppDestination.Gateways -> when {
+        state.gatewaysError != null -> CloverError
+        state.gateways.isNotEmpty() && state.gateways.none { it.running } -> CloverWarning
+        else -> null
+    }
+    AppDestination.Tasks -> when {
+        state.tasksError != null -> CloverError
+        state.tasks.any { it.status.equals("failed", ignoreCase = true) } -> CloverWarning
+        else -> null
+    }
+    AppDestination.Background -> when {
+        state.backgroundError != null -> CloverError
+        else -> null
+    }
+    AppDestination.Cron -> when {
+        state.cronError != null -> CloverError
+        else -> null
+    }
+    AppDestination.Settings -> when {
+        state.healthOk == false -> CloverError
+        else -> null
+    }
+    else -> null
+}
 
 @Composable
 fun LuckyAgentAppRoot(vm: AppViewModel) {
@@ -311,6 +346,7 @@ private fun NavigationDrawerContent(
             )
             groupItems.forEach { item ->
                 val selected = state.destination == item.dest
+                val badge = badgeColor(item.dest, state)
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -327,10 +363,18 @@ private fun NavigationDrawerContent(
                     )
                     Text(
                         item.label,
-                        modifier = Modifier.padding(start = 14.dp),
+                        modifier = Modifier.padding(start = 14.dp).weight(1f),
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     )
+                    if (badge != null) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(badge),
+                        )
+                    }
                 }
             }
         }

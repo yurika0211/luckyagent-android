@@ -161,16 +161,41 @@ fun MetaChip(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun EmptyState(title: String, body: String, modifier: Modifier = Modifier, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
+fun EmptyState(
+    title: String,
+    body: String,
+    modifier: Modifier = Modifier,
+    icon: @Composable (() -> Unit)? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    centered: Boolean = false,
+) {
+    val base = modifier
+        .fillMaxWidth()
+        .padding(horizontal = 8.dp, vertical = 24.dp)
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 24.dp),
+        modifier = if (centered) base.fillMaxSize() else base,
         verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
     ) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        Text(body, style = MaterialTheme.typography.bodyMedium, color = CloverText2)
+        if (centered) androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+        if (icon != null) {
+            icon()
+            androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+        }
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            textAlign = if (centered) androidx.compose.ui.text.style.TextAlign.Center else null,
+        )
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = CloverText2,
+            textAlign = if (centered) androidx.compose.ui.text.style.TextAlign.Center else null,
+        )
         if (actionLabel != null && onAction != null) TextButton(onClick = onAction) { Text(actionLabel) }
+        if (centered) androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
     }
 }
 

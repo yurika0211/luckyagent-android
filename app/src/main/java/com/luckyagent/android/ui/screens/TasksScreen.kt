@@ -55,9 +55,11 @@ import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.TaskFilter
 import com.luckyagent.android.ui.components.CloverCard
+import androidx.compose.material.icons.outlined.AssignmentLate
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.StatusChip
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
@@ -185,6 +187,15 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
                     "No tasks match the current filters."
                 },
                 modifier = Modifier.padding(16.dp),
+                icon = {
+                    Icon(
+                        Icons.Outlined.AssignmentLate,
+                        contentDescription = null,
+                        tint = CloverText3,
+                        modifier = Modifier.size(48.dp),
+                    )
+                },
+                centered = state.tasks.isEmpty(),
             )
         }
         else -> {
@@ -221,7 +232,7 @@ private fun TaskSummaryCard(task: TaskSummary, onClick: () -> Unit) {
                 )
                 Text(task.id, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            MetaChip(task.status.ifBlank { "unknown" })
+            StatusChip(task.status.ifBlank { "unknown" })
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MetaChip(task.mode.ifBlank { "single" })
@@ -266,7 +277,7 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                         Text(summary.description, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                         Text(summary.id, style = MaterialTheme.typography.labelSmall, color = CloverText3)
                     }
-                    MetaChip(summary.status.ifBlank { "unknown" })
+                    StatusChip(summary.status.ifBlank { "unknown" })
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     MetaChip(summary.mode)

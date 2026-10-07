@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +39,7 @@ import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.StatusChip
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverError
@@ -82,8 +84,17 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
                     title = "No gateways reported",
                     body = "lh serve did not return gateway entries. Confirm msg-gateway is configured on the host.",
                     modifier = Modifier.padding(16.dp),
+                    icon = {
+                        Icon(
+                            Icons.Outlined.LinkOff,
+                            contentDescription = null,
+                            tint = CloverText3,
+                            modifier = Modifier.size(48.dp),
+                        )
+                    },
                     actionLabel = "打开 Settings",
                     onAction = { vm.navigate(AppDestination.Settings) },
+                    centered = true,
                 )
             }
             else -> {
@@ -128,7 +139,7 @@ private fun GatewayCard(gw: GatewayStatus) {
                     Text(sub, color = CloverText2, style = MaterialTheme.typography.bodyMedium)
                 }
             }
-            MetaChip(if (gw.running) "running" else "stopped")
+            StatusChip(if (gw.running) "running" else "stopped")
         }
         gw.stats?.let { stats ->
             HorizontalDivider(color = CloverLine.copy(alpha = .75f))

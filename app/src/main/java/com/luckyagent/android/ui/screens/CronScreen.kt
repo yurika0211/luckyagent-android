@@ -26,9 +26,13 @@ import com.luckyagent.android.data.api.CronJob
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.components.CloverCard
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.EventBusy
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
 import com.luckyagent.android.ui.components.MetaChip
+import com.luckyagent.android.ui.components.StatusChip
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverError
@@ -70,6 +74,15 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
                     title = "No cron tasks",
                     body = "Scheduled tasks created by /cron add will appear here.",
                     modifier = Modifier.padding(16.dp),
+                    icon = {
+                        Icon(
+                            Icons.Outlined.EventBusy,
+                            contentDescription = null,
+                            tint = CloverText3,
+                            modifier = Modifier.size(48.dp),
+                        )
+                    },
+                    centered = true,
                 )
             }
             else -> {
@@ -101,7 +114,7 @@ private fun CronJobCard(job: CronJob) {
                     Text(it, color = CloverText2, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
-            MetaChip(job.status.ifBlank { "unknown" })
+            StatusChip(job.status.ifBlank { "unknown" })
         }
         Text("Schedule · ${job.schedule.ifBlank { "—" }}", color = CloverText2)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

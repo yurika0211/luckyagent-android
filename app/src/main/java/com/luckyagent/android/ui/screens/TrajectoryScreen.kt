@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.PlaylistRemove
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -176,6 +177,15 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                     title = "No tool activity yet",
                     body = "Tool calls from this session will show as structured cards once the agent runs tools.",
                     modifier = Modifier.padding(16.dp),
+                    icon = {
+                        Icon(
+                            Icons.Outlined.PlaylistRemove,
+                            contentDescription = null,
+                            tint = CloverText3,
+                            modifier = Modifier.size(48.dp),
+                        )
+                    },
+                    centered = true,
                 )
             }
             !state.trajectoryLoading && records.isEmpty() -> {
