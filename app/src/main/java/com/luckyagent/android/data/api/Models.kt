@@ -61,6 +61,17 @@ data class CompactSessionResult(
 )
 
 @Serializable
+data class CompactTraceRecord(
+    val id: String? = null,
+    val trigger: String? = null,
+    val summary: String? = null,
+    @SerialName("pre_token_estimate") val preTokenEstimate: Int? = null,
+    @SerialName("post_token_estimate") val postTokenEstimate: Int? = null,
+    @SerialName("dropped_messages") val droppedMessages: Int? = null,
+    @SerialName("summary_source") val summarySource: String? = null,
+)
+
+@Serializable
 data class CompactDisplay(
     val title: String? = null,
     val subtitle: String? = null,
@@ -284,7 +295,7 @@ data class PendingApproval(
 
 @Serializable
 data class ApprovalsResponse(
-    val approvals: List<PendingApproval> = emptyList(),
+    val approvals: List<PendingApproval>? = emptyList(),
     val count: Int? = null,
 )
 

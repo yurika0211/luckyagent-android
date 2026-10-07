@@ -35,6 +35,7 @@ import com.luckyagent.android.data.api.AutonomyDashboardResponse
 import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
 import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.ProviderMessage
+import com.luckyagent.android.data.api.CompactTraceRecord
 import com.luckyagent.android.data.api.ContextInspectResponse
 import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.data.api.ApprovalOption
@@ -491,6 +492,14 @@ class AppViewModel(
                     }
                     "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
                         val requestId = eventRequestId(event)
+                        if (requestId == null && event.sessionId == currentSessionId()) {
+                            val piece = extractFullResponse(env.data) ?: extractText(env.data)
+                            if (!piece.isNullOrBlank()) {
+                                pushBubble(ChatBubble(id = env.id ?: "cron-${System.currentTimeMillis()}", role = "assistant", content = piece, createdAt = env.timestamp))
+                                refreshSessions()
+                            }
+                            return@collect
+                        }
                         if (!completeRun(event)) return@collect
                         finishOutboundRequest(event.sessionId, requestId, success = true)
                         val piece = extractFullResponse(env.data) ?: extractText(env.data)
@@ -961,13 +970,17 @@ class AppViewModel(
         val title = _ui.value.sessions.firstOrNull { it.id == id }?.title?.takeIf { it.isNotBlank() } ?: id
         viewModelScope.launch {
             upsertProgress(ChatProgressStep("compact", "正在压缩「$title」", ProgressStatus.Active))
-            _ui.update { it.copy(activityLine = "正在压缩「$title」", snackbarMessage = "正在压缩「$title」") }
+            if (id == currentSessionId()) {
+                pushBubble(ChatBubble(id = "compact-$id", role = "compact", content = "正在压缩", streaming = true))
+            }
+            _ui.update { it.copy(activityLine = "正在压缩「$title」") }
             val result = container.api.compactSession(id, forceLocal = forceLocal)
             result.fold(
                 onSuccess = { body ->
                     val line = compactResultLine(title, body)
                     upsertProgress(ChatProgressStep("compact", line, ProgressStatus.Complete))
-                    _ui.update { it.copy(activityLine = line, snackbarMessage = line, isResponding = false) }
+                    replaceCompactBubble(id, line, streaming = false)
+                    _ui.update { it.copy(activityLine = line, isResponding = false) }
                     if (id == currentSessionId()) {
                         loadHistory(id, reset = true)
                         refreshContextInspect(id)
@@ -977,9 +990,21 @@ class AppViewModel(
                 onFailure = { err ->
                     val line = "压缩失败 · ${err.message ?: "请求失败"}"
                     upsertProgress(ChatProgressStep("compact", line, ProgressStatus.Failed))
-                    _ui.update { it.copy(activityLine = line, snackbarMessage = line, isResponding = false) }
+                    replaceCompactBubble(id, line, streaming = false)
+                    _ui.update { it.copy(activityLine = line, isResponding = false) }
                 },
             )
+        }
+    }
+
+    private fun replaceCompactBubble(sessionId: String, label: String, streaming: Boolean) {
+        if (sessionId != currentSessionId()) return
+        _ui.update { current ->
+            val next = current.bubbles.toMutableList()
+            val index = next.indexOfLast { it.role == "compact" && it.id == "compact-$sessionId" }
+            val bubble = ChatBubble(id = "compact-$sessionId", role = "compact", content = label, streaming = streaming)
+            if (index >= 0) next[index] = bubble else next += bubble
+            current.copy(bubbles = next)
         }
     }
 
@@ -2213,6 +2238,13 @@ class AppViewModel(
                 toolDone = true,
                 attachments = messageAttachments,
             )
+        } else if (role == "system" && looksLikeCompactTrace(base)) {
+            result += ChatBubble(
+                id = "h-$idx-compact",
+                role = "compact",
+                content = compactTraceLabel(base),
+                createdAt = createdAt,
+            )
         } else if (base.isNotBlank() || (result.isEmpty() && toolCalls.isEmpty())) {
             result += ChatBubble(
                 id = "h-$idx-${role.hashCode()}",
@@ -2224,6 +2256,29 @@ class AppViewModel(
             )
         }
         return result
+    }
+
+    private fun looksLikeCompactTrace(content: String): Boolean {
+        val trimmed = content.trim()
+        return trimmed.startsWith("{") &&
+            trimmed.contains("\"summary\"") &&
+            (trimmed.contains("\"trigger\"") || trimmed.contains("compact-"))
+    }
+
+    private fun compactTraceLabel(content: String): String {
+        val parsed = runCatching {
+            Json { ignoreUnknownKeys = true }.decodeFromString(CompactTraceRecord.serializer(), content)
+        }.getOrNull()
+        val pre = parsed?.preTokenEstimate
+        val post = parsed?.postTokenEstimate
+        val dropped = parsed?.droppedMessages
+        val source = parsed?.summarySource?.takeIf { it.isNotBlank() }
+        val parts = buildList {
+            if (pre != null && post != null) add("${TokenFormat.compact(pre)} → ${TokenFormat.compact(post)}")
+            if (dropped != null && dropped > 0) add("去掉 $dropped 条")
+            if (source != null) add(source)
+        }
+        return if (parts.isEmpty()) "已压缩这段会话" else "已压缩 · ${parts.joinToString(" · ")}"
     }
 
     fun connectSocket(force: Boolean = false) {

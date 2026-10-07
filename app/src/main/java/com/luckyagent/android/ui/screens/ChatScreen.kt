@@ -227,7 +227,7 @@ private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
     }
 
     bubbles.forEach { bubble ->
-        if (bubble.role == "reasoning" || bubble.role == "tool" || bubble.toolName != null) {
+        if (bubble.role == "reasoning" || bubble.role == "tool" || bubble.role == "compact" || bubble.toolName != null) {
             steps += bubble
         } else {
             flushSteps()
@@ -1344,6 +1344,8 @@ private fun ProcessTimeline(
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
+                    steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
+                    steps.all { it.role == "compact" } -> "上下文压缩"
                     isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"
                     steps.size == 1 -> "思考过程"
                     else -> "思考过程 · ${steps.size} 步"
@@ -1365,14 +1367,27 @@ private fun ProcessTimeline(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 steps.forEach { step ->
-                    if (step.role == "reasoning") {
-                        ReasoningPart(step, imageHeaders, imageBaseUrl)
-                    } else {
-                        ToolPart(step, imageHeaders, imageBaseUrl, onDownload, onQuote, onCopy)
+                    when {
+                        step.role == "compact" -> CompactProgressRow(step.content)
+                        step.role == "reasoning" -> ReasoningPart(step, imageHeaders, imageBaseUrl)
+                        else -> ToolPart(step, imageHeaders, imageBaseUrl, onDownload, onQuote, onCopy)
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CompactProgressRow(label: String) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText2, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        LinearProgressIndicator(
+            progress = { if (label.startsWith("正在压缩")) 0.45f else 1f },
+            modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(999.dp)),
+            color = CloverAccent,
+            trackColor = CloverLine,
+        )
     }
 }
 
@@ -1650,6 +1665,7 @@ private fun ComposerBar(
                 }
             }
         }
+        var showLuckyCommands by rememberSaveable { mutableStateOf(false) }
         if (activityWorking) {
             Row(
                 Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
@@ -1665,40 +1681,19 @@ private fun ComposerBar(
                 )
             }
         }
-        LuckyCommandRow(
-            active = state.luckyActive,
-            segments = state.luckySegments,
-            attachments = state.luckyAttachments,
-            pending = state.luckyPending,
-            onCommand = { action ->
-                onChange(action)
-                onSend()
-            },
-            onRetry = vm::retryLuckySegment,
-        )
-        if (state.outboundQueue.isNotEmpty()) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 4.dp, bottom = 7.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    "发送队列 · ${state.outboundQueue.size} 条",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CloverText3,
-                )
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    state.outboundQueue.forEach { item ->
-                        OutboundQueueChip(item = item, onRetry = { vm.retryOutboundMessage(item.id) })
-                    }
-                }
-            }
+        if (showLuckyCommands || state.luckyPending.any { it.error != null }) {
+            LuckyCommandRow(
+                active = state.luckyActive,
+                segments = state.luckySegments,
+                attachments = state.luckyAttachments,
+                pending = state.luckyPending,
+                onCommand = { action ->
+                    onChange(action)
+                    onSend()
+                    showLuckyCommands = false
+                },
+                onRetry = vm::retryLuckySegment,
+            )
         }
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -1761,39 +1756,23 @@ private fun ComposerBar(
             )
             Spacer(Modifier.width(2.dp))
             if (chatWorking) {
-                IconButton(
-                    onClick = onSend,
+                SendButton(
                     enabled = hasInput,
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .clip(CircleShape)
-                        .background(if (hasInput) CloverAccent else CloverSurface2),
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Outlined.Send,
-                        contentDescription = if (isStopCommand) "发送 /stop" else "Send and queue",
-                        tint = if (hasInput) MaterialTheme.colorScheme.onPrimary else CloverText3,
-                    )
-                }
+                    contentDescription = if (isStopCommand) "发送 /stop" else "发送，长按打开 Lucky",
+                    onClick = onSend,
+                    onLongClick = { showLuckyCommands = !showLuckyCommands },
+                )
             } else if (state.commandExecuting) {
                 IconButton(onClick = {}, enabled = false, modifier = Modifier.padding(start = 8.dp)) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 }
             } else {
-                IconButton(
-                    onClick = onSend,
+                SendButton(
                     enabled = hasInput,
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .clip(CircleShape)
-                        .background(if (hasInput) CloverAccent else CloverSurface2),
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Outlined.Send,
-                        contentDescription = "Send",
-                        tint = if (hasInput) MaterialTheme.colorScheme.onPrimary else CloverText3,
-                    )
-                }
+                    contentDescription = "发送，长按打开 Lucky",
+                    onClick = onSend,
+                    onLongClick = { showLuckyCommands = !showLuckyCommands },
+                )
             }
         }
         }
@@ -1816,6 +1795,34 @@ private fun ComposerBar(
 }
 
 @Composable
+private fun SendButton(
+    enabled: Boolean,
+    contentDescription: String,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .padding(start = 8.dp)
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(if (enabled) CloverAccent else CloverSurface2)
+            .combinedClickable(
+                enabled = true,
+                onClick = { if (enabled) onClick() },
+                onLongClick = onLongClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.AutoMirrored.Outlined.Send,
+            contentDescription = contentDescription,
+            tint = if (enabled) MaterialTheme.colorScheme.onPrimary else CloverText3,
+        )
+    }
+}
+
+@Composable
 private fun LuckyCommandRow(
     active: Boolean,
     segments: Int,
@@ -1826,10 +1833,7 @@ private fun LuckyCommandRow(
 ) {
     val waiting = pending.count { it.error == null }
     val failed = pending.count { it.error != null }
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(active, failed) {
-        if (active || failed > 0) expanded = true
-    }
+    var expanded by rememberSaveable { mutableStateOf(true) }
     val summary = when {
         failed > 0 -> "Lucky · $failed 段未送进"
         waiting > 0 -> "Lucky · $waiting 段发送中"

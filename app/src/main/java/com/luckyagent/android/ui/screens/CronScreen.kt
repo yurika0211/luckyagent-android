@@ -116,6 +116,15 @@ private fun CronJobCard(job: CronJob) {
             StatusChip(job.status.ifBlank { "unknown" })
         }
         Text("Schedule · ${job.schedule.ifBlank { "—" }}", color = CloverText2)
+        job.metadata["session_id"]?.takeIf { it.isNotBlank() }?.let { sessionId ->
+            val platform = job.metadata["platform"]?.takeIf { it.isNotBlank() } ?: "android"
+            Text(
+                "结果发到会话 · $platform · $sessionId",
+                color = CloverText2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             MetaChip("Runs ${job.runCount}")
             if (job.errorCount > 0) MetaChip("Errors ${job.errorCount}", modifier = Modifier)

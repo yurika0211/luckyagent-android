@@ -219,7 +219,7 @@ class LuckyAgentApi(
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) error("approvals ${resp.code}: $body")
-                json.decodeFromString(ApprovalsResponse.serializer(), body).approvals
+                json.decodeFromString(ApprovalsResponse.serializer(), body).approvals.orEmpty()
             }
         }
     }
