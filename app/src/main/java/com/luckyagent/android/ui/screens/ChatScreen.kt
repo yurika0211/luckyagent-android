@@ -3484,7 +3484,6 @@ private fun sessionGroups(sessions: List<RuntimeSession>): List<SessionGroup> {
 }
 
 @Composable
-@Composable
 private fun SessionGroupHeader(
     name: String,
     count: Int,
