@@ -37,7 +37,7 @@ data class ClientSettings(
     val notifyOnSubagent: Boolean = true,
     val notifyOnBackground: Boolean = true,
     val chatBackgroundFile: String = "",
-    val chatBackgroundDim: Int = 35,
+    val chatBackgroundDim: Int = 12,
     val avatarFile: String = "",
 )
 
@@ -89,7 +89,7 @@ class SettingsRepository(context: Context) {
             notifyOnSubagent = prefs.getBoolean(KEY_NOTIFY_ON_SUBAGENT, true),
             notifyOnBackground = prefs.getBoolean(KEY_NOTIFY_ON_BACKGROUND, true),
             chatBackgroundFile = prefs.getString(KEY_CHAT_BACKGROUND, "") ?: "",
-            chatBackgroundDim = prefs.getInt(KEY_CHAT_BACKGROUND_DIM, 35).coerceIn(0, 70),
+            chatBackgroundDim = prefs.getInt(KEY_CHAT_BACKGROUND_DIM, 12).coerceIn(0, 70),
             avatarFile = prefs.getString(KEY_AVATAR, "") ?: "",
         )
     }

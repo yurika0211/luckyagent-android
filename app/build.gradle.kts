@@ -14,8 +14,8 @@ android {
         applicationId = "com.luckyagent.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 35
-        versionName = "0.1.47"
+        versionCode = 36
+        versionName = "0.1.48"
         buildConfigField("String", "DEFAULT_API_BASE", "\"http://10.0.2.2:9090\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

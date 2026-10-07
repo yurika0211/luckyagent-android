@@ -277,6 +277,7 @@ data class AppUiState(
     val luckyPending: List<LuckyPendingSegment> = emptyList(),
     val snackbarMessage: String? = null,
     val appearanceBusy: Boolean = false,
+    val personaName: String = "",
     val models: List<ModelRef> = emptyList(),
     val activeModels: Map<String, ModelRef> = emptyMap(),
     val modelsLoaded: Boolean = false,
@@ -373,6 +374,7 @@ class AppViewModel(
         ensureRuntimeWatch()
         restoreCachedSession()
         refreshSessions()
+        refreshPersona()
         connectSocket()
         startApprovalPolling()
         // Keep the composer chip useful as soon as the runtime is reachable; this is
@@ -1957,7 +1959,18 @@ class AppViewModel(
             val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 com.luckyagent.android.data.settings.AppearanceStore.importImage(context, uri, fileName, maxEdge)
             }
-            if (ok) updateSettings { apply(it, fileName) }
+            if (ok) {
+            updateSettings { current ->
+                val applied = apply(current, fileName)
+                if (fileName == com.luckyagent.android.data.settings.AppearanceStore.BACKGROUND_FILE &&
+                    current.chatBackgroundFile.isBlank()
+                ) {
+                    applied.copy(chatBackgroundDim = 12)
+                } else {
+                    applied
+                }
+            }
+        }
             _ui.update { it.copy(appearanceBusy = false, snackbarMessage = if (ok) saved else failed) }
         }
     }
@@ -2001,6 +2014,15 @@ class AppViewModel(
                     healthText = result.getOrElse { e -> e.message ?: "health failed" },
                     activityLine = if (result.isSuccess) "health ok" else "health failed",
                 )
+            }
+        }
+    }
+
+    private fun refreshPersona() {
+        viewModelScope.launch {
+            container.api.soul().onSuccess { info ->
+                val name = info.name.trim().ifBlank { personaNameFromPrompt(info.systemPrompt) }
+                if (name.isNotBlank()) _ui.update { it.copy(personaName = name) }
             }
         }
     }
@@ -3689,6 +3711,12 @@ class AppViewModel(
     }
 
     private companion object {
+        fun personaNameFromPrompt(prompt: String): String {
+            val identity = Regex("(?m)^-\\s*Name:\\s*([^\\n（(]+)").find(prompt)?.groupValues?.getOrNull(1)?.trim()
+            if (!identity.isNullOrBlank()) return identity
+            return Regex("\\*\\*([^*\\n（(]+)").find(prompt)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        }
+
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
         val artifactPathPattern = Regex(

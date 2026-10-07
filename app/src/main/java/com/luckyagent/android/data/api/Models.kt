@@ -7,6 +7,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
+data class SoulInfo(
+    val name: String = "",
+    @SerialName("system_prompt") val systemPrompt: String = "",
+)
+
+@Serializable
 data class SessionsResponse(
     val sessions: List<RuntimeSession> = emptyList(),
     val count: Int? = null,

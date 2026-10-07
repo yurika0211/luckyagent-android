@@ -197,6 +197,7 @@ import com.luckyagent.android.data.media.CaptureTarget
 import com.luckyagent.android.data.media.VoiceRecorder
 import android.content.ClipData
 import android.content.ClipboardManager
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -953,14 +954,14 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
     val live = state.socketState == SocketState.Connected || state.socketState == SocketState.Running
     val connectionLabel = if (live) "live" else state.socketState.name.lowercase()
     val connectionColor = if (live) CloverLeaf else CloverError
-    val currentSession = state.sessions.firstOrNull { it.id == state.settings.sessionId }
-    val sessionTitle = currentSession?.title?.takeIf { it.isNotBlank() } ?: "未命名会话"
+    val hasWallpaper = state.settings.chatBackgroundFile.isNotBlank()
+    val personaTitle = state.personaName.ifBlank { "LuckyAgent" }
     Column(
         Modifier
             .fillMaxWidth()
-            .background(CloverBg.copy(alpha = if (state.settings.chatBackgroundFile.isBlank()) 1f else 0.9f)),
+            .background(CloverBg.copy(alpha = if (hasWallpaper) 0.72f else 1f)),
     ) {
-        HorizontalDivider(color = CloverLine.copy(alpha = .55f))
+        if (!hasWallpaper) HorizontalDivider(color = CloverLine.copy(alpha = .55f))
         Row(
             Modifier
                 .fillMaxWidth()
@@ -973,34 +974,14 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
                     Icon(Icons.Outlined.Menu, contentDescription = "Sessions", tint = CloverText2)
                 }
             }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    sessionTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                val sid = state.settings.sessionId
-                Text(
-                    buildString {
-                        if (state.showingOfflineCache) append("离线，显示上次内容")
-                        else if (sid.isBlank()) append("未选择会话")
-                        else {
-                            append(sid.take(18))
-                            if (sid.length > 18) append("…")
-                            (currentSession?.updatedAt ?: currentSession?.createdAt)?.let {
-                                append(" · 活跃 ")
-                                append(formatMessageTime(it))
-                            }
-                        }
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CloverText3,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Text(
+                personaTitle,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -1023,9 +1004,10 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
             ProfileAvatar(
                 fileName = state.settings.avatarFile,
                 onClick = openNavigation,
+                size = 40.dp,
             )
         }
-        HorizontalDivider(color = CloverLine.copy(alpha = .55f))
+        if (!hasWallpaper) HorizontalDivider(color = CloverLine.copy(alpha = .55f))
     }
 }
 
@@ -1045,17 +1027,17 @@ private fun ChatBackground(settings: com.luckyagent.android.data.settings.Client
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
     )
-    Box(Modifier.fillMaxSize().background(CloverBg.copy(alpha = settings.chatBackgroundDim.coerceIn(0, 70) / 100f)))
+    Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = settings.chatBackgroundDim.coerceIn(0, 70) / 100f)))
 }
 
 @Composable
-private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null) {
+private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null, size: androidx.compose.ui.unit.Dp = 32.dp) {
     val context = LocalContext.current
     val file = fileName.takeIf { it.isNotBlank() }?.let {
         com.luckyagent.android.data.settings.AppearanceStore.file(context, it)
     }?.takeIf { it.exists() }
     val shape = Modifier
-        .size(32.dp)
+        .size(size)
         .clip(CircleShape)
         .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
     if (file == null) {
@@ -1124,6 +1106,8 @@ private fun BubbleRow(
                     Box {
                         Column(
                             Modifier
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(if (isUser) CloverUserBubble.copy(alpha = 0.92f) else CloverSurface.copy(alpha = 0.92f))
                                 .pointerInput(bubble.id) {
                                     detectTapGestures(onLongPress = { menuExpanded = true })
                                 }
@@ -1698,13 +1682,14 @@ private fun ComposerBar(
     LaunchedEffect(showContextSheet) {
         if (showContextSheet) vm.refreshContextInspect()
     }
+    val hasWallpaper = state.settings.chatBackgroundFile.isNotBlank()
     Column(
         Modifier
             .fillMaxWidth()
-            .background(CloverBg.copy(alpha = if (state.settings.chatBackgroundFile.isBlank()) 1f else 0.94f))
+            .background(CloverBg.copy(alpha = if (hasWallpaper) 0.78f else 1f))
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
+        if (!hasWallpaper) HorizontalDivider(color = CloverLine.copy(alpha = .7f), modifier = Modifier.padding(bottom = 10.dp))
         state.pendingQuote?.let { quote ->
             QuoteCard(
                 quote = quote,
@@ -3280,6 +3265,7 @@ private fun SessionDrawer(
 ) {
     val query = state.sessionQuery.trim()
     val sessions = state.sessions
+    var collapsedGroups by remember { mutableStateOf(setOf<String>()) }
     val showInitialLoading = state.sessionsLoading && sessions.isEmpty() && state.sessionsError == null
     val showEmpty = !state.sessionsLoading && state.sessionsError == null && sessions.isEmpty()
 
@@ -3447,27 +3433,32 @@ private fun SessionDrawer(
                         }
                     }
                     sessionGroups(sessions).forEach { group ->
+                        val collapsed = group.name in collapsedGroups
                         item(key = "group-${group.name}") {
-                            Text(
-                                group.name,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = CloverText3,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            SessionGroupHeader(
+                                name = group.name,
+                                count = group.sessions.size,
+                                expanded = !collapsed,
+                                onToggle = {
+                                    collapsedGroups = if (collapsed) collapsedGroups - group.name else collapsedGroups + group.name
+                                },
                             )
                         }
-                        items(group.sessions, key = { it.id }) { session ->
-                            SessionDrawerRow(
-                                session = session,
-                                selected = session.id == state.settings.sessionId,
-                                working = session.id in state.workingSessionIds,
-                                onSelect = { onSelect(session.id) },
-                                onRename = { onRename(session) },
-                                onProject = { onProject(session) },
-                                onPin = { onPin(session) },
-                                onCompact = { onCompact(session) },
-                                onLongPress = { onLongPress(session) },
-                            )
+                        if (!collapsed) {
+                            items(group.sessions, key = { it.id }) { session ->
+                                SessionDrawerRow(
+                                    session = session,
+                                    selected = session.id == state.settings.sessionId,
+                                    working = session.id in state.workingSessionIds,
+                                    nested = true,
+                                    onSelect = { onSelect(session.id) },
+                                    onRename = { onRename(session) },
+                                    onProject = { onProject(session) },
+                                    onPin = { onPin(session) },
+                                    onCompact = { onCompact(session) },
+                                    onLongPress = { onLongPress(session) },
+                                )
+                            }
                         }
                     }
                 }
@@ -3493,10 +3484,58 @@ private fun sessionGroups(sessions: List<RuntimeSession>): List<SessionGroup> {
 }
 
 @Composable
+@Composable
+private fun SessionGroupHeader(
+    name: String,
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (expanded) Icons.Outlined.ExpandMore else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+            contentDescription = if (expanded) "收起分组" else "展开分组",
+            tint = CloverText2,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            Icons.Outlined.Folder,
+            contentDescription = null,
+            tint = CloverAccent,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            name,
+            style = MaterialTheme.typography.labelLarge,
+            color = CloverText,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            count.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = CloverText3,
+        )
+    }
+}
+
+@Composable
 private fun SessionDrawerRow(
     session: RuntimeSession,
     selected: Boolean,
     working: Boolean,
+    nested: Boolean = false,
     onSelect: () -> Unit,
     onRename: () -> Unit,
     onProject: () -> Unit,
@@ -3507,6 +3546,7 @@ private fun SessionDrawerRow(
     Row(
         Modifier
             .fillMaxWidth()
+            .padding(start = if (nested) 22.dp else 0.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(if (selected) CloverUserBubble else CloverSurface)
             .border(

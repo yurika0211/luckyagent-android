@@ -247,6 +247,17 @@ class LuckyAgentApi(
             }
         }
 
+    suspend fun soul(): Result<SoulInfo> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/soul")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("soul ${resp.code}: $body")
+                json.decodeFromString(SoulInfo.serializer(), body)
+            }
+        }
+    }
+
     suspend fun healthLive(): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder().url(url("/api/v1/health/live")).get().build()

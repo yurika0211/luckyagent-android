@@ -146,7 +146,7 @@ private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
     }?.takeIf { it.exists() }
     CloverCard {
         Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("只保存在这台手机上，不会上传。背景铺在整个对话页后面，头像出现在顶栏和助手消息旁边。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        Text("只保存在这台手机上，不会上传。背景铺满对话页，顶栏和输入栏是半透明的，文字放在浅色气泡里。头像在顶栏和助手消息旁边。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
         state.snackbarMessage?.let { message ->
             Text(message, color = if (message.contains("没能")) CloverError else CloverText, style = MaterialTheme.typography.bodyMedium)
         }
