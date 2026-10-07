@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import com.luckyagent.android.ui.MinMainContentWidth
 import com.luckyagent.android.ui.AppNavRailWidth
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -1955,11 +1956,12 @@ private fun ComposerBar(
             Modifier
                 .align(Alignment.CenterEnd)
                 .padding(end = 4.dp)
-                .size(if (showLuckyCommands) 176.dp else 44.dp),
+                .size(44.dp),
             contentAlignment = Alignment.Center,
         ) {
             if (showLuckyCommands) {
                 LuckyClover(
+                    modifier = Modifier.wrapContentSize(unbounded = true),
                     onCommand = { action ->
                         onChange(action)
                         onSend()
@@ -2005,6 +2007,7 @@ private fun ComposerBar(
 
 @Composable
 private fun LuckyClover(
+    modifier: Modifier = Modifier,
     onCommand: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -2014,7 +2017,7 @@ private fun LuckyClover(
         "/lucky off" to "提交" to Alignment.CenterEnd,
         "/lucky cancel" to "放弃" to Alignment.BottomCenter,
     )
-    Box(Modifier.size(176.dp)) {
+    Box(modifier.size(176.dp)) {
         Box(Modifier.matchParentSize().clickable(onClick = onDismiss))
         leaves.forEach { (commandLabel, alignment) ->
             val (command, label) = commandLabel
