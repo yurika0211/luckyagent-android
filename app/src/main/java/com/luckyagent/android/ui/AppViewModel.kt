@@ -1881,6 +1881,10 @@ class AppViewModel(
         refreshSessions()
     }
 
+    fun reportPairingScanFailed(message: String = "这张图里没有二维码") {
+        _ui.update { it.copy(activityLine = message) }
+    }
+
     fun applyPairingQr(raw: String) {
         val endpoint = try {
             com.luckyagent.android.data.settings.PairingQr.parse(raw).toEndpoint()

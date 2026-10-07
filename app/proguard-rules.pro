@@ -4,3 +4,4 @@
 -keep class com.luckyagent.android.data.settings.PairingQr { *; }
 -keep class com.google.zxing.** { *; }
 -dontwarn com.google.zxing.**
+-keep class androidx.camera.** { *; }

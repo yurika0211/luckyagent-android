@@ -51,7 +51,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +70,7 @@ import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
 import com.luckyagent.android.ui.screens.MemoryScreen
 import com.luckyagent.android.ui.screens.SettingsScreen
+import com.luckyagent.android.ui.screens.decodeQrUri
 import com.luckyagent.android.ui.screens.SkillsScreen
 import com.luckyagent.android.ui.screens.TasksScreen
 import com.luckyagent.android.ui.screens.TrajectoryScreen
@@ -216,6 +219,27 @@ private fun AppScaffold(
     useRail: Boolean,
     openNavigation: () -> Unit,
 ) {
+    val context = LocalContext.current
+    var scanningPairing by remember { mutableStateOf(false) }
+    val cameraPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted -> scanningPairing = granted }
+    val qrImagePicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val text = runCatching { decodeQrUri(context, uri) }.getOrNull()
+        if (text.isNullOrBlank()) vm.reportPairingScanFailed()
+        else vm.applyPairingQr(text)
+    }
+    val startPairingScan = {
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.CAMERA,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) scanningPairing = true
+        else cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+    }
     val surfaceOpacity = com.luckyagent.android.ui.components.SurfaceOpacity(
         chrome = state.settings.chromeOpacity.coerceIn(0, 100) / 100f,
         card = state.settings.cardOpacity.coerceIn(0, 100) / 100f,
@@ -282,10 +306,30 @@ private fun AppScaffold(
                             AppDestination.Gateways -> GatewaysScreen(state = state, vm = vm)
                             AppDestination.Skills -> SkillsScreen(state = state, vm = vm)
                             AppDestination.Memory -> MemoryScreen(state = state, vm = vm)
-                            AppDestination.Settings -> SettingsScreen(state = state, vm = vm)
+                            AppDestination.Settings -> SettingsScreen(
+                                state = state,
+                                vm = vm,
+                                onScan = startPairingScan,
+                                onPickQrImage = {
+                                    qrImagePicker.launch(
+                                        androidx.activity.result.PickVisualMediaRequest(
+                                            androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                        ),
+                                    )
+                                },
+                            )
                         }
                     }
                 }
+            }
+            if (scanningPairing) {
+                com.luckyagent.android.ui.screens.PairingScannerDialog(
+                    onDismiss = { scanningPairing = false },
+                    onScanned = { text ->
+                        scanningPairing = false
+                        vm.applyPairingQr(text)
+                    },
+                )
             }
             }
         }

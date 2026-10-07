@@ -78,7 +78,7 @@ import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverError
 
 @Composable
-fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
+fun SettingsScreen(state: AppUiState, vm: AppViewModel, onScan: () -> Unit = {}, onPickQrImage: () -> Unit = {}) {
     val s = state.settings
     val useTwoColumns = LocalConfiguration.current.screenWidthDp >= 1000
     Column(
@@ -98,7 +98,7 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Column(Modifier.weight(1.25f)) {
-                    SettingsEndpointCard(s, vm)
+                    SettingsEndpointCard(s, vm, onScan, onPickQrImage)
                     Spacer(Modifier.height(12.dp))
                     SettingsSessionCard(s, vm)
                 }
@@ -115,7 +115,7 @@ fun SettingsScreen(state: AppUiState, vm: AppViewModel) {
                 Modifier.padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                SettingsEndpointCard(s, vm)
+                SettingsEndpointCard(s, vm, onScan, onPickQrImage)
                 SettingsSessionCard(s, vm)
                 SettingsLiveCard(state, vm)
                 SettingsAppearanceCard(state, vm)
@@ -347,21 +347,14 @@ private fun SettingsUpdateCard(state: AppUiState, vm: AppViewModel) {
 }
 
 @Composable
-private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
+private fun SettingsEndpointCard(
+    s: ClientSettings,
+    vm: AppViewModel,
+    onScan: () -> Unit,
+    onPickQrImage: () -> Unit,
+) {
     var editing by remember { mutableStateOf<RuntimeEndpoint?>(null) }
     var deleting by remember { mutableStateOf<RuntimeEndpoint?>(null) }
-    val context = LocalContext.current
-    val scanLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        com.journeyapps.barcodescanner.ScanContract(),
-    ) { result ->
-        val text = result.contents
-        if (!text.isNullOrBlank()) vm.applyPairingQr(text)
-    }
-    val cameraPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) scanLauncher.launch(pairingScanOptions())
-    }
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -370,18 +363,14 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             }
             OutlinedButton(
                 onClick = {
-                    val granted = androidx.core.content.ContextCompat.checkSelfPermission(
-                        context,
-                        android.Manifest.permission.CAMERA,
-                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                    if (granted) scanLauncher.launch(pairingScanOptions())
-                    else cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                    onScan()
                 },
             ) {
                 Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
                 Text("扫码")
             }
+            TextButton(onClick = onPickQrImage) { Text("相册") }
             OutlinedButton(
                 onClick = {
                     editing = RuntimeEndpoint(id = UUID.randomUUID().toString(), name = "", apiBase = "")
@@ -442,15 +431,6 @@ private fun SettingsEndpointCard(s: ClientSettings, vm: AppViewModel) {
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
-    }
-}
-
-private fun pairingScanOptions(): com.journeyapps.barcodescanner.ScanOptions {
-    return com.journeyapps.barcodescanner.ScanOptions().apply {
-        setDesiredBarcodeFormats(com.journeyapps.barcodescanner.ScanOptions.QR_CODE)
-        setPrompt("扫描 lh qr 打出的配对码")
-        setBeepEnabled(false)
-        setOrientationLocked(false)
     }
 }
 
