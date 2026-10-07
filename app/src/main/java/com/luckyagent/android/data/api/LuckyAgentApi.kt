@@ -258,7 +258,7 @@ class LuckyAgentApi(
         }
     }
 
-    suspend fun listModels(kind: String? = null, refresh: Boolean = false): Result<List<ModelRef>> = withContext(Dispatchers.IO) {
+    suspend fun listModels(kind: String? = null, refresh: Boolean = false): Result<ModelsResponse> = withContext(Dispatchers.IO) {
         runCatching {
             val query = buildMap<String, String> {
                 kind?.trim()?.takeIf { it.isNotEmpty() }?.let { put("kind", it) }
@@ -268,7 +268,9 @@ class LuckyAgentApi(
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) error("models ${resp.code}: $body")
-                json.decodeFromString(ModelsResponse.serializer(), body).models
+                val decoded = json.decodeFromString(ModelsResponse.serializer(), body)
+                decoded.error?.takeIf { it.isNotBlank() }?.let { error(it) }
+                decoded
             }
         }
     }

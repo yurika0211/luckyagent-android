@@ -958,30 +958,44 @@ class AppViewModel(
 
     fun compactSession(sessionId: String, forceLocal: Boolean = false) {
         val id = sessionId.trim().ifBlank { currentSessionId() }
+        val title = _ui.value.sessions.firstOrNull { it.id == id }?.title?.takeIf { it.isNotBlank() } ?: id
         viewModelScope.launch {
-            upsertProgress(ChatProgressStep("compact", "Compressing conversation context…", ProgressStatus.Active))
-            _ui.update { it.copy(activityLine = "Compressing conversation context…") }
+            upsertProgress(ChatProgressStep("compact", "正在压缩「$title」", ProgressStatus.Active))
+            _ui.update { it.copy(activityLine = "正在压缩「$title」", snackbarMessage = "正在压缩「$title」") }
             val result = container.api.compactSession(id, forceLocal = forceLocal)
             result.fold(
                 onSuccess = { body ->
-                    val title = body.display?.title?.takeIf { it.isNotBlank() } ?: "Context compressed"
-                    val subtitle = body.display?.subtitle?.takeIf { it.isNotBlank() }
-                        ?: listOfNotNull(
-                            body.preTokenEstimate?.let { "pre ${TokenFormat.compact(it)}" },
-                            body.postTokenEstimate?.let { "post ${TokenFormat.compact(it)}" },
-                            body.summarySource,
-                        ).joinToString(" · ").ifBlank { null }
-                    val line = listOfNotNull(title, subtitle).joinToString(" · ")
+                    val line = compactResultLine(title, body)
                     upsertProgress(ChatProgressStep("compact", line, ProgressStatus.Complete))
-                    _ui.update { it.copy(activityLine = line) }
+                    _ui.update { it.copy(activityLine = line, snackbarMessage = line, isResponding = false) }
+                    if (id == currentSessionId()) {
+                        loadHistory(id, reset = true)
+                        refreshContextInspect(id)
+                    }
+                    refreshSessions()
                 },
                 onFailure = { err ->
-                    val line = "Context compression failed · ${err.message ?: "error"}"
+                    val line = "压缩失败 · ${err.message ?: "请求失败"}"
                     upsertProgress(ChatProgressStep("compact", line, ProgressStatus.Failed))
-                    _ui.update { it.copy(activityLine = line) }
+                    _ui.update { it.copy(activityLine = line, snackbarMessage = line, isResponding = false) }
                 },
             )
         }
+    }
+
+    private fun compactResultLine(title: String, body: com.luckyagent.android.data.api.CompactSessionResult): String {
+        val pre = body.preTokenEstimate
+        val post = body.postTokenEstimate
+        val dropped = body.droppedMessages
+        val source = body.summarySource?.takeIf { it.isNotBlank() }
+        val parts = buildList {
+            if (pre != null && post != null) add("${TokenFormat.compact(pre)} → ${TokenFormat.compact(post)}")
+            if (dropped != null) add("去掉 $dropped 条")
+            if (source != null) add(source)
+        }
+        val detail = body.display?.message?.takeIf { it.isNotBlank() }
+            ?: parts.joinToString(" · ").ifBlank { body.display?.subtitle }
+        return if (detail.isNullOrBlank()) "已压缩「$title」" else "已压缩「$title」 · $detail"
     }
     private fun updatePhase(id: String, label: String) {
         _ui.update { current ->
@@ -1528,9 +1542,10 @@ class AppViewModel(
         if (current.modelsLoading || (!force && current.modelsLoaded)) return
         _ui.update { it.copy(modelsLoading = true, modelsError = null) }
         viewModelScope.launch {
-            // force/refresh asks the server to re-probe the current API key.
-            // First load also benefits from server-side discover-on-list.
-            container.api.listModels(refresh = force).onSuccess { models ->
+            // Opening the sheet and tapping retry both ask the server to query
+            // the current chat key. A plain list is the local catalog.
+            container.api.listModels(refresh = true).onSuccess { payload ->
+                val models = payload.models
                 val active = models
                     .filter { it.current }
                     .associateBy { it.kind.trim().lowercase() }
@@ -1893,8 +1908,8 @@ class AppViewModel(
         loadHistory(currentSessionId(), reset = false)
     }
 
-    fun refreshContextInspect() {
-        val target = currentSessionId()
+    fun refreshContextInspect(sessionId: String = currentSessionId()) {
+        val target = sessionId.trim().ifBlank { currentSessionId() }
         contextInspectJob?.cancel()
         contextInspectJob = viewModelScope.launch {
             _ui.update { it.copy(contextInspectLoading = true, contextInspectError = null) }

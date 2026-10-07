@@ -208,6 +208,8 @@ data class ModelRef(
 data class ModelsResponse(
     val models: List<ModelRef> = emptyList(),
     val count: Int? = null,
+    val source: String? = null,
+    val error: String? = null,
 )
 
 @Serializable

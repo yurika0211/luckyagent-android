@@ -83,7 +83,6 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
-import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -377,6 +376,7 @@ fun ChatScreen(
     val sessionDrawerWidth = 320.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var compactTarget by remember { mutableStateOf<RuntimeSession?>(null) }
 
     LaunchedEffect(isRecordingVoice, recordingStartedAtMs) {
         val started = recordingStartedAtMs ?: return@LaunchedEffect
@@ -434,7 +434,9 @@ fun ChatScreen(
                     renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
                 },
                 onRefresh = vm::refreshSessions,
-                onCompact = { session -> vm.compactSession(session.id) },
+                onCompact = { session ->
+                    compactTarget = session
+                },
                 showClose = showClose,
             )
         }
@@ -559,6 +561,28 @@ fun ChatScreen(
             },
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    compactTarget?.let { session ->
+        val title = session.title?.takeIf { it.isNotBlank() } ?: session.id
+        AlertDialog(
+            onDismissRequest = { compactTarget = null },
+            title = { Text("压缩这段会话？") },
+            text = {
+                Text("「$title」里较早的消息会被收成一条摘要。压缩结束后会显示前后 token。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.compactSession(session.id)
+                        compactTarget = null
+                    },
+                ) { Text("压缩") }
+            },
+            dismissButton = {
+                TextButton(onClick = { compactTarget = null }) { Text("取消") }
             },
         )
     }
@@ -798,7 +822,6 @@ private fun ChatConversation(
             vm = vm,
             onChange = vm::updateComposer,
             onSend = vm::sendComposer,
-            onStop = vm::cancelRun,
             showAttachmentOptions = showAttachmentOptions,
             onToggleAttachment = onToggleAttachment,
             onCameraCapture = onCameraCapture,
@@ -1479,7 +1502,6 @@ private fun ComposerBar(
     vm: AppViewModel,
     onChange: (String) -> Unit,
     onSend: () -> Unit,
-    onStop: () -> Unit,
     showAttachmentOptions: Boolean,
     onToggleAttachment: () -> Unit,
     onCameraCapture: () -> Unit,
@@ -1749,18 +1771,9 @@ private fun ComposerBar(
                 ) {
                     Icon(
                         Icons.AutoMirrored.Outlined.Send,
-                        contentDescription = if (isStopCommand) "Stop current run" else "Send and queue",
+                        contentDescription = if (isStopCommand) "发送 /stop" else "Send and queue",
                         tint = if (hasInput) MaterialTheme.colorScheme.onPrimary else CloverText3,
                     )
-                }
-                IconButton(
-                    onClick = onStop,
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .clip(CircleShape)
-                        .background(CloverSurface2),
-                ) {
-                    Icon(Icons.Outlined.Stop, contentDescription = "Stop", tint = CloverError)
                 }
             } else if (state.commandExecuting) {
                 IconButton(onClick = {}, enabled = false, modifier = Modifier.padding(start = 8.dp)) {
@@ -1813,52 +1826,94 @@ private fun LuckyCommandRow(
 ) {
     val waiting = pending.count { it.error == null }
     val failed = pending.count { it.error != null }
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(active, failed) {
+        if (active || failed > 0) expanded = true
+    }
+    val summary = when {
+        failed > 0 -> "Lucky · $failed 段未送进"
+        waiting > 0 -> "Lucky · $waiting 段发送中"
+        active -> "Lucky · 收集中 $segments 段"
+        else -> "Lucky"
+    }
+    val tint = when {
+        failed > 0 -> CloverError
+        active || waiting > 0 -> CloverAccent
+        else -> CloverText3
+    }
     Column(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 7.dp)) {
-        Text(
-            when {
-                !active && pending.isEmpty() -> "Lucky 未开启"
-                failed > 0 -> "Lucky 收集中 · 已确认 $segments 段 · $failed 段未送进"
-                waiting > 0 -> "Lucky 收集中 · 已确认 $segments 段 · $waiting 段发送中"
-                else -> "Lucky 收集中 · $segments 段 · 附件 $attachments"
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = if (failed > 0) CloverError else if (active) CloverAccent else CloverText3,
-        )
-        if (pending.isNotEmpty()) {
-            pending.forEach { segment ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        segment.error ?: "发送中 · ${segment.preview}",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (segment.error != null) CloverError else CloverText3,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                onClick = { expanded = !expanded },
+                shape = RoundedCornerShape(999.dp),
+                color = if (active || failed > 0) tint.copy(alpha = 0.12f) else CloverSurface2,
+                border = BorderStroke(1.dp, if (active || failed > 0) tint.copy(alpha = 0.45f) else CloverLine),
+            ) {
+                Row(
+                    Modifier.padding(start = 10.dp, end = 6.dp, top = 3.dp, bottom = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(summary, style = MaterialTheme.typography.labelSmall, color = tint)
+                    Icon(
+                        if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        contentDescription = if (expanded) "收起 Lucky" else "展开 Lucky",
+                        tint = tint,
+                        modifier = Modifier.size(16.dp),
                     )
-                    if (segment.error != null) {
-                        TextButton(
-                            onClick = { onRetry(segment.id) },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                        ) { Text("重试") }
-                    }
+                }
+            }
+            if (!expanded && active) {
+                TextButton(
+                    onClick = { onCommand("/lucky off") },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text("提交", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            listOf(
-                "/lucky on" to "开始",
-                "/lucky off" to "提交",
-                "/lucky status" to "状态",
-                "/lucky cancel" to "放弃",
-            ).forEach { (command, label) ->
-                TextButton(
-                    onClick = { onCommand(command) },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+        AnimatedVisibility(visible = expanded) {
+            Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                if (pending.isNotEmpty()) {
+                    pending.forEach { segment ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                segment.error ?: "发送中 · ${segment.preview}",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (segment.error != null) CloverError else CloverText3,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (segment.error != null) {
+                                TextButton(
+                                    onClick = { onRetry(segment.id) },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                ) { Text("重试") }
+                            }
+                        }
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text("$label", style = MaterialTheme.typography.labelSmall)
+                    listOf(
+                        "/lucky on" to "开始",
+                        "/lucky off" to "提交",
+                        "/lucky status" to "状态",
+                        "/lucky cancel" to "放弃",
+                    ).forEach { (command, label) ->
+                        TextButton(
+                            onClick = { onCommand(command) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 }
             }
         }
@@ -3248,11 +3303,8 @@ private fun SessionDrawer(
                                         modifier = Modifier.weight(1f),
                                     )
                                     if (working) {
-                                        Spacer(Modifier.width(8.dp))
+                                        Spacer(Modifier.width(6.dp))
                                         SessionWorkingBadge()
-                                    }
-                                    IconButton(onClick = { onCompact(session) }) {
-                                        Icon(Icons.Outlined.Compress, contentDescription = "压缩上下文", tint = CloverText2)
                                     }
                                 }
                                 Text(
@@ -3276,8 +3328,27 @@ private fun SessionDrawer(
                                     )
                                 }
                             }
-                            IconButton(onClick = { onRename(session) }) {
-                                Icon(Icons.Outlined.Edit, contentDescription = "Rename", tint = CloverText2)
+                            IconButton(
+                                onClick = { onCompact(session) },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Compress,
+                                    contentDescription = "压缩上下文",
+                                    tint = CloverText3,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            IconButton(
+                                onClick = { onRename(session) },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Edit,
+                                    contentDescription = "Rename",
+                                    tint = CloverText2,
+                                    modifier = Modifier.size(16.dp),
+                                )
                             }
                         }
                     }
