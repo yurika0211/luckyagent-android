@@ -4,6 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
 data class SessionsResponse(
@@ -224,7 +225,113 @@ fun modelsByKind(models: List<ModelRef>): Map<String, List<ModelRef>> =
 data class ChatOutbound(
     val type: String = "chat",
     val id: String,
+    @SerialName("session_id") val sessionId: String,
     val data: ChatOutboundData,
+)
+
+@Serializable
+data class LuckyOutbound(
+    val type: String = "lucky",
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
+    val data: LuckyOutboundData,
+)
+
+@Serializable
+data class LuckyOutboundData(
+    val action: String,
+)
+
+@Serializable
+data class ApprovalOption(
+    val id: String,
+    val label: String,
+    val kind: String? = null,
+)
+
+@Serializable
+data class PendingApproval(
+    val provider: String,
+    val id: String,
+    val method: String? = null,
+    @SerialName("thread_id") val threadId: String? = null,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("turn_id") val turnId: String? = null,
+    val reason: String? = null,
+    val summary: String? = null,
+    val params: kotlinx.serialization.json.JsonElement? = null,
+    val options: List<ApprovalOption> = emptyList(),
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
+@Serializable
+data class ApprovalsResponse(
+    val approvals: List<PendingApproval> = emptyList(),
+    val count: Int? = null,
+)
+
+@Serializable
+data class ApprovalResolutionRequest(
+    val provider: String,
+    @SerialName("approval_id") val approvalId: String,
+    val decision: String,
+    val input: String = "",
+)
+
+fun PendingApproval.needsTextInput(): Boolean {
+    if (method.equals("input", ignoreCase = true)) return true
+    return options.any { option ->
+        option.kind.equals("submit", ignoreCase = true) || option.id.equals("submit", ignoreCase = true)
+    }
+}
+
+fun PendingApproval.inputPrompt(): String {
+    val fromParams = (params as? JsonObject)?.get("prompt") as? JsonPrimitive
+    return fromParams?.content?.takeIf { it.isNotBlank() }
+        ?: reason?.takeIf { it.isNotBlank() }
+        ?: summary?.takeIf { it.isNotBlank() }
+        ?: "请补充完成任务所需的信息"
+}
+
+/** GET /api/v1/context?inspect=1. Local planner estimate, not billed usage. */
+@Serializable
+data class ContextInspectResponse(
+    @SerialName("max_tokens") val maxTokens: Int = 0,
+    @SerialName("reserved_tokens") val reservedTokens: Int = 0,
+    @SerialName("available_tokens") val availableTokens: Int = 0,
+    val strategy: String? = null,
+    val usage: ContextUsage? = null,
+    val sections: List<ContextSection> = emptyList(),
+)
+
+@Serializable
+data class ContextUsage(
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("message_count") val messageCount: Int = 0,
+    @SerialName("total_tokens") val totalTokens: Int = 0,
+    @SerialName("available_tokens") val availableTokens: Int = 0,
+    val ratio: Double = 0.0,
+    @SerialName("headroom_tokens") val headroomTokens: Int = 0,
+    val estimate: String? = null,
+    val buckets: Map<String, ContextBucketUsage> = emptyMap(),
+)
+
+@Serializable
+data class ContextBucketUsage(
+    val tokens: Int = 0,
+    val messages: Int = 0,
+    val budget: Int = 0,
+)
+
+@Serializable
+data class ContextSection(
+    val index: Int = 0,
+    val role: String = "",
+    val bucket: String = "",
+    val label: String = "",
+    val tokens: Int = 0,
+    val chars: Int = 0,
+    val preview: String = "",
 )
 
 @Serializable

@@ -20,6 +20,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -64,6 +68,7 @@ import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Compress
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -80,6 +85,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -93,6 +99,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -135,15 +142,21 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.FunctionalModelKinds
 import com.luckyagent.android.data.api.ModelRef
 import com.luckyagent.android.data.api.modelKindLabel
 import com.luckyagent.android.data.api.modelsByKind
+import com.luckyagent.android.data.api.ContextBucketUsage
+import com.luckyagent.android.data.api.ContextInspectResponse
+import com.luckyagent.android.data.api.ContextSection
 import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.ChatBubble
+import com.luckyagent.android.ui.OutboundQueueItem
+import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.PendingMedia
@@ -161,6 +174,7 @@ import com.luckyagent.android.ui.theme.CloverText
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
+import com.luckyagent.android.ui.theme.CloverWarning
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -384,6 +398,11 @@ fun ChatScreen(
         kotlinx.coroutines.delay(2500)
         if (captureHint == hint) captureHint = null
     }
+    LaunchedEffect(state.settings.sessionId) {
+        if (state.contextInspect == null && !state.contextInspectLoading && state.contextInspectError == null) {
+            vm.refreshContextInspect()
+        }
+    }
 
     BoxWithConstraints(Modifier.fillMaxSize().background(CloverBg)) {
         // Fixed session pane only when the remaining chat area stays usable.
@@ -412,11 +431,8 @@ fun ChatScreen(
                     renameTarget = session
                     renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
                 },
-                onCompact = { session ->
-                    vm.compactSession(session.id)
-                    if (!usePermanentSessionPane) scope.launch { drawerState.close() }
-                },
                 onRefresh = vm::refreshSessions,
+                onCompact = { session -> vm.compactSession(session.id) },
                 showClose = showClose,
             )
         }
@@ -712,6 +728,19 @@ private fun ChatConversation(
                                 vm.notifyCopied()
                             },
                         )
+                    }
+                }
+                if (state.pendingApprovals.isNotEmpty()) {
+                    item(key = "pending-approvals") {
+                        ApprovalCards(
+                            approvals = state.pendingApprovals,
+                            onDecision = vm::resolveApproval,
+                        )
+                    }
+                }
+                state.approvalsError?.takeIf { state.pendingApprovals.isEmpty() }?.let { error ->
+                    item(key = "approvals-error") {
+                        Text(error, color = CloverError, style = MaterialTheme.typography.bodySmall)
                     }
                 }
                 item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
@@ -1169,6 +1198,101 @@ private fun formatTokenCount(tokens: Int): String = TokenFormat.full(tokens)
 private fun compactTokenCount(tokens: Int): String = TokenFormat.compact(tokens)
 
 @Composable
+private fun ApprovalCards(
+    approvals: List<PendingApproval>,
+    onDecision: (PendingApproval, String, String) -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        approvals.forEach { approval ->
+            ApprovalCard(approval = approval, onDecision = onDecision)
+        }
+    }
+}
+
+@Composable
+private fun ApprovalCard(
+    approval: PendingApproval,
+    onDecision: (PendingApproval, String, String) -> Unit,
+) {
+    val needsInput = approval.needsTextInput()
+    var draft by rememberSaveable(approval.id) { mutableStateOf("") }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = CloverSurface2,
+        border = BorderStroke(1.dp, CloverAccent.copy(alpha = .45f)),
+    ) {
+        Column(
+            Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (needsInput) "需要你补充信息" else "需要审批",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    approval.provider.uppercase(Locale.getDefault()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverAccent,
+                )
+            }
+            Text(
+                if (needsInput) approval.inputPrompt() else (
+                    approval.summary?.ifBlank { null }
+                        ?: approval.method?.ifBlank { null }
+                        ?: "外部工具请求权限"
+                    ),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (!needsInput) {
+                approval.reason?.takeIf { it.isNotBlank() }?.let { reason ->
+                    Text(reason, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (needsInput) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp),
+                    label = { Text("填写内容") },
+                    placeholder = { Text("输入后点提交") },
+                    minLines = 3,
+                )
+            }
+            if (approval.options.isEmpty()) {
+                Text("没有可用的审批选项", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            } else {
+                approval.options.forEach { option ->
+                    val negative = option.kind.orEmpty().lowercase().let { kind ->
+                        kind.contains("reject") || kind.contains("deny") || kind.contains("cancel")
+                    }
+                    val submit = option.kind.equals("submit", ignoreCase = true) || option.id.equals("submit", ignoreCase = true)
+                    val enabled = !submit || draft.isNotBlank()
+                    if (negative) {
+                        OutlinedButton(
+                            onClick = { onDecision(approval, option.id, "") },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(option.label) }
+                    } else {
+                        Button(
+                            onClick = { onDecision(approval, option.id, if (needsInput) draft else "") },
+                            enabled = enabled,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(option.label) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProcessTimeline(
     steps: List<ChatBubble>,
     isResponding: Boolean,
@@ -1369,6 +1493,7 @@ private fun ComposerBar(
     onCancelVoice: () -> Unit,
 ) {
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
+    var showContextSheet by rememberSaveable { mutableStateOf(false) }
     val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
     val activityWorking = chatWorking || state.commandExecuting
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty() || state.pendingQuote != null
@@ -1378,6 +1503,9 @@ private fun ComposerBar(
     }
     LaunchedEffect(showModelSheet) {
         if (showModelSheet) vm.loadModels()
+    }
+    LaunchedEffect(showContextSheet) {
+        if (showContextSheet) vm.refreshContextInspect()
     }
     Column(
         Modifier
@@ -1512,6 +1640,41 @@ private fun ComposerBar(
                 )
             }
         }
+        LuckyCommandRow(
+            active = state.luckyActive,
+            segments = state.luckySegments,
+            attachments = state.luckyAttachments,
+            pending = state.luckyPending,
+            onCommand = { action ->
+                onChange(action)
+                onSend()
+            },
+            onRetry = vm::retryLuckySegment,
+        )
+        if (state.outboundQueue.isNotEmpty()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp, bottom = 7.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    "发送队列 · ${state.outboundQueue.size} 条",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    state.outboundQueue.forEach { item ->
+                        OutboundQueueChip(item = item, onRetry = { vm.retryOutboundMessage(item.id) })
+                    }
+                }
+            }
+        }
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = CloverSurface,
@@ -1549,7 +1712,7 @@ private fun ComposerBar(
                 decorationBox = { inner ->
                     if (state.composer.isEmpty()) {
                         Text(
-                            "输入消息或 /command",
+                            if (state.luckyActive) "继续添加，/lucky off 一次发送" else "输入消息或 /command",
                             color = CloverText3,
                             style = MaterialTheme.typography.bodyLarge,
                             maxLines = 1,
@@ -1559,6 +1722,11 @@ private fun ComposerBar(
                     inner()
                 },
             )
+            ContextUsageButton(
+                state = state,
+                onClick = { showContextSheet = true },
+            )
+            Spacer(Modifier.width(2.dp))
             // Model picker sits immediately left of send/stop, compact enough
             // not to reflow the placeholder.
             ModelSwitchButton(
@@ -1568,20 +1736,19 @@ private fun ComposerBar(
             )
             Spacer(Modifier.width(2.dp))
             if (chatWorking) {
-                if (isStopCommand) {
-                    IconButton(
-                        onClick = onSend,
-                        modifier = Modifier
-                            .padding(start = 8.dp)
-                            .clip(CircleShape)
-                            .background(CloverAccent),
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Outlined.Send,
-                            contentDescription = "Stop current run",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    }
+                IconButton(
+                    onClick = onSend,
+                    enabled = hasInput,
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .clip(CircleShape)
+                        .background(if (hasInput) CloverAccent else CloverSurface2),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Outlined.Send,
+                        contentDescription = if (isStopCommand) "Stop current run" else "Send and queue",
+                        tint = if (hasInput) MaterialTheme.colorScheme.onPrimary else CloverText3,
+                    )
                 }
                 IconButton(
                     onClick = onStop,
@@ -1614,6 +1781,13 @@ private fun ComposerBar(
             }
         }
         }
+        if (showContextSheet) {
+            ContextInspectSheet(
+                state = state,
+                onDismiss = { showContextSheet = false },
+                onRetry = vm::refreshContextInspect,
+            )
+        }
         if (showModelSheet) {
             ModelSwitchSheet(
                 state = state,
@@ -1623,6 +1797,360 @@ private fun ComposerBar(
             )
         }
     }
+}
+
+@Composable
+private fun LuckyCommandRow(
+    active: Boolean,
+    segments: Int,
+    attachments: Int,
+    pending: List<com.luckyagent.android.ui.LuckyPendingSegment>,
+    onCommand: (String) -> Unit,
+    onRetry: (String) -> Unit,
+) {
+    val waiting = pending.count { it.error == null }
+    val failed = pending.count { it.error != null }
+    Column(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 7.dp)) {
+        Text(
+            when {
+                !active && pending.isEmpty() -> "Lucky 未开启"
+                failed > 0 -> "Lucky 收集中 · 已确认 $segments 段 · $failed 段未送进"
+                waiting > 0 -> "Lucky 收集中 · 已确认 $segments 段 · $waiting 段发送中"
+                else -> "Lucky 收集中 · $segments 段 · 附件 $attachments"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (failed > 0) CloverError else if (active) CloverAccent else CloverText3,
+        )
+        if (pending.isNotEmpty()) {
+            pending.forEach { segment ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        segment.error ?: "发送中 · ${segment.preview}",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (segment.error != null) CloverError else CloverText3,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (segment.error != null) {
+                        TextButton(
+                            onClick = { onRetry(segment.id) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                        ) { Text("重试") }
+                    }
+                }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            listOf(
+                "/lucky on" to "开始",
+                "/lucky off" to "提交",
+                "/lucky status" to "状态",
+                "/lucky cancel" to "放弃",
+            ).forEach { (command, label) ->
+                TextButton(
+                    onClick = { onCommand(command) },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text("$label", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OutboundQueueChip(
+    item: OutboundQueueItem,
+    onRetry: () -> Unit,
+) {
+    val (label, tint) = when (item.status) {
+        OutboundQueueStatus.Sending -> "发送中" to CloverAccent
+        OutboundQueueStatus.Queued -> "排队中" to CloverText3
+        OutboundQueueStatus.Failed -> "失败" to CloverError
+    }
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = CloverSurface2,
+        border = BorderStroke(1.dp, tint.copy(alpha = .4f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = tint)
+            Text(
+                item.preview,
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 160.dp),
+            )
+            if (item.status == OutboundQueueStatus.Failed) {
+                TextButton(onClick = onRetry) { Text("重试") }
+            }
+        }
+    }
+}
+
+private val ContextBucketOrder = listOf(
+    "system" to "系统",
+    "history" to "历史",
+    "memory" to "记忆",
+    "rag" to "检索",
+    "tool_result" to "工具",
+    "user" to "用户",
+)
+
+private val ContextBucketColors = listOf(
+    Color(0xFF356F42),
+    Color(0xFF3D6B8C),
+    Color(0xFF8A6A2F),
+    Color(0xFF6E5A8A),
+    Color(0xFF8C4E3A),
+    Color(0xFF4E7A55),
+)
+
+@Composable
+private fun ContextUsageButton(
+    state: AppUiState,
+    onClick: () -> Unit,
+) {
+    val usage = state.contextInspect?.usage
+    val ratio = ((usage?.ratio ?: 0.0).toFloat()).coerceIn(0f, 1.5f)
+    val tint = when {
+        state.contextInspectError != null -> CloverError
+        ratio >= 0.9f -> CloverError
+        ratio >= 0.75f -> CloverWarning
+        else -> CloverAccent
+    }
+    val label = when {
+        usage == null -> "—"
+        else -> TokenFormat.compact(usage.totalTokens)
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
+            if (state.contextInspectLoading && usage == null) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = CloverAccent,
+                )
+            } else {
+                ContextUsageRing(ratio = ratio.coerceAtMost(1f), color = tint)
+            }
+        }
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = tint,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun ContextUsageRing(
+    ratio: Float,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier.size(18.dp)) {
+        val stroke = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round)
+        val inset = stroke.width / 2f
+        val arcSize = Size(size.width - stroke.width, size.height - stroke.width)
+        val topLeft = Offset(inset, inset)
+        drawArc(
+            color = color.copy(alpha = 0.22f),
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = stroke,
+        )
+        if (ratio > 0f) {
+            drawArc(
+                color = color,
+                startAngle = -90f,
+                sweepAngle = 360f * ratio,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = stroke,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ContextInspectSheet(
+    state: AppUiState,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    val inspect = state.contextInspect
+    val usage = inspect?.usage
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = CloverBg,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("当前上下文", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text("本地估算，不是供应商账单", style = MaterialTheme.typography.bodySmall, color = CloverText3)
+                }
+                IconButton(onClick = onRetry, enabled = !state.contextInspectLoading) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = "刷新上下文", tint = CloverText2)
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Outlined.Close, contentDescription = "关闭", tint = CloverText2)
+                }
+            }
+            if (state.contextInspectLoading) {
+                LinearProgressIndicator(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    color = CloverAccent,
+                )
+            }
+            state.contextInspectError?.let { error ->
+                Text(error, color = CloverError, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+            }
+            if (usage != null) {
+                val ratioPct = (usage.ratio * 100).toInt().coerceAtLeast(0)
+                Text(
+                    "${TokenFormat.full(usage.totalTokens)} / ${TokenFormat.full(usage.availableTokens)} · $ratioPct%",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = CloverText,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Text(
+                    "剩余 ${TokenFormat.full(usage.headroomTokens)} · ${usage.messageCount} 条消息",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CloverText3,
+                )
+                Spacer(Modifier.height(12.dp))
+                ContextBucketOrder.forEachIndexed { index, (key, label) ->
+                    ContextBucketRow(
+                        label = label,
+                        bucket = usage.buckets[key] ?: ContextBucketUsage(),
+                        color = ContextBucketColors[index],
+                        total = usage.totalTokens.coerceAtLeast(1),
+                    )
+                }
+                if (inspect.sections.isNotEmpty()) {
+                    Spacer(Modifier.height(16.dp))
+                    Text("组成", style = MaterialTheme.typography.titleSmall, color = CloverText)
+                    Spacer(Modifier.height(8.dp))
+                    inspect.sections.forEach { section ->
+                        ContextSectionRow(section)
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun ContextBucketRow(
+    label: String,
+    bucket: ContextBucketUsage,
+    color: Color,
+    total: Int,
+) {
+    val fraction = (bucket.tokens.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = CloverText)
+            Text(
+                "${TokenFormat.full(bucket.tokens)} · ${bucket.messages}",
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(CloverLine),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(fraction)
+                    .height(4.dp)
+                    .background(color),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ContextSectionRow(section: ContextSection) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${section.index + 1}. ${contextSectionLabel(section.label)}",
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = CloverText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                TokenFormat.compact(section.tokens),
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+            )
+        }
+        if (section.preview.isNotBlank()) {
+            Text(
+                section.preview,
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private fun contextSectionLabel(label: String): String = when (label) {
+    "system_prompt" -> "系统提示"
+    "tool_catalog" -> "工具目录"
+    "history" -> "历史"
+    "compact_summary" -> "压缩摘要"
+    "core_memory" -> "核心记忆"
+    "working_memory" -> "工作记忆"
+    "session_history_memory" -> "会话记忆"
+    "recent_context" -> "近期上下文"
+    "rag" -> "检索"
+    "skill_route" -> "技能路由"
+    "attachment" -> "附件"
+    "tool_result" -> "工具结果"
+    "user" -> "用户"
+    else -> label.ifBlank { "其他" }
 }
 
 @Composable
@@ -2517,8 +3045,8 @@ private fun SessionDrawer(
     onCreate: () -> Unit,
     onQueryChange: (String) -> Unit,
     onRename: (RuntimeSession) -> Unit,
-    onCompact: (RuntimeSession) -> Unit = {},
     onRefresh: () -> Unit,
+    onCompact: (RuntimeSession) -> Unit = {},
     showClose: Boolean,
 ) {
     val query = state.sessionQuery.trim()
@@ -2711,6 +3239,9 @@ private fun SessionDrawer(
                                         Spacer(Modifier.width(8.dp))
                                         SessionWorkingBadge()
                                     }
+                                    IconButton(onClick = { onCompact(session) }) {
+                                        Icon(Icons.Outlined.Compress, contentDescription = "压缩上下文", tint = CloverText2)
+                                    }
                                 }
                                 Text(
                                     session.id,
@@ -2735,9 +3266,6 @@ private fun SessionDrawer(
                             }
                             IconButton(onClick = { onRename(session) }) {
                                 Icon(Icons.Outlined.Edit, contentDescription = "Rename", tint = CloverText2)
-                            }
-                            IconButton(onClick = { onCompact(session) }) {
-                                Icon(Icons.Outlined.Refresh, contentDescription = "Compact context", tint = CloverText2)
                             }
                         }
                     }

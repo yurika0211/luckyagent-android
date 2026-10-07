@@ -323,14 +323,17 @@ class LuckyAgentWsClient(
         message: String,
         maxIterations: Int = 8,
         attachments: List<MediaAttachment> = emptyList(),
+        sessionId: String? = null,
+        trackLease: Boolean = true,
+        requestId: String? = null,
     ): WsChatHandle? {
-        val id = currentConnectionId.get() ?: return null
-        val connection = connections[id] ?: return null
-        val requestId = UUID.randomUUID().toString()
+        val connection = connectionFor(sessionId) ?: return null
+        val outboundId = requestId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val payload = json.encodeToString(
             ChatOutbound.serializer(),
             ChatOutbound(
-                id = requestId,
+                id = outboundId,
+                sessionId = connection.config.sessionId,
                 data = ChatOutboundData(
                     message = message,
                     stream = true,
@@ -342,10 +345,35 @@ class LuckyAgentWsClient(
         synchronized(connection) {
             val ws = connection.socketRef.get() ?: return null
             if (!ws.send(payload)) return null
-            connection.leases += 1
+            if (trackLease) connection.leases += 1
         }
-        if (isCurrent(connection)) _state.value = SocketState.Running
-        return WsChatHandle(connection.id, connection.config.sessionId, requestId)
+        if (trackLease && isCurrent(connection)) _state.value = SocketState.Running
+        return WsChatHandle(connection.id, connection.config.sessionId, outboundId, ownsLease = trackLease)
+    }
+
+    fun sendLucky(sessionId: String, action: String): Boolean {
+        val connection = connectionFor(sessionId) ?: return false
+        val payload = json.encodeToString(
+            LuckyOutbound.serializer(),
+            LuckyOutbound(
+                id = UUID.randomUUID().toString(),
+                sessionId = connection.config.sessionId,
+                data = LuckyOutboundData(action = action),
+            ),
+        )
+        val ws = connection.socketRef.get() ?: return false
+        return ws.send(payload)
+    }
+
+    private fun connectionFor(sessionId: String?): ManagedConnection? {
+        val wanted = sessionId?.trim().orEmpty()
+        if (wanted.isNotEmpty()) {
+            connections.values.firstOrNull { connection ->
+                connection.config.sessionId == wanted && !connection.userClosed.get() && connection.socketRef.get() != null
+            }?.let { return it }
+        }
+        val id = currentConnectionId.get() ?: return null
+        return connections[id]
     }
 
     fun cancel(handle: WsChatHandle): Boolean {

@@ -28,7 +28,12 @@ import com.luckyagent.android.data.api.AutonomyDashboardResponse
 import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
 import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.ProviderMessage
+import com.luckyagent.android.data.api.ContextInspectResponse
 import com.luckyagent.android.data.api.TokenUsage
+import com.luckyagent.android.data.api.PendingApproval
+import com.luckyagent.android.data.api.LuckyAction
+import com.luckyagent.android.data.api.LuckyCommand
+import com.luckyagent.android.data.api.parseLuckyCommand
 import com.luckyagent.android.data.api.RuntimeCommand
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.SessionToolTrace
@@ -77,6 +82,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLEncoder
 import java.io.File
+import java.util.UUID
 
 enum class AppDestination {
     Chat, Tasks, Background, Cron, Trajectory, Gateways, Skills, Settings, Memory
@@ -141,6 +147,15 @@ data class PendingMedia(
     val error: String? = null,
 )
 
+data class LuckyPendingSegment(
+    val id: String,
+    val sessionId: String,
+    val preview: String,
+    val message: String,
+    val attachments: List<MediaAttachment> = emptyList(),
+    val error: String? = null,
+)
+
 data class AttachmentNotice(
     val text: String,
     val isError: Boolean = false,
@@ -164,6 +179,8 @@ data class AppUiState(
     val historyHasMore: Boolean = false,
     val composer: String = "",
     val pendingMedia: List<PendingMedia> = emptyList(),
+    /** Messages already handed to the runtime's per-session FIFO. */
+    val outboundQueue: List<OutboundQueueItem> = emptyList(),
     val socketState: SocketState = SocketState.Idle,
     val socketError: String? = null,
     val reconnectInfo: String? = null,
@@ -236,6 +253,12 @@ data class AppUiState(
     val cronLoading: Boolean = false,
     val cronError: String? = null,
     val pendingQuote: MessageQuote? = null,
+    /** Server-owned /lucky collector for the visible session. */
+    val luckyActive: Boolean = false,
+    val luckySegments: Int = 0,
+    val luckyAttachments: Int = 0,
+    /** Segments accepted locally but not yet acknowledged by the runtime collector. */
+    val luckyPending: List<LuckyPendingSegment> = emptyList(),
     val snackbarMessage: String? = null,
     val models: List<ModelRef> = emptyList(),
     val activeModels: Map<String, ModelRef> = emptyMap(),
@@ -243,6 +266,12 @@ data class AppUiState(
     val modelsLoading: Boolean = false,
     val modelsError: String? = null,
     val modelSwitchingKey: String? = null,
+    val contextInspect: ContextInspectResponse? = null,
+    val contextInspectLoading: Boolean = false,
+    val contextInspectError: String? = null,
+    val pendingApprovals: List<PendingApproval> = emptyList(),
+    val approvalsLoading: Boolean = false,
+    val approvalsError: String? = null,
     val update: AppUpdateUiState = AppUpdateUiState(),
 )
 
@@ -256,7 +285,9 @@ class AppViewModel(
     private var settingsReconnectJob: Job? = null
     private var taskPollingJob: Job? = null
     private var backgroundPollingJob: Job? = null
+    private var approvalPollingJob: Job? = null
     private var historyJob: Job? = null
+    private var contextInspectJob: Job? = null
     private var historySessionId: String? = null
     private var historyMessages: List<ProviderMessage> = emptyList()
     private var historyStartIndex = 0
@@ -267,6 +298,10 @@ class AppViewModel(
     private var currentTurnId = "turn-0"
     private val toolStepIndex = mutableMapOf<String, String>()
     private val mediaUploadSemaphore = Semaphore(1)
+    private val outboundChatQueue = OutboundChatQueue()
+    /** One local dispatcher per session keeps sends FIFO even while the user keeps typing. */
+    private val outboundDispatchJobs = mutableMapOf<String, Job>()
+    private val luckyPending = LinkedHashMap<String, LuckyPendingSegment>()
     private data class ActiveRun(
         val handle: WsChatHandle,
     )
@@ -314,9 +349,62 @@ class AppViewModel(
         observeWs()
         refreshSessions()
         connectSocket()
+        startApprovalPolling()
         // Keep the composer chip useful as soon as the runtime is reachable; this is
         // asynchronous and never gates sending a chat message.
         loadModels()
+    }
+
+    private fun startApprovalPolling() {
+        approvalPollingJob?.cancel()
+        approvalPollingJob = viewModelScope.launch {
+            while (isActive) {
+                val shouldPoll = activeRuns.isNotEmpty() || _ui.value.pendingApprovals.isNotEmpty()
+                if (shouldPoll) refreshApprovalsInternal()
+                delay(1500)
+            }
+        }
+    }
+
+    private suspend fun refreshApprovalsInternal() {
+        val showLoading = _ui.value.pendingApprovals.isEmpty()
+        if (showLoading) _ui.update { it.copy(approvalsLoading = true, approvalsError = null) }
+        container.api.listApprovals()
+            .onSuccess { approvals ->
+                _ui.update {
+                    it.copy(
+                        pendingApprovals = approvals,
+                        approvalsLoading = false,
+                        approvalsError = null,
+                    )
+                }
+            }
+            .onFailure { error ->
+                _ui.update {
+                    it.copy(
+                        approvalsLoading = false,
+                        approvalsError = error.message ?: "无法读取待审批请求",
+                    )
+                }
+            }
+    }
+
+    fun refreshApprovals() {
+        viewModelScope.launch { refreshApprovalsInternal() }
+    }
+
+    fun resolveApproval(approval: PendingApproval, decision: String, input: String = "") {
+        viewModelScope.launch {
+            _ui.update { it.copy(approvalsError = null) }
+            container.api.resolveApproval(approval, decision, input)
+                .onSuccess {
+                    _ui.update { it.copy(pendingApprovals = it.pendingApprovals.filterNot { item -> item.id == approval.id }) }
+                    refreshApprovalsInternal()
+                }
+                .onFailure { error ->
+                    _ui.update { it.copy(approvalsError = error.message ?: "审批处理失败") }
+                }
+        }
     }
 
     private fun observeWs() {
@@ -336,6 +424,7 @@ class AppViewModel(
                     "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
                         val requestId = eventRequestId(event)
                         if (!completeRun(event)) return@collect
+                        finishOutboundRequest(event.sessionId, requestId, success = true)
                         val piece = extractFullResponse(env.data) ?: extractText(env.data)
                         val attachments = distinctMedia(
                             extractAttachments(env.data) + extractArtifactAttachments(piece.orEmpty()),
@@ -355,12 +444,14 @@ class AppViewModel(
                             finishBackgroundRun(event.sessionId)
                         }
                         refreshSessions()
+                        if (foreground) refreshContextInspect()
                     }
                     "tool_call", "tool" -> if (foreground) handleToolCall(env.data)
                     "tool_result" -> if (foreground) handleToolResult(env.data)
-                    "compact" -> if (foreground) handleCompactEvent(env.data)
                     "cancel", "cancelled" -> {
+                        val requestId = eventRequestId(event)
                         if (!completeRun(event)) return@collect
+                        finishOutboundRequest(event.sessionId, requestId, success = true)
                         if (foreground) {
                             finishAssistant(null)
                             _ui.update {
@@ -378,11 +469,13 @@ class AppViewModel(
                         }
                     }
                     "error" -> {
+                        val requestId = eventRequestId(event)
                         if (!completeRun(event)) return@collect
                         val msg = env.error
                             ?: extractField(env.data, "message")
                             ?: extractText(env.data)
                             ?: "Unknown error"
+                        finishOutboundRequest(event.sessionId, requestId, success = false, error = msg)
                         if (foreground) {
                             finishAssistant(null)
                             pushBubble(
@@ -406,15 +499,37 @@ class AppViewModel(
                             finishBackgroundRun(event.sessionId)
                         }
                     }
+                    "compact" -> if (foreground) handleCompactEvent(env.data)
                     "status", "info" -> {
                         val state = extractField(env.data, "state")
                         val message = extractField(env.data, "message") ?: extractText(env.data)
                         when (state?.lowercase()) {
                             "thinking" -> if (foreground) updatePhase("thinking", "Thinking through the request")
                             "executing" -> if (foreground) updatePhase("executing", "Working on your request")
+                            "lucky" -> if (event.sessionId == currentSessionId() && !message.isNullOrBlank()) {
+                                // Lucky acknowledgements have no active run ID,
+                                // so they are not foreground events. They still
+                                // belong to the visible session.
+                                val requestId = event.envelope.parentId
+                                if (requestId != null && message.contains("已收集")) {
+                                    acknowledgeLuckySegment(requestId)
+                                }
+                                applyLuckyStatus(message)
+                                if (!message.contains("已收集")) {
+                                    pushBubble(
+                                        ChatBubble(
+                                            id = "lucky-${System.currentTimeMillis()}",
+                                            role = "assistant",
+                                            content = message,
+                                            createdAt = nowIsoTimestamp(),
+                                        ),
+                                    )
+                                }
+                            }
                             "idle" -> {
                                 val requestId = eventRequestId(event)
                                 if (!completeRun(event)) return@collect
+                                finishOutboundRequest(event.sessionId, requestId, success = true)
                                 if (foreground) {
                                     finishAssistant(null)
                                     notifyChatCompleted(event.sessionId, requestId, _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, true)
@@ -469,6 +584,92 @@ class AppViewModel(
     private fun currentSessionId(): String =
         container.settingsRepository.snapshot().sessionId.ifBlank { "android-main" }
 
+    private fun publishOutboundQueue(sessionId: String = currentSessionId()) {
+        val items = outboundChatQueue.items(sessionId)
+        _ui.update { current ->
+            if (currentSessionId() == sessionId) current.copy(outboundQueue = items) else current
+        }
+    }
+
+    private fun queueItemId(): String = "outbound-${System.currentTimeMillis()}-${UUID.randomUUID()}"
+
+    private fun dispatchNextOutbound(sessionId: String) {
+        if (activeRuns[sessionId]?.isNotEmpty() == true) return
+        if (outboundDispatchJobs[sessionId]?.isActive == true) return
+        val item = outboundChatQueue.firstQueued(sessionId) ?: return
+        outboundChatQueue.update(item.id, status = OutboundQueueStatus.Sending, clearError = true)
+        publishOutboundQueue(sessionId)
+        val handle = container.wsClient.sendChat(item.message, attachments = item.attachments, sessionId = sessionId)
+        if (handle != null) {
+            markOutboundSent(item.id, handle)
+            registerRun(handle)
+            return
+        }
+
+        // One retry per session. Later composer submits stay queued and cannot
+        // start a second connection attempt for the same session.
+        outboundChatQueue.update(item.id, status = OutboundQueueStatus.Queued, error = "正在连接")
+        publishOutboundQueue(sessionId)
+        container.wsClient.connect(sessionId)
+        outboundDispatchJobs[sessionId] = viewModelScope.launch {
+            delay(450)
+            val retryHandle = container.wsClient.sendChat(item.message, attachments = item.attachments, sessionId = sessionId)
+            if (retryHandle == null) {
+                markOutboundFailed(item.id, sessionId, "WebSocket 未连接，请检查 API Base / Key")
+            } else {
+                markOutboundSent(item.id, retryHandle)
+                registerRun(retryHandle)
+            }
+            outboundDispatchJobs.remove(sessionId)
+            if (activeRuns[sessionId].isNullOrEmpty()) dispatchNextOutbound(sessionId)
+        }
+    }
+
+    private fun markOutboundSent(itemId: String, handle: WsChatHandle) {
+        outboundChatQueue.update(
+            id = itemId,
+            status = OutboundQueueStatus.Sending,
+            requestId = handle.requestId,
+            clearError = true,
+        )
+        publishOutboundQueue(handle.sessionId)
+    }
+
+    private fun finishOutboundRequest(
+        sessionId: String,
+        requestId: String?,
+        success: Boolean,
+        error: String? = null,
+    ) {
+        if (requestId.isNullOrBlank()) return
+        val item = outboundChatQueue.findByRequest(sessionId, requestId) ?: return
+        if (success) {
+            outboundChatQueue.remove(item.id)
+        } else {
+            outboundChatQueue.update(
+                item.id,
+                status = OutboundQueueStatus.Failed,
+                error = error ?: "消息发送失败",
+            )
+        }
+        publishOutboundQueue(sessionId)
+        dispatchNextOutbound(sessionId)
+    }
+
+    private fun markOutboundFailed(itemId: String, sessionId: String, error: String) {
+        outboundChatQueue.update(itemId, status = OutboundQueueStatus.Failed, error = error)
+        publishOutboundQueue(sessionId)
+    }
+
+    fun retryOutboundMessage(itemId: String) {
+        val item = outboundChatQueue.items(currentSessionId()).firstOrNull { it.id == itemId }
+            ?: return
+        if (item.status != OutboundQueueStatus.Failed) return
+        outboundChatQueue.update(item.id, status = OutboundQueueStatus.Queued, clearError = true)
+        publishOutboundQueue(item.sessionId)
+        dispatchNextOutbound(item.sessionId)
+    }
+
     private fun sessionRuns(sessionId: String): LinkedHashMap<String, ActiveRun> =
         activeRuns.getOrPut(sessionId) { LinkedHashMap() }
 
@@ -498,6 +699,7 @@ class AppViewModel(
         runs[handle.requestId] = ActiveRun(handle)
         foregroundRequestIds.putIfAbsent(handle.sessionId, handle.requestId)
         publishWorkingSessions()
+        refreshApprovals()
     }
 
     private fun eventRequestId(event: WsEvent): String? =
@@ -637,24 +839,8 @@ class AppViewModel(
         }
     }
 
-    private fun updatePhase(id: String, label: String) {
-        _ui.update { current ->
-            if (current.progressSteps.any { it.id == "phase-$id" && it.label == label && it.status == ProgressStatus.Active }) {
-                return@update current
-            }
-            val previous = current.progressSteps.map { step ->
-                if (step.id.startsWith("phase-") && step.status == ProgressStatus.Active) {
-                    step.copy(status = ProgressStatus.Complete)
-                } else {
-                    step
-                }
-            }
-            val next = upsertProgressStep(previous, ChatProgressStep("phase-$id", label, ProgressStatus.Active))
-            current.copy(isResponding = true, activityLine = label, progressSteps = next)
-        }
-    }
 
-    /** WebSocket type=compact: show context compression progress in the chat chrome. */
+
     private fun handleCompactEvent(data: kotlinx.serialization.json.JsonElement?) {
         if (data == null) return
         val phase = extractField(data, "phase")?.lowercase().orEmpty()
@@ -695,7 +881,6 @@ class AppViewModel(
         }
     }
 
-    /** Manual compact via REST; shows the same progress chrome as auto compact. */
     fun compactCurrentSession(forceLocal: Boolean = false) {
         compactSession(currentSessionId(), forceLocal = forceLocal)
     }
@@ -725,6 +910,22 @@ class AppViewModel(
                     _ui.update { it.copy(activityLine = line) }
                 },
             )
+        }
+    }
+    private fun updatePhase(id: String, label: String) {
+        _ui.update { current ->
+            if (current.progressSteps.any { it.id == "phase-$id" && it.label == label && it.status == ProgressStatus.Active }) {
+                return@update current
+            }
+            val previous = current.progressSteps.map { step ->
+                if (step.id.startsWith("phase-") && step.status == ProgressStatus.Active) {
+                    step.copy(status = ProgressStatus.Complete)
+                } else {
+                    step
+                }
+            }
+            val next = upsertProgressStep(previous, ChatProgressStep("phase-$id", label, ProgressStatus.Active))
+            current.copy(isResponding = true, activityLine = label, progressSteps = next)
         }
     }
 
@@ -1452,6 +1653,16 @@ class AppViewModel(
                 prev.sessionId != next.sessionId ||
                 prev.apiKey != next.apiKey ||
                 prev.useBearer != next.useBearer
+        if (prev.sessionId != next.sessionId) {
+            _ui.update {
+                it.copy(
+                    luckyActive = false,
+                    luckySegments = 0,
+                    luckyAttachments = 0,
+                    luckyPending = luckyPending.values.filter { segment -> segment.sessionId == next.sessionId },
+                )
+            }
+        }
         if (settingsChanged) {
             settingsReconnectJob?.cancel()
             settingsReconnectJob = viewModelScope.launch {
@@ -1501,6 +1712,7 @@ class AppViewModel(
     fun selectSession(id: String) {
         val target = id.ifBlank { "android-main" }
         historyJob?.cancel()
+        contextInspectJob?.cancel()
         historySessionId = target
         historyMessages = emptyList()
         historyStartIndex = 0
@@ -1513,13 +1725,23 @@ class AppViewModel(
                 historyLoadingMore = false,
                 historyHasMore = false,
                 isResponding = activeRuns[target]?.isNotEmpty() == true,
+                outboundQueue = outboundChatQueue.items(target),
                 progressSteps = emptyList(),
                 pendingQuote = null,
+                contextInspect = null,
+                contextInspectError = null,
+                contextInspectLoading = true,
+                luckyActive = false,
+                luckySegments = 0,
+                luckyAttachments = 0,
+                luckyPending = luckyPending.values.filter { it.sessionId == target },
                 activityLine = "loading history…",
             )
         }
         container.wsClient.replaySession(target)
+        dispatchPendingSessions()
         loadHistory(target)
+        refreshContextInspect()
     }
 
     fun loadHistory(sessionId: String = currentSessionId(), reset: Boolean = true) {
@@ -1574,6 +1796,7 @@ class AppViewModel(
                         pendingQuote = null,
                     )
                 }
+                if (reset) refreshContextInspect()
             }.onFailure { e ->
                 if (currentSessionId() != target || historySessionId != target) return@onFailure
                 _ui.update {
@@ -1589,6 +1812,30 @@ class AppViewModel(
 
     fun loadMoreHistory() {
         loadHistory(currentSessionId(), reset = false)
+    }
+
+    fun refreshContextInspect() {
+        val target = currentSessionId()
+        contextInspectJob?.cancel()
+        contextInspectJob = viewModelScope.launch {
+            _ui.update { it.copy(contextInspectLoading = true, contextInspectError = null) }
+            val result = container.api.inspectContext(target)
+            if (currentSessionId() != target) return@launch
+            _ui.update { state ->
+                if (result.isSuccess) {
+                    state.copy(
+                        contextInspect = result.getOrNull(),
+                        contextInspectLoading = false,
+                        contextInspectError = null,
+                    )
+                } else {
+                    state.copy(
+                        contextInspectLoading = false,
+                        contextInspectError = result.exceptionOrNull()?.message ?: "无法读取上下文",
+                    )
+                }
+            }
+        }
     }
 
     private fun historyToBubbles(messages: List<ProviderMessage>, startIndex: Int = 0): List<ChatBubble> {
@@ -1834,6 +2081,7 @@ class AppViewModel(
         val hasQuote = _ui.value.pendingQuote != null
         if (text.isEmpty() && pending.isEmpty() && !hasQuote) return
         val parsedCommand = parseRuntimeCommand(text)
+        val luckyCommand = if (!hasQuote) parseLuckyCommand(text) else null
         val runtimeCommand = if (pending.isEmpty()) parsedCommand else null
         if (parsedCommand?.name?.equals("stop", ignoreCase = true) == true) {
             pushBubble(ChatBubble(id = "u-${System.currentTimeMillis()}", role = "user", content = text, createdAt = nowIsoTimestamp()))
@@ -1846,6 +2094,30 @@ class AppViewModel(
             return
         }
         val sessionId = currentSessionId()
+        if (luckyCommand != null && pending.isNotEmpty()) {
+            _ui.update { it.copy(activityLine = "/lucky 命令不能附带附件，请先发送或移除附件") }
+            return
+        }
+        if (luckyCommand != null) {
+            handleLuckyCommand(text, luckyCommand)
+            return
+        }
+        if (_ui.value.luckyActive) {
+            // While /lucky is on, messages are collected by the runtime and sent
+            // as one turn on /lucky off. They must not enter the per-message queue.
+            sendLuckySegment(
+                sessionId = sessionId,
+                displayText = text.ifBlank { if (pending.isNotEmpty()) "请查看附件" else "" },
+                message = buildOutboundMessage(
+                    text.ifBlank { if (pending.isNotEmpty()) "请查看附件" else "" },
+                    _ui.value.pendingQuote,
+                ),
+                descriptors = pending.mapNotNull { it.descriptor },
+                media = pending.mapNotNull { item -> item.descriptor?.let { ChatMedia(it, item.uri) } },
+                quote = _ui.value.pendingQuote,
+            )
+            return
+        }
         if (runtimeCommand != null) {
             sendRuntimeCommand(text, runtimeCommand)
             return
@@ -1861,20 +2133,138 @@ class AppViewModel(
         val message = buildOutboundMessage(baseMessage, pendingQuote)
         val descriptors = pending.mapNotNull { it.descriptor }
         val media = pending.mapNotNull { item -> item.descriptor?.let { ChatMedia(it, item.uri) } }
+        enqueueOutboundMessage(
+            sessionId = sessionId,
+            displayText = text,
+            message = message,
+            descriptors = descriptors,
+            media = media,
+            quote = pendingQuote,
+        )
+    }
+
+    private fun enqueueOutboundMessage(
+        sessionId: String,
+        displayText: String,
+        message: String,
+        descriptors: List<MediaAttachment>,
+        media: List<ChatMedia>,
+        quote: MessageQuote? = null,
+        showUserBubble: Boolean = true,
+        clearComposer: Boolean = true,
+    ) {
         val wasRunning = isCurrentSessionRunActive()
+        val outboundId = queueItemId()
+        val preview = displayText.ifBlank {
+            when {
+                descriptors.isNotEmpty() -> "请查看附件"
+                quote != null -> "引用消息"
+                else -> message
+            }
+        }.take(120)
+        outboundChatQueue.add(
+            OutboundQueueItem(
+                id = outboundId,
+                sessionId = sessionId,
+                preview = preview,
+                message = message,
+                attachments = descriptors,
+                // The dispatcher promotes exactly one queued item to Sending.
+                status = OutboundQueueStatus.Queued,
+            ),
+        )
         if (!wasRunning) {
             currentTurnId = "turn-${System.currentTimeMillis()}"
             toolStepIndex.clear()
             resetAssistantStream()
         }
+        if (showUserBubble) {
+            pushBubble(
+                ChatBubble(
+                    id = "u-${System.currentTimeMillis()}",
+                    role = "user",
+                    content = displayText,
+                    createdAt = nowIsoTimestamp(),
+                    attachments = media,
+                    quote = quote,
+                ),
+            )
+        }
+        _ui.update {
+            it.copy(
+                composer = if (clearComposer) "" else it.composer,
+                pendingMedia = if (clearComposer) emptyList() else it.pendingMedia,
+                pendingQuote = if (clearComposer) null else it.pendingQuote,
+                isResponding = true,
+                outboundQueue = outboundChatQueue.items(sessionId),
+                activityLine = if (wasRunning) {
+                    "消息已排队 · 当前队列 ${outboundChatQueue.items(sessionId).count { item -> item.status == OutboundQueueStatus.Sending || item.status == OutboundQueueStatus.Queued }} 条"
+                } else {
+                    it.activityLine
+                },
+                progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
+            )
+        }
+        // Only the dispatcher sends. Subsequent messages remain local Queue
+        // entries until the preceding request reaches a terminal event.
+        dispatchNextOutbound(sessionId)
+    }
+
+    private fun dispatchPendingSessions() {
+        outboundChatQueue.sessionIds().forEach(::dispatchNextOutbound)
+    }
+
+    private fun luckyWireAction(action: LuckyAction): String = when (action) {
+        LuckyAction.On -> "on"
+        LuckyAction.Off -> "off"
+        LuckyAction.Status -> "status"
+        LuckyAction.Cancel -> "cancel"
+        LuckyAction.Unknown -> ""
+    }
+
+    private fun applyLuckyStatus(message: String) {
+        val count = Regex("(\\d+)\\s*段").find(message)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val attachments = Regex("附件\\s*(\\d+)").find(message)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val active = when {
+            message.contains("未开启") || message.contains("没有正在") || message.contains("已取消") || message.contains("没有收集到") || message.contains("已提交") -> false
+            message.contains("已开启") || message.contains("正在收集") || message.contains("已经在收集") || message.contains("已收集") -> true
+            else -> _ui.value.luckyActive
+        }
+        _ui.update {
+            it.copy(
+                luckyActive = active,
+                luckySegments = if (active) count ?: it.luckySegments else 0,
+                luckyAttachments = if (active) attachments ?: it.luckyAttachments else 0,
+                activityLine = message,
+            )
+        }
+    }
+
+    private fun sendLuckySegment(
+        sessionId: String,
+        displayText: String,
+        message: String,
+        descriptors: List<MediaAttachment>,
+        media: List<ChatMedia>,
+        quote: MessageQuote?,
+    ) {
+        val id = "lucky-${System.currentTimeMillis()}-${UUID.randomUUID()}"
+        val segment = LuckyPendingSegment(
+            id = id,
+            sessionId = sessionId,
+            preview = displayText.ifBlank { "附件" }.take(80),
+            message = message,
+            attachments = descriptors,
+        )
+        luckyPending[id] = segment
         pushBubble(
             ChatBubble(
-                id = "u-${System.currentTimeMillis()}",
+                id = "u-$id",
                 role = "user",
-                content = text,
+                content = displayText,
                 createdAt = nowIsoTimestamp(),
                 attachments = media,
-                quote = pendingQuote,
+                quote = quote,
             ),
         )
         _ui.update {
@@ -1882,40 +2272,104 @@ class AppViewModel(
                 composer = "",
                 pendingMedia = emptyList(),
                 pendingQuote = null,
-                isResponding = true,
-                progressSteps = listOf(ChatProgressStep("phase-thinking", "Thinking through the request", ProgressStatus.Active)),
+                luckyPending = visibleLuckyPending(),
+                activityLine = "正在送进 Lucky 收集",
             )
         }
-        val handle = container.wsClient.sendChat(message, attachments = descriptors)
-        if (handle != null) {
-            registerRun(handle)
-        } else {
-            connectSocket(force = true)
+        deliverLuckySegment(segment)
+    }
+
+    private fun deliverLuckySegment(segment: LuckyPendingSegment) {
+        val handle = container.wsClient.sendChat(
+            segment.message,
+            attachments = segment.attachments,
+            sessionId = segment.sessionId,
+            trackLease = false,
+            requestId = segment.id,
+        )
+        if (handle != null) return
+        container.wsClient.connect(segment.sessionId)
+        viewModelScope.launch {
+            delay(450)
+            val retry = container.wsClient.sendChat(
+                segment.message,
+                attachments = segment.attachments,
+                sessionId = segment.sessionId,
+                trackLease = false,
+                requestId = segment.id,
+            )
+            if (retry == null) markLuckySegmentFailed(segment.id, "没有送进收集，点重试")
+        }
+    }
+
+    private fun acknowledgeLuckySegment(id: String) {
+        if (luckyPending.remove(id) == null) return
+        publishLuckyPending()
+    }
+
+    private fun markLuckySegmentFailed(id: String, error: String) {
+        val current = luckyPending[id] ?: return
+        luckyPending[id] = current.copy(error = error)
+        publishLuckyPending(error)
+    }
+
+    private fun publishLuckyPending(activity: String? = null) {
+        val visible = visibleLuckyPending()
+        _ui.update { state ->
+            state.copy(
+                luckyPending = visible,
+                activityLine = activity ?: state.activityLine,
+            )
+        }
+    }
+
+    private fun visibleLuckyPending(): List<LuckyPendingSegment> =
+        luckyPending.values.filter { it.sessionId == currentSessionId() }
+
+    fun retryLuckySegment(id: String) {
+        val segment = luckyPending[id] ?: return
+        if (segment.sessionId != currentSessionId()) return
+        luckyPending[id] = segment.copy(error = null)
+        publishLuckyPending("正在重新送进 Lucky 收集")
+        deliverLuckySegment(luckyPending[id] ?: return)
+    }
+
+    private fun handleLuckyCommand(rawText: String, command: LuckyCommand) {
+        val now = System.currentTimeMillis()
+        val sessionId = currentSessionId()
+        pushBubble(ChatBubble(id = "u-$now", role = "user", content = rawText, createdAt = nowIsoTimestamp()))
+        _ui.update { it.copy(composer = "", pendingMedia = emptyList(), pendingQuote = null) }
+        val action = luckyWireAction(command.action)
+        if (action == "off" && visibleLuckyPending().isNotEmpty()) {
+            visibleLuckyPending().filter { it.error != null }.forEach { deliverLuckySegment(it.copy(error = null)) }
+            val notice = "还有 ${visibleLuckyPending().size} 段没进收集，确认后再提交"
+            pushBubble(ChatBubble(id = "lucky-wait-$now", role = "assistant", content = notice, createdAt = nowIsoTimestamp()))
+            _ui.update { it.copy(activityLine = notice, luckyPending = visibleLuckyPending()) }
+            return
+        }
+        if (action == "cancel") {
+            luckyPending.entries.removeIf { it.value.sessionId == sessionId }
+        }
+        when (action) {
+            "on" -> _ui.update { it.copy(luckyActive = true, activityLine = "Lucky 已开启，接下来的消息会先收集") }
+            "cancel" -> _ui.update { it.copy(luckyActive = false, luckySegments = 0, luckyAttachments = 0, luckyPending = emptyList()) }
+        }
+        if (action.isEmpty()) {
+            val notice = "用法：/lucky on | /lucky off | /lucky status | /lucky cancel"
+            pushBubble(ChatBubble(id = "lucky-$now", role = "assistant", content = notice, createdAt = nowIsoTimestamp()))
+            _ui.update { it.copy(activityLine = notice) }
+            return
+        }
+        if (!container.wsClient.sendLucky(sessionId, action)) {
+            container.wsClient.connect(sessionId)
             viewModelScope.launch {
-                kotlinx.coroutines.delay(450)
-                if (currentSessionId() != sessionId) {
-                    _ui.update { it.copy(isResponding = false) }
-                    return@launch
-                }
-                val retryHandle = container.wsClient.sendChat(message, attachments = descriptors)
-                if (retryHandle == null) {
-                    pushBubble(
-                        ChatBubble(
-                            id = "err-${System.currentTimeMillis()}",
-                            role = "error",
-                            content = "WebSocket not connected. Check API Base / Key / lh serve.",
-                        ),
-                    )
-                    _ui.update {
-                        it.copy(
-                            isResponding = false,
-                            progressSteps = it.progressSteps.map { step ->
-                                if (step.status == ProgressStatus.Active) step.copy(label = "Connection unavailable", status = ProgressStatus.Failed) else step
-                            },
-                        )
+                delay(450)
+                if (!container.wsClient.sendLucky(sessionId, action)) {
+                    val notice = "Lucky 命令没有发出，请检查连接"
+                    if (currentSessionId() == sessionId) {
+                        pushBubble(ChatBubble(id = "lucky-err-$now", role = "assistant", content = notice, createdAt = nowIsoTimestamp()))
+                        _ui.update { it.copy(activityLine = notice) }
                     }
-                } else {
-                    registerRun(retryHandle)
                 }
             }
         }
@@ -2041,6 +2495,12 @@ class AppViewModel(
         activeRuns[sessionId]?.values?.firstOrNull()?.let { run ->
             container.wsClient.cancel(run.handle)
         }
+        outboundDispatchJobs.remove(sessionId)?.cancel()
+        // The runtime cancels the active run and every queued run for the
+        // session. Drop their local indicators together so no stale queued row
+        // remains after pressing Stop.
+        outboundChatQueue.removeSession(sessionId)
+        publishOutboundQueue(sessionId)
         clearRuns(sessionId)
         finishAssistant(null)
         _ui.update {
@@ -2409,6 +2869,7 @@ class AppViewModel(
             val result = container.api.createSession(title)
             result.onSuccess { session ->
                 historyJob?.cancel()
+                contextInspectJob?.cancel()
                 historySessionId = session.id
                 historyMessages = emptyList()
                 historyStartIndex = 0
@@ -2423,12 +2884,16 @@ class AppViewModel(
                         historyLoadingMore = false,
                         historyHasMore = false,
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
+                        outboundQueue = outboundChatQueue.items(session.id),
                         activityLine = "new session · ${session.id}",
                         pendingQuote = null,
+                        contextInspect = null,
+                        contextInspectError = null,
                     )
                 }
                 connectSocket()
                 refreshSessions()
+                refreshContextInspect()
             }.onFailure { e ->
                 _ui.update { it.copy(activityLine = "create session: ${e.message}") }
             }

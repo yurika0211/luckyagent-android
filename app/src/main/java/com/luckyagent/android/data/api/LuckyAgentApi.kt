@@ -196,6 +196,57 @@ class LuckyAgentApi(
         return builder.build().toString()
     }
 
+    suspend fun inspectContext(sessionId: String): Result<ContextInspectResponse> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val id = sessionId.trim()
+                require(id.isNotEmpty()) { "session id required" }
+                val request = Request.Builder()
+                    .url(url("/api/v1/context", mapOf("session_id" to id, "inspect" to "1")))
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("context ${resp.code}: $body")
+                    json.decodeFromString(ContextInspectResponse.serializer(), body)
+                }
+            }
+        }
+
+    suspend fun listApprovals(): Result<List<PendingApproval>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/approvals")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("approvals ${resp.code}: $body")
+                json.decodeFromString(ApprovalsResponse.serializer(), body).approvals
+            }
+        }
+    }
+
+    suspend fun resolveApproval(approval: PendingApproval, decision: String, input: String = ""): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = json.encodeToString(
+                    ApprovalResolutionRequest.serializer(),
+                    ApprovalResolutionRequest(
+                        provider = approval.provider,
+                        approvalId = approval.id,
+                        decision = decision,
+                        input = input,
+                    ),
+                )
+                val request = Request.Builder()
+                    .url(url("/api/v1/approvals/resolve"))
+                    .post(payload.toRequestBody(jsonMedia))
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) error("resolve approval ${resp.code}: $body")
+                }
+            }
+        }
+
     suspend fun healthLive(): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder().url(url("/api/v1/health/live")).get().build()
