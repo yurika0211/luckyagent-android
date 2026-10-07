@@ -834,6 +834,7 @@ private fun ChatConversation(
                         is ChatTimelineItem.Message -> BubbleRow(
                             bubble = item.bubble,
                             avatarFile = state.settings.avatarFile,
+                            bubbleOpacity = state.settings.bubbleOpacity,
                             imageHeaders = imageHeaders,
                             imageBaseUrl = state.settings.apiBase,
                             onDownload = { media -> vm.downloadAttachment(context, media) },
@@ -1065,6 +1066,7 @@ private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null, size:
 private fun BubbleRow(
     bubble: ChatBubble,
     avatarFile: String,
+    bubbleOpacity: Int,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
@@ -1111,7 +1113,7 @@ private fun BubbleRow(
                         Column(
                             Modifier
                                 .clip(RoundedCornerShape(18.dp))
-                                .background(if (isUser) CloverUserBubble.copy(alpha = state.settings.bubbleOpacity.coerceIn(0, 100) / 100f) else CloverSurface.copy(alpha = state.settings.bubbleOpacity.coerceIn(0, 100) / 100f))
+                                .background((if (isUser) CloverUserBubble else CloverSurface).copy(alpha = bubbleOpacity.coerceIn(0, 100) / 100f))
                                 .pointerInput(bubble.id) {
                                     detectTapGestures(onLongPress = { menuExpanded = true })
                                 }
