@@ -514,12 +514,20 @@ class LuckyAgentApi(
         }
     }
 
-    suspend fun sessionToolTrace(sessionId: String): Result<SessionToolTrace> = withContext(Dispatchers.IO) {
+    suspend fun sessionToolTrace(
+        sessionId: String,
+        limit: Int = 100,
+        offset: Int = 0,
+    ): Result<SessionToolTrace> = withContext(Dispatchers.IO) {
         runCatching {
             val id = sessionId.trim()
             require(id.isNotEmpty()) { "session id required" }
+            val query = mapOf(
+                "limit" to limit.coerceIn(1, 200).toString(),
+                "offset" to offset.coerceAtLeast(0).toString(),
+            )
             val request = Request.Builder()
-                .url(url("/api/v1/sessions/$id/tools"))
+                .url(url("/api/v1/sessions/$id/tools", query))
                 .get()
                 .build()
             client.newCall(request).execute().use { resp ->

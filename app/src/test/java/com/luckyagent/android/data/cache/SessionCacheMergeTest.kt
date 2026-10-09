@@ -108,6 +108,24 @@ class SessionCacheMergeTest {
     }
 
     @Test
+    fun olderPageInvalidatesWhenNewMessagesShiftTheOffsetPastTheCachedWindow() {
+        val cached = page(start = 60, count = 100, messages = (60 until 100).map { msg("m$it") })
+        // 100 new messages arrived after the cached page was painted. The
+        // same offset now points at 120–159, which is not older than 60–99.
+        val shifted = (120 until 160).map { msg("m$it") }
+
+        assertTrue(
+            prependOlderPage(
+                cached = cached,
+                older = shifted,
+                remoteCount = 200,
+                serverHasMore = true,
+                requestedOffset = 40,
+            ) is LatestMerge.Invalidate,
+        )
+    }
+
+    @Test
     fun capKeepsTheNewest200AndMarksOldestMissing() {
         val page = page(
             start = 0,

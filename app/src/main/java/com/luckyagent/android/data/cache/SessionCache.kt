@@ -116,7 +116,9 @@ interface SessionCacheDao {
         """
         SELECT sessionId FROM cached_sessions
         WHERE endpoint = :endpoint
-        ORDER BY lastOpenedAt DESC
+        ORDER BY CASE WHEN lastOpenedAt > 0 THEN 0 ELSE 1 END,
+                 lastOpenedAt DESC,
+                 updatedAt DESC
         """,
     )
     suspend fun sessionIdsByRecentOpen(endpoint: String): List<String>

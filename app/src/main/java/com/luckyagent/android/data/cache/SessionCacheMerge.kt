@@ -117,13 +117,19 @@ fun prependOlderPage(
     older: List<ProviderMessage>,
     remoteCount: Int,
     serverHasMore: Boolean,
+    requestedOffset: Int = cached.messages.size,
 ): LatestMerge {
     if (older.isEmpty()) {
         return LatestMerge.Appended(cached.copy(messageCount = remoteCount, reachedOldest = true))
     }
     if (remoteCount < cached.messageCount) return LatestMerge.Invalidate
-    val olderStart = cached.startIndex - older.size
+    // The API offset skips the newest messages. Derive the returned page's
+    // actual server index from the remote total instead of assuming the
+    // cached count is still current; new messages may have arrived since the
+    // cached page was painted.
+    val olderStart = remoteCount - requestedOffset.coerceAtLeast(0) - older.size
     if (olderStart < 0) return LatestMerge.Invalidate
+    if (olderStart + older.size != cached.startIndex) return LatestMerge.Invalidate
     // A touching identity means the offset drifted into rows we already stored.
     val driftedIntoCache = older.any { olderMessage ->
         cached.messages.any { cachedMessage -> messagesEquivalent(olderMessage, cachedMessage) }

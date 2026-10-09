@@ -339,8 +339,9 @@ class AppViewModel(
     init {
         viewModelScope.launch {
             container.settingsRepository.settings.collect { s ->
+                var endpointChanged = false
                 _ui.update { current ->
-                    val endpointChanged = current.settings.apiBase != s.apiBase ||
+                    endpointChanged = current.settings.apiBase != s.apiBase ||
                         current.settings.apiKey != s.apiKey ||
                         current.settings.useBearer != s.useBearer
                     current.copy(
@@ -353,6 +354,7 @@ class AppViewModel(
                         modelsError = if (endpointChanged) null else current.modelsError,
                     )
                 }
+                if (endpointChanged) resetForEndpointChange(s)
             }
         }
         viewModelScope.launch {
@@ -380,6 +382,44 @@ class AppViewModel(
         // Keep the composer chip useful as soon as the runtime is reachable; this is
         // asynchronous and never gates sending a chat message.
         loadModels()
+    }
+
+    /** Drop the previous runtime's in-memory history before loading the new namespace. */
+    private fun resetForEndpointChange(settings: com.luckyagent.android.data.settings.ClientSettings) {
+        val target = settings.sessionId.ifBlank { "android-main" }
+        historyJob?.cancel()
+        contextInspectJob?.cancel()
+        historySessionId = target
+        historyMessages = emptyList()
+        historyStartIndex = 0
+        resetAssistantStream()
+        toolStepIndex.clear()
+        _ui.update {
+            it.copy(
+                sessions = emptyList(),
+                sessionsLoading = true,
+                sessionsError = null,
+                showingOfflineCache = false,
+                bubbles = emptyList(),
+                historyLoading = true,
+                historyLoadingMore = false,
+                historyHasMore = false,
+                isResponding = false,
+                outboundQueue = outboundChatQueue.items(target),
+                pendingQuote = null,
+                contextInspect = null,
+                contextInspectError = null,
+                contextInspectLoading = true,
+                luckyActive = false,
+                luckySegments = 0,
+                luckyAttachments = 0,
+                luckyPending = luckyPending.values.filter { segment -> segment.sessionId == target },
+                progressSteps = emptyList(),
+                activityLine = "loading history…",
+            )
+        }
+        loadHistory(target)
+        refreshContextInspect(target)
     }
 
     private fun handleApprovalEvent(data: kotlinx.serialization.json.JsonElement?) {
@@ -692,6 +732,12 @@ class AppViewModel(
 
     private fun currentSessionId(): String =
         container.settingsRepository.snapshot().sessionId.ifBlank { "android-main" }
+
+    private fun currentCacheConnectionMatches(apiBase: String, apiKey: String): Boolean {
+        val current = container.settingsRepository.snapshot()
+        return current.apiBase.trim().trimEnd('/').equals(apiBase.trim().trimEnd('/'), ignoreCase = true) &&
+            current.apiKey.trim() == apiKey.trim()
+    }
 
     private fun publishOutboundQueue(sessionId: String = currentSessionId()) {
         val items = outboundChatQueue.items(sessionId)
@@ -2060,8 +2106,11 @@ class AppViewModel(
 
     fun refreshSessions() {
         viewModelScope.launch {
-            val apiBase = container.settingsRepository.snapshot().apiBase
-            val cached = runCatching { container.sessionCache.listSessions(apiBase) }.getOrDefault(emptyList())
+            val connection = container.settingsRepository.snapshot()
+            val apiBase = connection.apiBase
+            val apiKey = connection.apiKey
+            val cached = runCatching { container.sessionCache.listSessions(apiBase, apiKey) }.getOrDefault(emptyList())
+            if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
             _ui.update { state ->
                 state.copy(
                     sessionsLoading = true,
@@ -2071,11 +2120,13 @@ class AppViewModel(
             }
             val q = _ui.value.sessionQuery
             val result = container.api.listSessions(q)
+            if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
             if (result.isSuccess) {
                 val remote = result.getOrDefault(emptyList())
                 if (q.isBlank()) {
-                    runCatching { container.sessionCache.saveSessionList(apiBase, remote) }
+                    runCatching { container.sessionCache.saveSessionList(apiBase, remote, apiKey = apiKey) }
                 }
+                if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
                 _ui.update {
                     it.copy(
                         sessionsLoading = false,
@@ -2084,8 +2135,9 @@ class AppViewModel(
                         showingOfflineCache = false,
                     )
                 }
-                if (q.isBlank()) reconcileOpenHistory(apiBase, remote)
+                if (q.isBlank()) reconcileOpenHistory(apiBase, apiKey, remote)
             } else if (cached.isNotEmpty() && q.isBlank()) {
+                if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
                 _ui.update {
                     it.copy(
                         sessionsLoading = false,
@@ -2096,6 +2148,7 @@ class AppViewModel(
                     )
                 }
             } else {
+                if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
                 // Keep the previous list so errors don't look like an empty workspace.
                 val keepCachedList = q.isBlank() && _ui.value.sessions.isNotEmpty()
                 _ui.update {
@@ -2112,13 +2165,14 @@ class AppViewModel(
 
     fun selectSession(id: String) {
         val target = id.ifBlank { "android-main" }
+        val connection = container.settingsRepository.snapshot()
         historyJob?.cancel()
         contextInspectJob?.cancel()
         historySessionId = target
         historyMessages = emptyList()
         historyStartIndex = 0
         viewModelScope.launch {
-            runCatching { container.sessionCache.touchOpened(container.settingsRepository.snapshot().apiBase, target) }
+            runCatching { container.sessionCache.touchOpened(connection.apiBase, target, apiKey = connection.apiKey) }
         }
         container.settingsRepository.update { it.copy(sessionId = target) }
         resetAssistantStream()
@@ -2172,20 +2226,22 @@ class AppViewModel(
         }
 
         historyJob = viewModelScope.launch {
-            val apiBase = container.settingsRepository.snapshot().apiBase
+            val connection = container.settingsRepository.snapshot()
+            val apiBase = connection.apiBase
+            val apiKey = connection.apiKey
             if (reset) {
-                val painted = paintCachedHistory(apiBase, target)
+                val painted = paintCachedHistory(apiBase, apiKey, target)
                 if (!painted && currentSessionId() == target) {
                     historyMessages = emptyList()
                     historyStartIndex = 0
                     _ui.update { it.copy(bubbles = emptyList(), historyLoading = true, activityLine = "loading history…") }
                 }
             }
-            if (currentSessionId() != target || historySessionId != target) return@launch
+            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != target || historySessionId != target) return@launch
             if (reset) {
-                syncLatestHistory(apiBase, target)
+                syncLatestHistory(apiBase, apiKey, target)
             } else {
-                syncOlderHistory(apiBase, target)
+                syncOlderHistory(apiBase, apiKey, target)
             }
         }
     }
@@ -2223,23 +2279,24 @@ class AppViewModel(
             val settings = container.settingsRepository.snapshot()
             val target = settings.sessionId.ifBlank { return@launch }
             if (historyMessages.isNotEmpty() || _ui.value.bubbles.isNotEmpty()) return@launch
-            paintCachedHistory(settings.apiBase, target)
+            paintCachedHistory(settings.apiBase, settings.apiKey, target)
         }
     }
 
-    private suspend fun paintCachedHistory(apiBase: String, sessionId: String): Boolean {
-        val page = runCatching { container.sessionCache.loadPage(apiBase, sessionId) }.getOrNull() ?: return false
-        if (currentSessionId() != sessionId || historySessionId != sessionId) return false
+    private suspend fun paintCachedHistory(apiBase: String, apiKey: String, sessionId: String): Boolean {
+        val page = runCatching { container.sessionCache.loadPage(apiBase, sessionId, apiKey) }.getOrNull() ?: return false
+        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return false
         if (historyMessages.isNotEmpty()) return true
         applyHistoryPage(sessionId, page, offline = _ui.value.showingOfflineCache)
-        runCatching { container.sessionCache.touchOpened(apiBase, sessionId) }
+        runCatching { container.sessionCache.touchOpened(apiBase, sessionId, apiKey = apiKey) }
         return true
     }
 
-    private suspend fun syncLatestHistory(apiBase: String, sessionId: String) {
+    private suspend fun syncLatestHistory(apiBase: String, apiKey: String, sessionId: String) {
+        if (!currentCacheConnectionMatches(apiBase, apiKey)) return
         val sessionsFresh = !_ui.value.sessionsLoading && _ui.value.sessionsError == null && !_ui.value.showingOfflineCache
         val remoteSession = _ui.value.sessions.firstOrNull { it.id == sessionId }
-        val cachedMeta = runCatching { container.sessionCache.sessionMeta(apiBase, sessionId) }.getOrNull()
+        val cachedMeta = runCatching { container.sessionCache.sessionMeta(apiBase, sessionId, apiKey) }.getOrNull()
         if (
             sessionsFresh &&
             remoteSession != null &&
@@ -2250,21 +2307,23 @@ class AppViewModel(
             return
         }
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = 0)
-        if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { history ->
             val remoteCount = history.messageCount ?: (historyMessages.size + history.messages.size)
             val cachedPage = currentHistoryPage().takeIf { historyMessages.isNotEmpty() }
             when (val merged = mergeLatestPage(cachedPage, history.messages, remoteCount)) {
-                is LatestMerge.Invalidate -> replaceHistoryFromServer(apiBase, sessionId, history.messages, remoteCount, history.title)
+                is LatestMerge.Invalidate -> replaceHistoryFromServer(apiBase, apiKey, sessionId, history.messages, remoteCount, history.title)
                 is LatestMerge.Appended -> {
                     val page = merged.page.copy(
                         reachedOldest = merged.page.reachedOldest || history.hasMore != true && merged.page.startIndex == 0,
                     )
-                    persistHistoryPage(apiBase, sessionId, history.title, remoteUpdatedAt(sessionId), page)
+                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), page)
+                    if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     applyHistoryPage(sessionId, page, offline = false)
                 }
             }
         }.onFailure { error ->
+            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
             if (historyMessages.isEmpty()) {
                 _ui.update {
                     it.copy(
@@ -2288,12 +2347,14 @@ class AppViewModel(
 
     private suspend fun replaceHistoryFromServer(
         apiBase: String,
+        apiKey: String,
         sessionId: String,
         messages: List<ProviderMessage>,
         remoteCount: Int,
         title: String?,
     ) {
-        runCatching { container.sessionCache.invalidate(apiBase, sessionId) }
+        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
+        runCatching { container.sessionCache.invalidate(apiBase, sessionId, apiKey) }
         val start = (remoteCount - messages.size).coerceAtLeast(0)
         val page = MessagePage(
             messages = messages,
@@ -2301,13 +2362,15 @@ class AppViewModel(
             messageCount = remoteCount,
             reachedOldest = start == 0,
         )
-        persistHistoryPage(apiBase, sessionId, title, remoteUpdatedAt(sessionId), page)
+        persistHistoryPage(apiBase, apiKey, sessionId, title, remoteUpdatedAt(sessionId), page)
+        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
         applyHistoryPage(sessionId, page, offline = false)
     }
 
-    private suspend fun syncOlderHistory(apiBase: String, sessionId: String) {
+    private suspend fun syncOlderHistory(apiBase: String, apiKey: String, sessionId: String) {
+        if (!currentCacheConnectionMatches(apiBase, apiKey)) return
         if (historyMessages.isEmpty()) {
-            syncLatestHistory(apiBase, sessionId)
+            syncLatestHistory(apiBase, apiKey, sessionId)
             return
         }
         val offset = olderHistoryOffset(historyMessages.size)
@@ -2316,23 +2379,27 @@ class AppViewModel(
             return
         }
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = offset)
-        if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { history ->
             val remoteCount = history.messageCount ?: historyStartIndex + historyMessages.size
             val cached = currentHistoryPage()
-            when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true)) {
+            when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset)) {
                 is LatestMerge.Invalidate -> {
-                    runCatching { container.sessionCache.invalidate(apiBase, sessionId) }
+                    if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onSuccess
+                    runCatching { container.sessionCache.invalidate(apiBase, sessionId, apiKey) }
+                    if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     historyMessages = emptyList()
                     historyStartIndex = 0
-                    syncLatestHistory(apiBase, sessionId)
+                    syncLatestHistory(apiBase, apiKey, sessionId)
                 }
                 is LatestMerge.Appended -> {
-                    persistHistoryPage(apiBase, sessionId, history.title, remoteUpdatedAt(sessionId), merged.page)
+                    persistHistoryPage(apiBase, apiKey, sessionId, history.title, remoteUpdatedAt(sessionId), merged.page)
+                    if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     applyHistoryPage(sessionId, merged.page, offline = false)
                 }
             }
         }.onFailure { error ->
+            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
             _ui.update {
                 it.copy(
                     historyLoading = false,
@@ -2348,14 +2415,15 @@ class AppViewModel(
         }
     }
 
-    private suspend fun reconcileOpenHistory(apiBase: String, remote: List<RuntimeSession>) {
+    private suspend fun reconcileOpenHistory(apiBase: String, apiKey: String, remote: List<RuntimeSession>) {
+        if (!currentCacheConnectionMatches(apiBase, apiKey)) return
         val sessionId = historySessionId ?: return
         if (currentSessionId() != sessionId || historyMessages.isEmpty()) return
         val match = remote.firstOrNull { it.id == sessionId } ?: return
-        val meta = runCatching { container.sessionCache.sessionMeta(apiBase, sessionId) }.getOrNull()
+        val meta = runCatching { container.sessionCache.sessionMeta(apiBase, sessionId, apiKey) }.getOrNull()
         if (historySyncAction(meta, match) == HistorySync.Unchanged) return
         if (historyJob?.isActive == true) return
-        syncLatestHistory(apiBase, sessionId)
+        syncLatestHistory(apiBase, apiKey, sessionId)
     }
 
     private fun currentHistoryPage(): MessagePage = MessagePage(
@@ -2398,6 +2466,7 @@ class AppViewModel(
 
     private suspend fun persistHistoryPage(
         apiBase: String,
+        apiKey: String,
         sessionId: String,
         title: String?,
         updatedAt: String?,
@@ -2408,6 +2477,7 @@ class AppViewModel(
             container.sessionCache.savePage(
                 apiBase = apiBase,
                 sessionId = sessionId,
+                apiKey = apiKey,
                 title = title ?: known?.title,
                 updatedAt = updatedAt ?: known?.updatedAt,
                 createdAt = known?.createdAt,
@@ -3613,8 +3683,8 @@ class AppViewModel(
         viewModelScope.launch {
             container.api.deleteSession(id)
                 .onSuccess {
-                    val apiBase = container.settingsRepository.snapshot().apiBase
-                    runCatching { container.sessionCache.removeSession(apiBase, id) }
+                    val connection = container.settingsRepository.snapshot()
+                    runCatching { container.sessionCache.removeSession(connection.apiBase, id, connection.apiKey) }
                     val remaining = _ui.value.sessions.filter { it.id != id }
                     val current = container.settingsRepository.snapshot().sessionId
                     if (current == id) {
@@ -3716,7 +3786,7 @@ class AppViewModel(
                 return@launch
             }
             _ui.update { it.copy(trajectoryLoading = true, trajectoryError = null) }
-            val result = container.api.sessionToolTrace(sessionId)
+            val result = container.api.sessionToolTrace(sessionId, limit = 100, offset = 0)
             _ui.update {
                 if (result.isSuccess) {
                     val trace = result.getOrNull()
@@ -3725,16 +3795,19 @@ class AppViewModel(
                         trajectory = trace,
                         trajectoryJson = null,
                         trajectoryError = null,
-                        activityLine = "trajectory · ${trace?.tools?.size ?: 0} tools",
+                        activityLine = buildString {
+                            append("trajectory · ${trace?.tools?.size ?: 0}")
+                            trace?.totalCalls?.takeIf { it > trace.tools.size }?.let { append("/$it") }
+                            append(" tools")
+                            if (trace?.hasMore == true) append(" · showing latest 100")
+                        },
                     )
                 } else {
-                    // Fallback: keep raw JSON for diagnostics without blocking UI empty state message
-                    val raw = container.api.getJson("/api/v1/sessions/$sessionId")
                     it.copy(
                         trajectoryLoading = false,
                         trajectory = null,
                         trajectoryError = result.exceptionOrNull()?.message,
-                        trajectoryJson = raw.getOrNull() ?: result.exceptionOrNull()?.message,
+                        trajectoryJson = result.exceptionOrNull()?.message,
                     )
                 }
             }

@@ -574,6 +574,10 @@ data class SessionToolTrace(
     val successes: Int? = null,
     val failures: Int? = null,
     @SerialName("success_rate") val successRate: Double? = null,
+    val limit: Int? = null,
+    val offset: Int? = null,
+    val returned: Int? = null,
+    @SerialName("has_more") val hasMore: Boolean = false,
 )
 
 @Serializable
