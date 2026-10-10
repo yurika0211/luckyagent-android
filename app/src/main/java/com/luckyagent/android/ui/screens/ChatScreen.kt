@@ -69,6 +69,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.CameraAlt
@@ -987,11 +988,18 @@ private fun ChatConversation(
 @Composable
 private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean, onReconnect: () -> Unit = {}) {
     val openNavigation = LocalOpenNavigationDrawer.current
-    val live = state.socketState == SocketState.Connected || state.socketState == SocketState.Running
-    val connectionLabel = if (live) "live" else state.socketState.name.lowercase()
-    val connectionColor = if (live) CloverLeaf else CloverError
+    val live = com.luckyagent.android.ui.components.socketStateLive(state.socketState)
+    val connecting = state.socketState == SocketState.Connecting || state.socketState == SocketState.Reconnecting
+    val connectionColor = when {
+        live -> CloverLeaf
+        connecting -> com.luckyagent.android.ui.theme.CloverWarning
+        else -> CloverError
+    }
     val hasWallpaper = state.settings.chatBackgroundFile.isNotBlank()
     val personaTitle = state.personaName.ifBlank { "LuckyAgent" }
+    val sessionTitle = remember(state.sessions, state.settings.sessionId) {
+        state.sessions.firstOrNull { it.id == state.settings.sessionId }?.title?.takeIf { it.isNotBlank() }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -1010,38 +1018,44 @@ private fun ChatTopBar(state: AppUiState, onMenu: () -> Unit, showMenu: Boolean,
                     Icon(Icons.Outlined.Menu, contentDescription = "Sessions", tint = CloverText2)
                 }
             }
-            Text(
-                personaTitle,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                modifier = if (!live) {
-                    Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(onClick = onReconnect)
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                } else {
-                    Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                },
-            ) {
-                Box(Modifier.size(6.dp).clip(CircleShape).background(connectionColor))
+            if (!showMenu) Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
                 Text(
-                    if (!live) "点击重连" else connectionLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (!live) CloverError else CloverText3,
+                    personaTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                // Status line: tap to reconnect when the socket is down.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = if (!live && !connecting) {
+                        Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onReconnect)
+                    } else {
+                        Modifier
+                    },
+                ) {
+                    Box(Modifier.size(6.dp).clip(CircleShape).background(connectionColor))
+                    Text(
+                        when {
+                            live -> sessionTitle ?: com.luckyagent.android.ui.components.socketStateLabel(state.socketState)
+                            connecting -> com.luckyagent.android.ui.components.socketStateLabel(state.socketState)
+                            else -> com.luckyagent.android.ui.components.socketStateLabel(state.socketState) + " · 点击重连"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (!live && !connecting) CloverError else CloverText3,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
-            ProfileAvatar(
-                fileName = state.settings.avatarFile,
-                onClick = openNavigation,
-                size = 40.dp,
-            )
+            if (openNavigation != null) {
+                IconButton(onClick = openNavigation) {
+                    Icon(Icons.Outlined.Apps, contentDescription = null, tint = CloverText2)
+                }
+            }
         }
         if (!hasWallpaper) HorizontalDivider(color = CloverLine.copy(alpha = .55f))
     }
@@ -1079,7 +1093,7 @@ private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null, size:
     if (file == null) {
         Icon(
             Icons.Outlined.AccountCircle,
-            contentDescription = "打开导航",
+            contentDescription = null,
             tint = CloverText2,
             modifier = shape,
         )
@@ -1087,7 +1101,7 @@ private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null, size:
     }
     AsyncImage(
         model = ImageRequest.Builder(context).data(file).memoryCacheKey(file.absolutePath + file.lastModified()).diskCacheKey(file.absolutePath + file.lastModified()).crossfade(true).build(),
-        contentDescription = "打开导航",
+        contentDescription = null,
         contentScale = ContentScale.Crop,
         modifier = shape,
     )

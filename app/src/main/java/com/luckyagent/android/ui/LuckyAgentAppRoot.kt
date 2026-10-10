@@ -5,7 +5,6 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -28,8 +27,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Assignment
+import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Hub
@@ -44,6 +43,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
@@ -96,19 +97,21 @@ private data class NavSpec(
 private val navItems = listOf(
     NavSpec(AppDestination.Chat, "Chat", Icons.Outlined.ChatBubbleOutline),
     NavSpec(AppDestination.Tasks, "Tasks", Icons.Outlined.Assignment),
-    NavSpec(AppDestination.Background, "Background", Icons.Outlined.Assignment),
+    NavSpec(AppDestination.Background, "Background", Icons.Outlined.Autorenew),
     NavSpec(AppDestination.Cron, "Cron", Icons.Outlined.Schedule),
     NavSpec(AppDestination.Trajectory, "Trace", Icons.Outlined.Timeline),
-    NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
     NavSpec(AppDestination.Skills, "Skills", Icons.Outlined.Extension),
     NavSpec(AppDestination.Memory, "Memory", Icons.Outlined.AccountTree),
+    NavSpec(AppDestination.Gateways, "Gateways", Icons.Outlined.Hub),
     NavSpec(AppDestination.Settings, "Settings", Icons.Outlined.Settings),
 )
 
+private fun nav(dest: AppDestination) = navItems.first { it.dest == dest }
+
+/** Chat and Settings are pinned top/bottom; the rest are grouped by what the user is checking. */
 private val navGroups = listOf(
-    "WORKSPACE" to navItems.take(1),
-    "RUNTIME" to navItems.slice(1 until navItems.lastIndex),
-    "SYSTEM" to navItems.takeLast(1),
+    "运行" to listOf(AppDestination.Tasks, AppDestination.Background, AppDestination.Cron, AppDestination.Trajectory).map(::nav),
+    "能力" to listOf(AppDestination.Skills, AppDestination.Memory, AppDestination.Gateways).map(::nav),
 )
 
 /** Returns a badge color when a page has a notable status, or null when things look normal. */
@@ -175,7 +178,7 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
                 state = state,
                 vm = vm,
                 useRail = true,
-                openNavigation = {},
+                openNavigation = null,
             )
         } else {
             // Left-side app navigation (Material default / LTR). Do not force RTL just to flip the drawer.
@@ -217,7 +220,7 @@ private fun AppScaffold(
     state: AppUiState,
     vm: AppViewModel,
     useRail: Boolean,
-    openNavigation: () -> Unit,
+    openNavigation: (() -> Unit)?,
 ) {
     val context = LocalContext.current
     var scanningPairing by remember { mutableStateOf(false) }
@@ -286,10 +289,17 @@ private fun AppScaffold(
                         }
                         Spacer(Modifier.height(16.dp))
                         navItems.forEach { item ->
+                            if (item.dest == AppDestination.Settings) Spacer(Modifier.height(12.dp))
                             NavigationRailItem(
                                 selected = state.destination == item.dest,
                                 onClick = { vm.navigate(item.dest) },
-                                icon = { Icon(item.icon, contentDescription = item.label) },
+                                icon = {
+                                    val badge = badgeColor(item.dest, state)
+                                    if (badge == null) Icon(item.icon, contentDescription = item.label)
+                                    else androidx.compose.material3.BadgedBox(badge = { androidx.compose.material3.Badge(containerColor = badge) }) {
+                                        Icon(item.icon, contentDescription = item.label)
+                                    }
+                                },
                                 label = { Text(item.label, maxLines = 1) },
                             )
                         }
@@ -365,123 +375,92 @@ private fun NavigationDrawerContent(
     state: AppUiState,
     onSelect: (AppDestination) -> Unit,
 ) {
-    val scroll = rememberScrollState()
+    val live = com.luckyagent.android.ui.components.socketStateLive(state.socketState)
     Column(
         Modifier
             .fillMaxHeight()
-            .verticalScroll(scroll)
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(horizontal = 14.dp, vertical = 16.dp),
+            .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                Modifier.size(48.dp).clip(RoundedCornerShape(16.dp)).background(CloverAccent),
+                Modifier.size(36.dp).clip(RoundedCornerShape(12.dp)).background(CloverAccent),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     "✣",
                     color = MaterialTheme.colorScheme.onPrimary,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
             }
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text("LuckyAgent", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text("Mobile workspace", style = MaterialTheme.typography.bodySmall, color = CloverText3)
-            }
-            IconButton(onClick = { onSelect(AppDestination.Settings) }) {
-                Icon(Icons.Outlined.ArrowForward, contentDescription = "Open settings")
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (state.socketState == com.luckyagent.android.data.api.SocketState.Connected ||
-                            state.socketState == com.luckyagent.android.data.api.SocketState.Running
-                        ) {
-                            CloverAccent
-                        } else {
-                            CloverText3
-                        },
-                    ),
-            )
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "Connection",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CloverText3,
-                    modifier = Modifier.padding(start = 10.dp),
-                )
-                Text(
-                    state.settings.apiBase.ifBlank { "Set runtime endpoint" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = CloverText2,
-                    maxLines = 2,
-                    modifier = Modifier.padding(start = 10.dp),
-                )
-            }
-            Text(state.socketState.name.lowercase(), style = MaterialTheme.typography.labelSmall, color = CloverAccent)
-        }
-        Spacer(Modifier.height(12.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        navGroups.forEach { (groupLabel, groupItems) ->
-            Text(
-                groupLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = CloverText3,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(start = 12.dp, top = 20.dp, bottom = 8.dp),
-            )
-            groupItems.forEach { item ->
-                val selected = state.destination == item.dest
-                val badge = badgeColor(item.dest, state)
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(MaterialTheme.shapes.small)
-                        .background(if (selected) CloverLeaf.copy(alpha = .22f) else Color.Transparent)
-                        .clickable { onSelect(item.dest) }
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        item.icon,
-                        contentDescription = item.label,
-                        tint = if (selected) MaterialTheme.colorScheme.primary else CloverText2,
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(if (live) CloverLeaf else CloverError),
                     )
                     Text(
-                        item.label,
-                        modifier = Modifier.padding(start = 14.dp).weight(1f),
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        if (state.settings.apiBase.isBlank()) "未设置服务地址"
+                        else com.luckyagent.android.ui.components.socketStateLabel(state.socketState),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CloverText3,
+                        modifier = Modifier.padding(start = 6.dp),
                     )
-                    if (badge != null) {
-                        Box(
-                            Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(badge),
-                        )
-                    }
                 }
             }
         }
-        Spacer(Modifier.height(24.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Text(
-            "Profile & connection settings",
-            style = MaterialTheme.typography.bodySmall,
-            color = CloverText3,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-        )
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp),
+        ) {
+            DrawerNavItem(nav(AppDestination.Chat), state, onSelect)
+            navGroups.forEach { (groupLabel, groupItems) ->
+                Text(
+                    groupLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+                )
+                groupItems.forEach { DrawerNavItem(it, state, onSelect) }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
+        Column(Modifier.padding(12.dp)) {
+            DrawerNavItem(nav(AppDestination.Settings), state, onSelect)
+        }
     }
+}
+
+@Composable
+private fun DrawerNavItem(
+    item: NavSpec,
+    state: AppUiState,
+    onSelect: (AppDestination) -> Unit,
+) {
+    val badge = badgeColor(item.dest, state)
+    NavigationDrawerItem(
+        label = { Text(item.label) },
+        icon = { Icon(item.icon, contentDescription = null) },
+        badge = badge?.let { color -> { Box(Modifier.size(8.dp).clip(CircleShape).background(color)) } },
+        selected = state.destination == item.dest,
+        onClick = { onSelect(item.dest) },
+        shape = RoundedCornerShape(12.dp),
+        colors = NavigationDrawerItemDefaults.colors(
+            selectedContainerColor = CloverLeaf.copy(alpha = .22f),
+            unselectedContainerColor = Color.Transparent,
+            selectedIconColor = MaterialTheme.colorScheme.primary,
+            unselectedIconColor = CloverText2,
+        ),
+        modifier = Modifier.height(48.dp),
+    )
 }

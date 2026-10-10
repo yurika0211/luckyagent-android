@@ -1,22 +1,17 @@
 package com.luckyagent.android.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Refresh
@@ -26,15 +21,13 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.api.GatewayStatus
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.AppDestination
+import com.luckyagent.android.ui.components.CardTitleRow
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
@@ -43,7 +36,6 @@ import com.luckyagent.android.ui.components.StatusChip
 import com.luckyagent.android.ui.components.ScreenHeader
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverError
-import com.luckyagent.android.ui.theme.CloverLeaf
 import com.luckyagent.android.ui.theme.CloverLine
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
@@ -116,30 +108,14 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
 @Composable
 private fun GatewayCard(gw: GatewayStatus) {
     CloverCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(if (gw.running) CloverLeaf else CloverText3),
-            )
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    gw.name.ifBlank { gw.platform ?: "gateway" },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                val sub = listOfNotNull(
-                    gw.platform?.takeIf { it.isNotBlank() && it != gw.name },
-                    if (gw.connected == true) "connected" else null,
-                ).joinToString(" · ")
-                if (sub.isNotBlank()) {
-                    Text(sub, color = CloverText2, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-            StatusChip(if (gw.running) "running" else "stopped")
-        }
+        CardTitleRow(
+            title = gw.name.ifBlank { gw.platform ?: "gateway" },
+            subtitle = listOfNotNull(
+                gw.platform?.takeIf { it.isNotBlank() && it != gw.name },
+                if (gw.connected == true) "connected" else null,
+            ).joinToString(" · "),
+            trailing = { StatusChip(if (gw.running) "running" else "stopped") },
+        )
         gw.stats?.let { stats ->
             HorizontalDivider(color = CloverLine.copy(alpha = .75f))
             Row(
@@ -163,6 +139,6 @@ private fun GatewayCard(gw: GatewayStatus) {
 private fun Stat(label: String, value: String) {
     Column {
         Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
-        Text(value, style = MaterialTheme.typography.titleMedium)
+        Text(value, style = MaterialTheme.typography.titleSmall)
     }
 }

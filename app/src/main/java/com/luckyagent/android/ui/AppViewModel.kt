@@ -296,7 +296,6 @@ class AppViewModel(
     private val _ui = MutableStateFlow(AppUiState(settings = container.settingsRepository.snapshot()))
     val ui: StateFlow<AppUiState> = _ui.asStateFlow()
 
-    private val backStack = ArrayDeque<AppDestination>()
     private var eventsJob: Job? = null
     private var settingsReconnectJob: Job? = null
     private var taskPollingJob: Job? = null
@@ -1629,11 +1628,6 @@ class AppViewModel(
     }
 
     fun navigate(dest: AppDestination) {
-        val current = _ui.value.destination
-        if (current != dest) {
-            backStack.addLast(current)
-            while (backStack.size > 12) backStack.removeFirst()
-        }
         _ui.update { it.copy(destination = dest) }
         ensureRuntimeWatch()
         when (dest) {
@@ -1653,7 +1647,10 @@ class AppViewModel(
         }
     }
 
-    /** Closes a detail page, then walks back to the previous screen. */
+    /**
+     * Closes a detail page first; otherwise any secondary page returns to Chat.
+     * Pages are siblings reached from the drawer, so there is no deeper history to walk.
+     */
     fun handleSystemBack(): Boolean {
         if (_ui.value.selectedTaskId != null) {
             clearSelectedTask()
@@ -1663,10 +1660,8 @@ class AppViewModel(
             clearSelectedBackgroundTask()
             return true
         }
-        val previous = if (backStack.isEmpty()) null else backStack.removeLast()
-        if (previous == null) return false
-        _ui.update { it.copy(destination = previous) }
-        ensureRuntimeWatch()
+        if (_ui.value.destination == AppDestination.Chat) return false
+        navigate(AppDestination.Chat)
         return true
     }
 
