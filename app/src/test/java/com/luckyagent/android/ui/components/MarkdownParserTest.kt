@@ -170,4 +170,75 @@ class MarkdownParserTest {
         val table = splitMarkdownBlocks(markdown).single() as? MdBlock.Table
         return table ?: error("Expected a table block: $markdown")
     }
+
+    @Test
+    fun fenceKeepsItsLanguage() {
+        val code = splitMarkdownBlocks("```kotlin title\nval x = 1\n```").single() as MdBlock.Code
+
+        assertEquals("kotlin", code.lang)
+        assertEquals("val x = 1", code.body)
+    }
+
+    @Test
+    fun fenceWithoutLanguageHasEmptyLang() {
+        val code = splitMarkdownBlocks("```\nplain\n```").single() as MdBlock.Code
+
+        assertEquals("", code.lang)
+    }
+
+    @Test
+    fun mermaidFenceBecomesAMermaidBlock() {
+        val block = splitMarkdownBlocks("```mermaid\nflowchart LR\n  A-->B\n```").single() as MdBlock.Mermaid
+
+        assertTrue(block.source.contains("A-->B"))
+    }
+
+    @Test
+    fun unclosedMermaidFenceStaysSource() {
+        val block = splitMarkdownBlocks("```mermaid\nflowchart LR").single() as MdBlock.Code
+
+        assertEquals("mermaid", block.lang)
+    }
+
+    @Test
+    fun htmlFenceBecomesAnHtmlBlock() {
+        val block = splitMarkdownBlocks("```html\n<b>bold</b>\n```").single() as MdBlock.Html
+
+        assertTrue(block.source.contains("<b>bold</b>"))
+    }
+
+    @Test
+    fun detailsBlockIsHtml() {
+        val block = splitMarkdownBlocks("<details><summary>more</summary>\nbody\n</details>").single()
+
+        assertTrue(block is MdBlock.Html)
+    }
+
+    @Test
+    fun inlineHtmlStaysInTheParagraph() {
+        val block = splitMarkdownBlocks("this is <b>bold</b> text").single() as MdBlock.Paragraph
+
+        assertTrue(block.text.contains("<b>bold</b>"))
+    }
+
+    @Test
+    fun streamingMermaidStaysSourceUntilItsOwnFenceCloses() {
+        val blocks = splitMarkdownBlocks("```mermaid\nflowchart LR\n  A-->B\n```kotlin\nval x = 1\n```")
+        val res = MarkdownParserTest::class.java.classLoader.getResource("com/luckyagent/android/ui/components/MarkdownParserKt.class")
+        println("RESOURCE " + res)
+        println("COUNT " + blocks.size); blocks.forEach { println("BLOCK " + it::class.simpleName + " " + it.toString().replace("\n", "|")) }
+
+        val first = blocks[0] as MdBlock.Code
+        assertEquals("mermaid", first.lang)
+        assertTrue(first.body.contains("A-->B"))
+        assertEquals("kotlin", (blocks[1] as MdBlock.Code).lang)
+        assertEquals("val x = 1", (blocks[1] as MdBlock.Code).body)
+    }
+
+    @Test
+    fun mermaidFenceKeepsOnlyItsOwnBody() {
+        val block = splitMarkdownBlocks("```mermaid\nflowchart LR\n  A-->B\n```\n\nafter").first() as MdBlock.Mermaid
+
+        assertEquals("flowchart LR\n  A-->B", block.source.trim())
+    }
 }
