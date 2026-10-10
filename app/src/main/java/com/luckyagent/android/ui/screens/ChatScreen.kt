@@ -28,6 +28,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -106,6 +107,9 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
@@ -122,6 +126,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -521,7 +526,9 @@ fun ChatScreen(
             }
             ModalNavigationDrawer(
                 drawerState = drawerState,
-                gesturesEnabled = false,
+                // Keep the menu button, but also allow the standard edge-swipe
+                // gesture to open and close the session drawer on phones.
+                gesturesEnabled = true,
                 drawerContent = {
                     ModalDrawerSheet(
                         drawerContainerColor = CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f),
@@ -759,6 +766,7 @@ private fun ChatConversation(
 
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
+        val refreshState = rememberPullToRefreshState()
         val timeline = remember(state.bubbles) { buildTimeline(state.bubbles) }
         val atBottom by remember {
             derivedStateOf {
@@ -823,68 +831,82 @@ private fun ChatConversation(
         }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(
-                state = listState,
+            PullToRefreshBox(
+                state = refreshState,
+                isRefreshing = state.historyLoading,
+                onRefresh = { vm.loadHistory(reset = true) },
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                indicator = {
+                    PullToRefreshDefaults.Indicator(
+                        state = refreshState,
+                        isRefreshing = state.historyLoading,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                },
             ) {
-                items(
-                    items = timeline,
-                    key = { it.key },
-                    contentType = { item ->
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(
+                        items = timeline,
+                        key = { it.key },
+                        contentType = { item ->
+                            when (item) {
+                                is ChatTimelineItem.Message -> "message"
+                                is ChatTimelineItem.Process -> "process"
+                            }
+                        },
+                    ) { item ->
                         when (item) {
-                            is ChatTimelineItem.Message -> "message"
-                            is ChatTimelineItem.Process -> "process"
+                            is ChatTimelineItem.Message -> BubbleRow(
+                                bubble = item.bubble,
+                                avatarFile = state.settings.avatarFile,
+                                bubbleOpacity = state.settings.bubbleOpacity,
+                                imageHeaders = imageHeaders,
+                                imageBaseUrl = state.settings.apiBase,
+                                onDownload = { media -> vm.downloadAttachment(context, media) },
+                                onQuote = { vm.quoteMessage(it) },
+                                onCopy = { bubble ->
+                                    val copied = vm.copyBubbleText(bubble)
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
+                                    vm.notifyCopied()
+                                },
+                            )
+                            is ChatTimelineItem.Process -> ProcessTimeline(
+                                steps = item.steps,
+                                isResponding = state.isResponding,
+                                imageHeaders = imageHeaders,
+                                imageBaseUrl = state.settings.apiBase,
+                                onDownload = { media -> vm.downloadAttachment(context, media) },
+                                onQuote = { vm.quoteMessage(it) },
+                                onCopy = { bubble ->
+                                    val copied = vm.copyBubbleText(bubble)
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
+                                    vm.notifyCopied()
+                                },
+                            )
                         }
-                    },
-                ) { item ->
-                    when (item) {
-                        is ChatTimelineItem.Message -> BubbleRow(
-                            bubble = item.bubble,
-                            avatarFile = state.settings.avatarFile,
-                            bubbleOpacity = state.settings.bubbleOpacity,
-                            imageHeaders = imageHeaders,
-                            imageBaseUrl = state.settings.apiBase,
-                            onDownload = { media -> vm.downloadAttachment(context, media) },
-                            onQuote = { vm.quoteMessage(it) },
-                            onCopy = { bubble ->
-                                val copied = vm.copyBubbleText(bubble)
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
-                                vm.notifyCopied()
-                            },
-                        )
-                        is ChatTimelineItem.Process -> ProcessTimeline(
-                            steps = item.steps,
-                            isResponding = state.isResponding,
-                            imageHeaders = imageHeaders,
-                            imageBaseUrl = state.settings.apiBase,
-                            onDownload = { media -> vm.downloadAttachment(context, media) },
-                            onQuote = { vm.quoteMessage(it) },
-                            onCopy = { bubble ->
-                                val copied = vm.copyBubbleText(bubble)
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
-                                vm.notifyCopied()
-                            },
-                        )
                     }
-                }
-                if (state.pendingApprovals.isNotEmpty()) {
-                    item(key = "pending-approvals") {
-                        ApprovalCards(
-                            approvals = state.pendingApprovals,
-                            onDecision = vm::resolveApproval,
-                        )
+                    if (state.pendingApprovals.isNotEmpty()) {
+                        item(key = "pending-approvals") {
+                            ApprovalCards(
+                                approvals = state.pendingApprovals,
+                                onDecision = vm::resolveApproval,
+                            )
+                        }
                     }
-                }
-                state.approvalsError?.takeIf { state.pendingApprovals.isEmpty() }?.let { error ->
-                    item(key = "approvals-error") {
-                        Text(error, color = CloverError, style = MaterialTheme.typography.bodySmall)
+                    state.approvalsError?.takeIf { state.pendingApprovals.isEmpty() }?.let { error ->
+                        item(key = "approvals-error") {
+                            Text(error, color = CloverError, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
+                    item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
                 }
-                item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
             }
             if (state.historyLoading || state.historyLoadingMore) {
                 CircularProgressIndicator(
@@ -1083,6 +1105,7 @@ private fun BubbleRow(
     onCopy: (ChatBubble) -> Unit,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
+    val swipeThreshold = with(LocalDensity.current) { 88.dp.toPx() }
     val isUser = bubble.role.equals("user", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
     Row(
@@ -1123,6 +1146,20 @@ private fun BubbleRow(
                             Modifier
                                 .clip(RoundedCornerShape(18.dp))
                                 .background((if (isUser) CloverUserBubble else CloverSurface).copy(alpha = bubbleOpacity.coerceIn(0, 100) / 100f))
+                                .pointerInput(bubble.id, swipeThreshold) {
+                                    var distance = 0f
+                                    detectHorizontalDragGestures(
+                                        onHorizontalDrag = { change, dragAmount ->
+                                            change.consume()
+                                            distance += dragAmount
+                                        },
+                                        onDragEnd = {
+                                            if (distance >= swipeThreshold) onQuote(bubble)
+                                            distance = 0f
+                                        },
+                                        onDragCancel = { distance = 0f },
+                                    )
+                                }
                                 .pointerInput(bubble.id) {
                                     detectTapGestures(onLongPress = { menuExpanded = true })
                                 }
