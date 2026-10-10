@@ -65,6 +65,11 @@ class LuckyAgentWsClient(
         val reconnectAttempt = AtomicInteger(0)
         @Volatile var reconnectJob: Job? = null
         @Volatile var leases: Int = 0
+        @Volatile var lastUsedAt: Long = System.nanoTime()
+
+        fun touch() {
+            lastUsedAt = System.nanoTime()
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -103,6 +108,7 @@ class LuckyAgentWsClient(
             }
             if (existing != null) {
                 currentConnectionId.set(existing.id)
+                existing.touch()
                 if (existing.socketRef.get() == null && existing.reconnectJob == null) {
                     openSocket(existing, isReconnect = false)
                 } else {
@@ -118,7 +124,7 @@ class LuckyAgentWsClient(
         )
         connections[connection.id] = connection
         currentConnectionId.set(connection.id)
-        closeIdleConnections(except = connection.id)
+        trimIdleConnections()
         openSocket(connection, isReconnect = false)
         return connection.id
     }
@@ -140,9 +146,29 @@ class LuckyAgentWsClient(
             return
         }
         currentConnectionId.set(connection.id)
+        connection.touch()
         connection.userClosed.set(false)
+        trimIdleConnections()
+        // A warm socket only needs a replay request; the handshake is skipped.
+        val ws = connection.socketRef.get()
+        if (ws != null && sendReconnect(connection, ws)) {
+            markCurrentConnected(connection)
+            return
+        }
         connection.reconnectAttempt.set(0)
         reopenSocket(connection, isReconnect = true)
+    }
+
+    private fun sendReconnect(connection: ManagedConnection, webSocket: WebSocket): Boolean {
+        val reconnect = json.encodeToString(
+            ReconnectOutbound.serializer(),
+            ReconnectOutbound(
+                data = ReconnectOutboundData(
+                    lastMessageId = settingsRepository.eventCursor(connection.config.sessionId),
+                ),
+            ),
+        )
+        return webSocket.send(reconnect)
     }
 
     private fun reopenSocket(connection: ManagedConnection, isReconnect: Boolean) {
@@ -221,15 +247,7 @@ class LuckyAgentWsClient(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 connection.socketRef.set(webSocket)
                 connection.reconnectAttempt.set(0)
-                val reconnect = json.encodeToString(
-                    ReconnectOutbound.serializer(),
-                    ReconnectOutbound(
-                        data = ReconnectOutboundData(
-                            lastMessageId = settingsRepository.eventCursor(connection.config.sessionId),
-                        ),
-                    ),
-                )
-                webSocket.send(reconnect)
+                sendReconnect(connection, webSocket)
                 if (isCurrent(connection)) {
                     _reconnectInfo.value = null
                     _state.value = SocketState.Connected
@@ -444,21 +462,38 @@ class LuckyAgentWsClient(
 
     fun release(connectionId: String) {
         val connection = connections[connectionId] ?: return
-        val close = synchronized(connection) {
+        val idle = synchronized(connection) {
             connection.leases = (connection.leases - 1).coerceAtLeast(0)
-            connection.leases == 0 && currentConnectionId.get() != connection.id
+            connection.leases == 0
         }
-        if (close) closeConnection(connection)
+        if (idle) trimIdleConnections()
     }
 
     fun replayHandle(sessionId: String, requestId: String, connectionId: String): WsChatHandle =
         WsChatHandle(connectionId, sessionId, requestId, ownsLease = false)
 
-    private fun closeIdleConnections(except: String) {
-        connections.values
-            .filter { it.id != except && it.leases == 0 }
-            .forEach(::closeConnection)
+    /**
+     * Keep a few idle sockets warm so switching back to a recent session does
+     * not pay for a new handshake. Sockets for an old endpoint or key are
+     * closed once idle; leased and current sockets are never touched.
+     */
+    private fun trimIdleConnections() {
+        val currentId = currentConnectionId.get()
+        val current = currentId?.let(connections::get)
+        val idle = connections.values.filter { it.id != currentId && it.leases == 0 }
+        val (sameEndpoint, staleEndpoint) = idle.partition { connection ->
+            current == null || sameEndpoint(connection.config, current.config)
+        }
+        staleEndpoint.forEach(::closeConnection)
+        val evict = idleConnectionsToEvict(
+            sameEndpoint.map { it.id to it.lastUsedAt },
+            MAX_IDLE_CONNECTIONS,
+        ).toSet()
+        sameEndpoint.filter { it.id in evict }.forEach(::closeConnection)
     }
+
+    private fun sameEndpoint(a: ConnectionConfig, b: ConnectionConfig): Boolean =
+        a.apiBase == b.apiBase && a.wsUrl == b.wsUrl && a.apiKey == b.apiKey && a.useBearer == b.useBearer
 
     private fun closeConnection(connection: ManagedConnection) {
         if (!connections.remove(connection.id, connection)) return
@@ -476,6 +511,13 @@ class LuckyAgentWsClient(
     }
 
     companion object {
+        /** Idle sockets kept open besides the current one and leased ones. */
+        internal const val MAX_IDLE_CONNECTIONS = 4
+
+        /** Ids to close: everything past the [keep] most recently used. */
+        internal fun idleConnectionsToEvict(idle: List<Pair<String, Long>>, keep: Int): List<String> =
+            idle.sortedByDescending { it.second }.drop(keep.coerceAtLeast(0)).map { it.first }
+
         const val RECONNECT_BASE_MS = 50L
         const val RECONNECT_MAX_MS = 250L
         /** Reject frames above this size instead of decoding them. */
