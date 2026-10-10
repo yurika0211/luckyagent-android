@@ -2298,18 +2298,8 @@ class AppViewModel(
 
     private suspend fun syncLatestHistory(apiBase: String, apiKey: String, sessionId: String) {
         if (!currentCacheConnectionMatches(apiBase, apiKey)) return
-        val sessionsFresh = !_ui.value.sessionsLoading && _ui.value.sessionsError == null && !_ui.value.showingOfflineCache
-        val remoteSession = _ui.value.sessions.firstOrNull { it.id == sessionId }
-        val cachedMeta = runCatching { container.sessionCache.sessionMeta(apiBase, sessionId, apiKey) }.getOrNull()
-        if (
-            sessionsFresh &&
-            remoteSession != null &&
-            historySyncAction(cachedMeta, remoteSession) == HistorySync.Unchanged &&
-            historyMessages.isNotEmpty()
-        ) {
-            publishHistory(sessionId, offline = false, activity = historyLoadedLine(sessionId))
-            return
-        }
+        // The in-memory session list can lag behind messages pushed over the WebSocket,
+        // so never skip the latest-page fetch based on it; the merge keeps this cheap.
         val result = container.api.sessionHistory(sessionId, limit = SessionCachePolicy.LATEST_PAGE, offset = 0)
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { history ->
