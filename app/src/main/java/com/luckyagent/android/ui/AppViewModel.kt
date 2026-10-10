@@ -1612,23 +1612,6 @@ class AppViewModel(
             .orEmpty()
     }
 
-    private fun canonicalMediaKey(value: String): String {
-        val normalized = value.replace('\\', '/')
-        val uri = runCatching { Uri.parse(normalized) }.getOrNull()
-        uri?.getQueryParameter("path")?.takeIf { it.isNotBlank() }?.let {
-            return "artifact:${it.trimStart('/')}"
-        }
-        listOf("/.luckyagent/workspace/", "/.luckyagent/uploads/").forEach { marker ->
-            if (normalized.contains(marker)) {
-                return "artifact:${normalized.substringAfter(marker)}".let {
-                    if (marker.contains("uploads")) it.replaceFirst("artifact:", "artifact:uploads/")
-                    else it.replaceFirst("artifact:", "artifact:workspace/")
-                }
-            }
-        }
-        return normalized
-    }
-
     private fun resetAssistantStream() {
         assistantFlushJob?.cancel()
         assistantFlushJob = null
