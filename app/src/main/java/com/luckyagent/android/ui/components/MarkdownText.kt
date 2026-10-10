@@ -9,6 +9,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -25,7 +26,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -38,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.request.ImageRequest
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.luckyagent.android.ui.theme.CloverBgSide
@@ -71,6 +78,12 @@ fun MarkdownText(
     Column(modifier = modifier) {
         blocks.forEach { block ->
             when (block) {
+                is MdBlock.Mermaid -> {
+                    MermaidView(source = block.source)
+                }
+                is MdBlock.Html -> {
+                    HtmlBlock(source = block.source, color = color)
+                }
                 is MdBlock.Code -> {
                     SelectionContainer {
                         Text(
@@ -252,9 +265,10 @@ private fun RichMarkdownText(
     modifier: Modifier = Modifier,
     style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyLarge.copy(color = color),
 ) {
-    val pieces = remember(text) { splitInlineMath(text) }
+    val rendered = remember(text) { renderHtmlInline(text) }
+    val pieces = remember(rendered) { splitInlineMath(rendered) }
     if (pieces.none { it.math }) {
-        Text(text = inlineMarkdown(text), style = style, color = color, modifier = modifier)
+        LinkedText(text = inlineMarkdown(rendered), style = style, color = color, modifier = modifier)
         return
     }
     Column(modifier) {
@@ -272,7 +286,7 @@ private fun RichMarkdownText(
                                 color = color,
                             )
                         } else if (piece.value.isNotEmpty()) {
-                            Text(text = inlineMarkdown(piece.value), style = style, color = color)
+                            LinkedText(text = inlineMarkdown(piece.value), style = style, color = color)
                         }
                     }
                 }
@@ -336,6 +350,30 @@ private fun List<InlinePiece>.chunkedByText(): List<List<InlinePiece>> {
 }
 
 @Composable
+private fun LinkedText(
+    text: AnnotatedString,
+    style: androidx.compose.ui.text.TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    if (text.getStringAnnotations("url", 0, text.length).isEmpty()) {
+        Text(text = text, style = style, color = color, modifier = modifier)
+        return
+    }
+    val handler = LocalUriHandler.current
+    ClickableText(
+        text = text,
+        style = style.copy(color = color),
+        modifier = modifier,
+        onClick = { offset ->
+            text.getStringAnnotations("url", offset, offset).firstOrNull()?.let {
+                runCatching { handler.openUri(it.item) }
+            }
+        },
+    )
+}
+
+@Composable
 private fun LatexBlock(latex: String, display: Boolean, color: Color) {
     LatexView(latex = latex, display = display, color = color, modifier = Modifier.fillMaxWidth())
 }
@@ -375,13 +413,18 @@ private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString
             }
             token.startsWith("[") -> {
                 val lm = Regex("""\[([^\]]+)\]\(([^)]+)\)""").matchEntire(token)
-                if (lm != null) {
+                val href = lm?.groupValues?.get(2)
+                if (lm != null && href != null && (href.startsWith("http://") || href.startsWith("https://"))) {
+                    pushStringAnnotation("url", href)
                     withStyle(
                         SpanStyle(
                             color = Color(0xFF3F8A37),
                             textDecoration = TextDecoration.Underline,
                         ),
                     ) { append(lm.groupValues[1]) }
+                    pop()
+                } else if (lm != null) {
+                    append(lm.groupValues[1])
                 } else append(token)
             }
             else -> append(token)
@@ -389,4 +432,74 @@ private fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString
         last = m.range.last + 1
     }
     if (last < text.length) append(text.substring(last))
+}
+
+
+/**
+ * Renders the allowed inline HTML as Markdown markers the existing painter
+ * already understands. A fragment that fails [parseHtml] is returned unchanged.
+ */
+internal fun renderHtmlInline(text: String): String {
+    if ('<' !in text) return text
+    val nodes = parseHtml(text) ?: return text
+    return nodes.joinToString("") { renderNode(it) }
+}
+
+private fun renderNode(node: HtmlNode): String = when (node) {
+    is HtmlNode.Text -> node.value
+    is HtmlNode.Element -> {
+        val inner = node.children.joinToString("") { renderNode(it) }
+        when (node.tag) {
+            "b", "strong" -> "**$inner**"
+            "i", "em" -> "*$inner*"
+            "code" -> "`$inner`"
+            "br" -> " "
+            "p" -> inner
+            "a" -> if (node.href != null) "[$inner](${node.href})" else inner
+            else -> inner
+        }
+    }
+}
+
+@Composable
+private fun HtmlBlock(source: String, color: Color) {
+    val nodes = remember(source) { parseHtml(source) }
+    if (nodes == null) {
+        Text(text = source, color = color, style = MaterialTheme.typography.bodyLarge)
+        return
+    }
+    Column {
+        nodes.forEach { node -> HtmlNodeView(node, color) }
+    }
+}
+
+@Composable
+private fun HtmlNodeView(node: HtmlNode, color: Color) {
+    when (node) {
+        is HtmlNode.Text -> if (node.value.isNotBlank()) {
+            RichMarkdownText(text = node.value, color = color)
+        }
+        is HtmlNode.Element -> when (node.tag) {
+            "details" -> DetailsView(node, color)
+            "br" -> Spacer(Modifier.height(8.dp))
+            else -> RichMarkdownText(text = renderNode(node), color = color)
+        }
+    }
+}
+
+@Composable
+private fun DetailsView(node: HtmlNode.Element, color: Color) {
+    val summary = node.children.firstOrNull { it is HtmlNode.Element && it.tag == "summary" }
+        ?.let { (it as HtmlNode.Element).children.joinToString("") { child -> renderNode(child) } }
+        ?: "详情"
+    val body = node.children.filterNot { it is HtmlNode.Element && it.tag == "summary" }
+    var open by rememberSaveable(node) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        TextButton(onClick = { open = !open }) {
+            Text(text = (if (open) "▾ " else "▸ ") + summary, color = color)
+        }
+        if (open) {
+            body.forEach { HtmlNodeView(it, color) }
+        }
+    }
 }

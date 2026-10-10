@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  #out { padding: 8px; }
+  #out svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<div id="out"></div>
+<script src="mermaid.min.js"></script>
+<script>
+  window.__ready = true;
+  window.renderMermaid = function (payload) {
+    var data = (typeof payload === "string") ? JSON.parse(payload) : payload;
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: "base",
+      themeVariables: {
+        background: data.background,
+        primaryTextColor: data.foreground,
+        lineColor: data.line
+      }
+    });
+    var id = "m" + Math.random().toString(36).slice(2);
+    return mermaid.render(id, data.source).then(function (res) {
+      document.getElementById("out").innerHTML = res.svg;
+      var svg = document.querySelector("#out svg");
+      var height = svg ? Math.ceil(svg.getBoundingClientRect().height) + 16 : 0;
+      if (window.MermaidBridge) window.MermaidBridge.onRendered(height);
+      return true;
+    }).catch(function () {
+      if (window.MermaidBridge) window.MermaidBridge.onFailed();
+      return false;
+    });
+  };
+</script>
+</body>
+</html>

@@ -11,7 +11,9 @@ internal sealed class MdBlock {
     data class Paragraph(val text: String) : MdBlock()
     data class Heading(val level: Int, val text: String) : MdBlock()
     data class ListItem(val text: String, val marker: String = "•") : MdBlock()
-    data class Code(val body: String) : MdBlock()
+    data class Code(val body: String, val lang: String = "") : MdBlock()
+    data class Html(val source: String) : MdBlock()
+    data class Mermaid(val source: String) : MdBlock()
     data class Rule(val marker: String = "---") : MdBlock()
     data class Math(val latex: String, val display: Boolean) : MdBlock()
     data class Image(val alt: String, val source: String) : MdBlock()
@@ -130,15 +132,27 @@ internal fun splitMarkdownBlocks(
         }
         if (line.trimStart().startsWith("```")) {
             flushPara()
+            val lang = fenceLang(line)
             i++
             val code = StringBuilder()
-            while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
+            var closed = false
+            while (i < lines.size) {
+                if (isClosingFence(lines[i])) {
+                    closed = true
+                    i++
+                    break
+                }
                 if (code.isNotEmpty()) code.append('\n')
                 code.append(lines[i])
                 i++
             }
-            if (i < lines.size) i++ // closing fence
-            out += MdBlock.Code(code.toString())
+            val body = code.toString()
+            out += when {
+                !closed -> MdBlock.Code(body, lang)
+                lang == "mermaid" -> MdBlock.Mermaid(body)
+                lang == "html" && parseHtml(body) != null -> MdBlock.Html(body)
+                else -> MdBlock.Code(body, lang)
+            }
             continue
         }
         val heading = Regex("""^(#{1,6})\s+(.*)$""").matchEntire(line.trimEnd())
@@ -169,6 +183,15 @@ internal fun splitMarkdownBlocks(
             flushPara()
             i++
             continue
+        }
+        if (para.isEmpty() && line.trimStart().startsWith("<")) {
+            val block = takeHtmlBlock(lines, i)
+            if (block != null) {
+                flushPara()
+                out += MdBlock.Html(block.first)
+                i = block.second
+                continue
+            }
         }
         if (para.isNotEmpty()) para.append('\n')
         para.append(line)
@@ -313,4 +336,40 @@ private fun looksLikeImageUrl(source: String): Boolean {
     return path.matches(Regex(".*\\.(png|jpe?g|gif|webp|bmp|svg|avif|heic)$")) ||
         source.contains("format=", ignoreCase = true) ||
         source.contains("image", ignoreCase = true)
+}
+
+
+/** First word of a fence opener: ```mermaid title -> mermaid. */
+
+/** A closing fence is a line of backticks and nothing else. */
+internal fun isClosingFence(line: String): Boolean {
+    val token = line.trim()
+    return token == "```"
+}
+
+internal fun fenceLang(opener: String): String =
+    opener.trim().removePrefix("```").trim().substringBefore(' ').substringBefore('\t').lowercase()
+
+/**
+ * A run of lines whose top-level tag is allowed HTML, consumed as one block.
+ * Inline tags inside a sentence stay in the paragraph. Returns null when the
+ * run is not renderable HTML, so the caller keeps it as text.
+ */
+private fun takeHtmlBlock(lines: List<String>, start: Int): Pair<String, Int>? {
+    val first = lines[start].trimStart()
+    val tag = Regex("""^<([A-Za-z]+)""").find(first)?.groupValues?.get(1)?.lowercase() ?: return null
+    if (tag !in setOf("details", "p")) return null
+    val close = "</$tag>"
+    val buf = StringBuilder()
+    var i = start
+    while (i < lines.size && lines[i].isNotBlank()) {
+        if (buf.isNotEmpty()) buf.append('\n')
+        buf.append(lines[i])
+        i++
+        if (buf.toString().contains(close, ignoreCase = true)) break
+    }
+    val source = buf.toString()
+    if (!source.contains(close, ignoreCase = true)) return null
+    if (parseHtml(source) == null) return null
+    return source to i
 }
