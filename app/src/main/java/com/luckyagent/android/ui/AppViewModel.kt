@@ -73,6 +73,7 @@ import com.luckyagent.android.ui.util.quoteFromBubble
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -90,10 +91,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLEncoder
 import java.io.File
 import java.util.UUID
@@ -545,185 +542,196 @@ class AppViewModel(
         eventsJob?.cancel()
         eventsJob = viewModelScope.launch {
             container.wsClient.events.collect { event ->
-                val env = event.envelope
-                ensureReplayedRun(event)
-                val foreground = isForegroundEvent(event)
-                when (env.type) {
-                    "stream_chunk", "assistant_delta", "delta", "chunk" -> {
-                        if (!foreground) return@collect
-                        val piece = extractText(env.data) ?: return@collect
-                        updatePhase("response", "Preparing response")
-                        appendAssistant(piece)
-                    }
-                    "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
-                        val requestId = eventRequestId(event)
-                        if (requestId == null) {
+                try {
+                    val env = event.envelope
+                    ensureReplayedRun(event)
+                    val foreground = isForegroundEvent(event)
+                    when (env.type) {
+                        "stream_chunk", "assistant_delta", "delta", "chunk" -> {
+                            if (!foreground) return@collect
+                            val piece = extractText(env.data) ?: return@collect
+                            updatePhase("response", "Preparing response")
+                            appendAssistant(piece)
+                        }
+                        "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
+                            val requestId = eventRequestId(event)
+                            if (requestId == null) {
+                                val piece = extractFullResponse(env.data) ?: extractText(env.data)
+                                if (!piece.isNullOrBlank()) {
+                                    if (event.sessionId == currentSessionId()) {
+                                        pushBubble(ChatBubble(id = env.id ?: "cron-${System.currentTimeMillis()}", role = "assistant", content = piece, createdAt = env.timestamp))
+                                        refreshSessions()
+                                    }
+                                    notifyCronMessage(event.sessionId, env.id ?: env.eventId, piece)
+                                }
+                                return@collect
+                            }
+                            if (!completeRun(event)) return@collect
+                            finishOutboundRequest(event.sessionId, requestId, success = true)
                             val piece = extractFullResponse(env.data) ?: extractText(env.data)
-                            if (!piece.isNullOrBlank()) {
-                                if (event.sessionId == currentSessionId()) {
-                                    pushBubble(ChatBubble(id = env.id ?: "cron-${System.currentTimeMillis()}", role = "assistant", content = piece, createdAt = env.timestamp))
-                                    refreshSessions()
-                                }
-                                notifyCronMessage(event.sessionId, env.id ?: env.eventId, piece)
-                            }
-                            return@collect
-                        }
-                        if (!completeRun(event)) return@collect
-                        finishOutboundRequest(event.sessionId, requestId, success = true)
-                        val piece = extractFullResponse(env.data) ?: extractText(env.data)
-                        val attachments = distinctMedia(
-                            extractAttachments(env.data) + extractArtifactAttachments(piece.orEmpty()),
-                        )
-                        if (foreground) {
-                            finishAssistant(
-                                full = piece,
-                                createdAt = extractField(env.data, "created_at") ?: env.timestamp,
-                                usage = extractUsage(env.data),
-                                attachments = attachments,
+                            val attachments = distinctMedia(
+                                extractAttachments(env.data) + extractArtifactAttachments(piece.orEmpty()),
                             )
-                            notifyChatCompleted(event.sessionId, requestId, piece ?: _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, foreground)
-                            _ui.update { it.copy(isResponding = false) }
-                            prepareNextForeground(event.sessionId)
-                        } else {
-                            notifyChatCompleted(event.sessionId, requestId, piece, false)
-                            finishBackgroundRun(event.sessionId)
-                        }
-                        refreshSessions()
-                        if (foreground) refreshContextInspect()
-                    }
-                    "tool_call", "tool" -> if (foreground) handleToolCall(env.data)
-                    "tool_result" -> if (foreground) handleToolResult(env.data)
-                    "approval", "approval_required" -> handleApprovalEvent(env.data)
-                    "approval_resolved" -> refreshApprovals()
-                    "cancel", "cancelled" -> {
-                        val requestId = eventRequestId(event)
-                        if (!completeRun(event)) return@collect
-                        finishOutboundRequest(event.sessionId, requestId, success = true)
-                        if (foreground) {
-                            finishAssistant(null)
-                            _ui.update {
-                                it.copy(
-                                    isResponding = false,
-                                    activityLine = "cancelled",
-                                    progressSteps = it.progressSteps.map { step ->
-                                        if (step.status == ProgressStatus.Active) step.copy(label = "Cancelled", status = ProgressStatus.Complete) else step
-                                    },
+                            if (foreground) {
+                                finishAssistant(
+                                    full = piece,
+                                    createdAt = extractField(env.data, "created_at") ?: env.timestamp,
+                                    usage = extractUsage(env.data),
+                                    attachments = attachments,
                                 )
+                                notifyChatCompleted(event.sessionId, requestId, piece ?: _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, foreground)
+                                _ui.update { it.copy(isResponding = false) }
+                                prepareNextForeground(event.sessionId)
+                            } else {
+                                notifyChatCompleted(event.sessionId, requestId, piece, false)
+                                finishBackgroundRun(event.sessionId)
                             }
-                            prepareNextForeground(event.sessionId)
-                        } else {
-                            finishBackgroundRun(event.sessionId)
+                            refreshSessions()
+                            if (foreground) refreshContextInspect()
                         }
-                    }
-                    "error" -> {
-                        val requestId = eventRequestId(event)
-                        if (!completeRun(event)) return@collect
-                        val msg = env.error
-                            ?: extractField(env.data, "message")
-                            ?: extractText(env.data)
-                            ?: "Unknown error"
-                        finishOutboundRequest(event.sessionId, requestId, success = false, error = msg)
-                        if (foreground) {
-                            finishAssistant(null)
-                            pushBubble(
-                                ChatBubble(
-                                    id = "err-${System.currentTimeMillis()}",
-                                    role = "error",
-                                    content = msg,
-                                ),
-                            )
-                            _ui.update {
-                                it.copy(
-                                    activityLine = "error · $msg",
-                                    isResponding = false,
-                                    progressSteps = it.progressSteps.map { step ->
-                                        if (step.status == ProgressStatus.Active) step.copy(label = "Request failed", status = ProgressStatus.Failed) else step
-                                    },
-                                )
-                            }
-                            prepareNextForeground(event.sessionId)
-                        } else {
-                            finishBackgroundRun(event.sessionId)
-                        }
-                    }
-                    "compact" -> if (foreground) handleCompactEvent(env.data)
-                    "task_event" -> handleTaskEvent(env.data)
-                    "status", "info" -> {
-                        val state = extractField(env.data, "state")
-                        val message = extractField(env.data, "message") ?: extractText(env.data)
-                        when (state?.lowercase()) {
-                            "approval_resolved" -> refreshApprovals()
-                            "thinking" -> if (foreground) updatePhase("thinking", "Thinking through the request")
-                            "executing" -> if (foreground) updatePhase("executing", "Working on your request")
-                            "lucky" -> if (event.sessionId == currentSessionId() && !message.isNullOrBlank()) {
-                                // Lucky acknowledgements have no active run ID,
-                                // so they are not foreground events. They still
-                                // belong to the visible session.
-                                val requestId = event.envelope.parentId
-                                if (requestId != null && message.contains("已收集")) {
-                                    acknowledgeLuckySegment(requestId)
-                                }
-                                applyLuckyStatus(message)
-                                if (!message.contains("已收集")) {
-                                    pushBubble(
-                                        ChatBubble(
-                                            id = "lucky-${System.currentTimeMillis()}",
-                                            role = "assistant",
-                                            content = message,
-                                            createdAt = nowIsoTimestamp(),
-                                        ),
+                        "tool_call", "tool" -> if (foreground) handleToolCall(env.data)
+                        "tool_result" -> if (foreground) handleToolResult(env.data)
+                        "approval", "approval_required" -> handleApprovalEvent(env.data)
+                        "approval_resolved" -> refreshApprovals()
+                        "cancel", "cancelled" -> {
+                            val requestId = eventRequestId(event)
+                            if (!completeRun(event)) return@collect
+                            finishOutboundRequest(event.sessionId, requestId, success = true)
+                            if (foreground) {
+                                finishAssistant(null)
+                                _ui.update {
+                                    it.copy(
+                                        isResponding = false,
+                                        activityLine = "cancelled",
+                                        progressSteps = it.progressSteps.map { step ->
+                                            if (step.status == ProgressStatus.Active) step.copy(label = "Cancelled", status = ProgressStatus.Complete) else step
+                                        },
                                     )
                                 }
+                                prepareNextForeground(event.sessionId)
+                            } else {
+                                finishBackgroundRun(event.sessionId)
                             }
-                            "idle" -> {
-                                val requestId = eventRequestId(event)
-                                if (!completeRun(event)) return@collect
-                                finishOutboundRequest(event.sessionId, requestId, success = true)
-                                if (foreground) {
-                                    finishAssistant(null)
-                                    notifyChatCompleted(event.sessionId, requestId, _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, true)
-                                    _ui.update { current ->
-                                        current.copy(
-                                            isResponding = false,
-                                            activityLine = "complete",
-                                            progressSteps = current.progressSteps.map { step ->
-                                                if (step.status == ProgressStatus.Active) step.copy(status = ProgressStatus.Complete) else step
-                                            },
+                        }
+                        "error" -> {
+                            val requestId = eventRequestId(event)
+                            if (!completeRun(event)) return@collect
+                            val msg = env.error
+                                ?: extractField(env.data, "message")
+                                ?: extractText(env.data)
+                                ?: "Unknown error"
+                            finishOutboundRequest(event.sessionId, requestId, success = false, error = msg)
+                            if (foreground) {
+                                finishAssistant(null)
+                                pushBubble(
+                                    ChatBubble(
+                                        id = "err-${System.currentTimeMillis()}",
+                                        role = "error",
+                                        content = msg,
+                                    ),
+                                )
+                                _ui.update {
+                                    it.copy(
+                                        activityLine = "error · $msg",
+                                        isResponding = false,
+                                        progressSteps = it.progressSteps.map { step ->
+                                            if (step.status == ProgressStatus.Active) step.copy(label = "Request failed", status = ProgressStatus.Failed) else step
+                                        },
+                                    )
+                                }
+                                prepareNextForeground(event.sessionId)
+                            } else {
+                                finishBackgroundRun(event.sessionId)
+                            }
+                        }
+                        "compact" -> if (foreground) handleCompactEvent(env.data)
+                        "task_event" -> handleTaskEvent(env.data)
+                        "status", "info" -> {
+                            val state = extractField(env.data, "state")
+                            val message = extractField(env.data, "message") ?: extractText(env.data)
+                            when (state?.lowercase()) {
+                                "approval_resolved" -> refreshApprovals()
+                                "thinking" -> if (foreground) updatePhase("thinking", "Thinking through the request")
+                                "executing" -> if (foreground) updatePhase("executing", "Working on your request")
+                                "lucky" -> if (event.sessionId == currentSessionId() && !message.isNullOrBlank()) {
+                                    // Lucky acknowledgements have no active run ID,
+                                    // so they are not foreground events. They still
+                                    // belong to the visible session.
+                                    val requestId = event.envelope.parentId
+                                    if (requestId != null && message.contains("已收集")) {
+                                        acknowledgeLuckySegment(requestId)
+                                    }
+                                    applyLuckyStatus(message)
+                                    if (!message.contains("已收集")) {
+                                        pushBubble(
+                                            ChatBubble(
+                                                id = "lucky-${System.currentTimeMillis()}",
+                                                role = "assistant",
+                                                content = message,
+                                                createdAt = nowIsoTimestamp(),
+                                            ),
                                         )
                                     }
-                                    prepareNextForeground(event.sessionId)
-                                } else {
-                                    notifyChatCompleted(event.sessionId, requestId, null, false)
-                                    finishBackgroundRun(event.sessionId)
+                                }
+                                "idle" -> {
+                                    val requestId = eventRequestId(event)
+                                    if (!completeRun(event)) return@collect
+                                    finishOutboundRequest(event.sessionId, requestId, success = true)
+                                    if (foreground) {
+                                        finishAssistant(null)
+                                        notifyChatCompleted(event.sessionId, requestId, _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, true)
+                                        _ui.update { current ->
+                                            current.copy(
+                                                isResponding = false,
+                                                activityLine = "complete",
+                                                progressSteps = current.progressSteps.map { step ->
+                                                    if (step.status == ProgressStatus.Active) step.copy(status = ProgressStatus.Complete) else step
+                                                },
+                                            )
+                                        }
+                                        prepareNextForeground(event.sessionId)
+                                    } else {
+                                        notifyChatCompleted(event.sessionId, requestId, null, false)
+                                        finishBackgroundRun(event.sessionId)
+                                    }
+                                }
+                                else -> if (foreground) _ui.update {
+                                    it.copy(activityLine = listOfNotNull(state, message).joinToString(": ").ifBlank { env.type })
                                 }
                             }
-                            else -> if (foreground) _ui.update {
-                                it.copy(activityLine = listOfNotNull(state, message).joinToString(": ").ifBlank { env.type })
+                        }
+                        "reasoning" -> {
+                            if (!foreground) return@collect
+                            val stage = extractField(env.data, "stage").orEmpty()
+                            val round = extractField(env.data, "round")?.toIntOrNull()
+                            val summary = extractField(env.data, "summary")?.trim().orEmpty()
+                            val content = extractField(env.data, "content")?.trim().orEmpty()
+                            val label = when {
+                                summary.isNotEmpty() -> summary
+                                stage == "continue" -> "Reviewing tool results"
+                                else -> "Analyzing the request"
+                            }
+                            if (stage == "content") {
+                                if (content.isNotEmpty()) upsertReasoningBubble(round, content, true)
+                            } else {
+                                upsertReasoningBubble(round, label, false)
+                                updatePhase("reasoning-${round ?: 0}", label)
+                            }
+                        }
+                        else -> {
+                            if (foreground && env.error != null) {
+                                _ui.update { it.copy(activityLine = env.error) }
                             }
                         }
                     }
-                    "reasoning" -> {
-                        if (!foreground) return@collect
-                        val stage = extractField(env.data, "stage").orEmpty()
-                        val round = extractField(env.data, "round")?.toIntOrNull()
-                        val summary = extractField(env.data, "summary")?.trim().orEmpty()
-                        val content = extractField(env.data, "content")?.trim().orEmpty()
-                        val label = when {
-                            summary.isNotEmpty() -> summary
-                            stage == "continue" -> "Reviewing tool results"
-                            else -> "Analyzing the request"
-                        }
-                        if (stage == "content") {
-                            if (content.isNotEmpty()) upsertReasoningBubble(round, content, true)
-                        } else {
-                            upsertReasoningBubble(round, label, false)
-                            updatePhase("reasoning-${round ?: 0}", label)
-                        }
-                    }
-                    else -> {
-                        if (foreground && env.error != null) {
-                            _ui.update { it.copy(activityLine = env.error) }
-                        }
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (error: Exception) {
+                    // A malformed replay event must not cancel the collector and
+                    // take down the whole ViewModel. Keep the error generic because
+                    // event payloads can contain credentials or user content.
+                    _ui.update {
+                        it.copy(activityLine = "WebSocket event ignored · ${error::class.simpleName ?: "error"}")
                     }
                 }
             }
@@ -1026,7 +1034,7 @@ class AppViewModel(
     private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
         val name = extractToolName(data) ?: "tool"
         val stepId = extractField(data, "step_id").orEmpty()
-        val args = extractToolArgs(data)
+        val args = extractToolArgs(data)?.let { capUiText(it, MAX_UI_TOOL_ARGS_CHARS) }
         val stepKey = "$currentTurnId:$stepId"
         val id = when {
             stepId.isNotBlank() -> toolStepIndex[stepKey] ?: "tool-$stepKey".also { toolStepIndex[stepKey] = it }
@@ -1060,10 +1068,10 @@ class AppViewModel(
             return
         }
         val stepId = extractField(data, "step_id").orEmpty()
-        val output = extractField(data, "output")
+        val output = (extractField(data, "output")
             ?: extractField(data, "display")
             ?: extractText(data)
-            ?: ""
+            ?: "").let { capUiText(it, MAX_UI_TOOL_OUTPUT_CHARS) }
         val success = when (val raw = (data as? JsonObject)?.get("success")) {
             is JsonPrimitive -> when {
                 raw.isString -> raw.contentOrNull?.toBooleanStrictOrNull() ?: true
@@ -1245,6 +1253,9 @@ class AppViewModel(
         output: String?,
         attachments: List<ChatMedia> = emptyList(),
     ) {
+        val safeArgs = args?.let { capUiText(it, MAX_UI_TOOL_ARGS_CHARS) }
+        val safeOutput = output?.let { capUiText(it, MAX_UI_TOOL_OUTPUT_CHARS) }
+        val safeAttachments = attachments.take(MAX_UI_ATTACHMENTS)
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
             val idx = list.indexOfLast { it.id == id }
@@ -1253,15 +1264,15 @@ class AppViewModel(
                 list[idx] = old.copy(
                     role = "tool",
                     toolName = name,
-                    toolArgs = args?.takeIf { it.isNotBlank() } ?: old.toolArgs,
-                    toolOutput = output?.takeIf { it.isNotBlank() } ?: old.toolOutput,
+                    toolArgs = safeArgs?.takeIf { it.isNotBlank() } ?: old.toolArgs,
+                    toolOutput = safeOutput?.takeIf { it.isNotBlank() } ?: old.toolOutput,
                     toolDone = done || old.toolDone,
                     toolSuccess = success ?: old.toolSuccess,
-                    attachments = if (attachments.isNotEmpty()) attachments else old.attachments,
+                    attachments = if (safeAttachments.isNotEmpty()) safeAttachments else old.attachments,
                     content = buildToolContent(
                         name = name,
-                        args = args?.takeIf { it.isNotBlank() } ?: old.toolArgs,
-                        output = output?.takeIf { it.isNotBlank() } ?: old.toolOutput,
+                        args = safeArgs?.takeIf { it.isNotBlank() } ?: old.toolArgs,
+                        output = safeOutput?.takeIf { it.isNotBlank() } ?: old.toolOutput,
                         done = done || old.toolDone,
                         success = success ?: old.toolSuccess,
                     ),
@@ -1272,13 +1283,13 @@ class AppViewModel(
                     ChatBubble(
                         id = id,
                         role = "tool",
-                        content = buildToolContent(name, args, output, done, success),
+                        content = buildToolContent(name, safeArgs, safeOutput, done, success),
                         toolName = name,
-                        toolArgs = args,
-                        toolOutput = output,
+                        toolArgs = safeArgs,
+                        toolOutput = safeOutput,
                         toolDone = done,
                         toolSuccess = success,
-                        attachments = attachments,
+                        attachments = safeAttachments,
                         stepId = id.removePrefix("tool-").takeIf { it != id },
                     ),
                 )
@@ -1289,20 +1300,21 @@ class AppViewModel(
 
     private fun upsertReasoningBubble(round: Int?, text: String, hasContent: Boolean) {
         val id = "reasoning-$currentTurnId-${round ?: 0}"
+        val safeText = capUiText(text, MAX_UI_REASONING_CHARS)
         _ui.update { state ->
             val bubbles = state.bubbles.toMutableList()
             val index = bubbles.indexOfLast { it.id == id }
             if (index >= 0) {
                 val old = bubbles[index]
                 if (!old.reasoningHasContent || hasContent) {
-                    bubbles[index] = old.copy(content = text, reasoningHasContent = hasContent)
+                    bubbles[index] = old.copy(content = safeText, reasoningHasContent = hasContent)
                 }
             } else {
                 bubbles.insertBeforeStreamingAnswer(
                     ChatBubble(
                         id = id,
                         role = "reasoning",
-                        content = text,
+                        content = safeText,
                         reasoningRound = round,
                         reasoningHasContent = hasContent,
                     ),
@@ -1338,10 +1350,10 @@ class AppViewModel(
     private fun extractText(data: kotlinx.serialization.json.JsonElement?): String? {
         if (data == null) return null
         return when (data) {
-            is JsonPrimitive -> data.contentOrNull
+            is JsonPrimitive -> data.textOrNull()
             is JsonObject -> {
                 sequenceOf("content", "text", "delta", "message", "response", "full_response")
-                    .mapNotNull { key -> data[key]?.jsonPrimitive?.contentOrNull }
+                    .mapNotNull { key -> data[key].textOrNull() }
                     .firstOrNull()
             }
             else -> data.toString()
@@ -1350,12 +1362,12 @@ class AppViewModel(
 
     private fun extractFullResponse(data: kotlinx.serialization.json.JsonElement?): String? {
         val o = data as? JsonObject ?: return null
-        return o["full_response"]?.jsonPrimitive?.contentOrNull
+        return o["full_response"].textOrNull()
     }
 
     private fun extractField(data: kotlinx.serialization.json.JsonElement?, key: String): String? {
         val o = data as? JsonObject ?: return null
-        return o[key]?.jsonPrimitive?.contentOrNull
+        return o[key].textOrNull()
     }
 
     private fun extractAttachments(data: kotlinx.serialization.json.JsonElement?): List<ChatMedia> {
@@ -1435,10 +1447,10 @@ class AppViewModel(
         value.trim().trim('`', '"', '\'', ',', '.', ';', ':', ')', ']', '}')
 
     private fun JsonObject.stringValue(key: String): String? =
-        this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        this[key].textOrNull()?.takeIf { it.isNotBlank() }
 
     private fun JsonObject.longValue(key: String): Long? =
-        this[key]?.jsonPrimitive?.longOrNull
+        this[key].longOrNullSafe()
 
     private fun normalizeMediaType(type: String): String = when {
         type.equals("image", ignoreCase = true) || type.startsWith("image/", ignoreCase = true) -> "image"
@@ -1450,13 +1462,13 @@ class AppViewModel(
     private fun extractUsage(data: kotlinx.serialization.json.JsonElement?): TokenUsage? {
         val o = data as? JsonObject ?: return null
         val usage = o["usage"] as? JsonObject ?: return null
-        fun int(key: String): Int = usage[key]?.jsonPrimitive?.intOrNull ?: 0
+        fun int(key: String): Int = usage[key].intOrNullSafe() ?: 0
         val result = TokenUsage(
             inputTokens = int("input_tokens"),
             outputTokens = int("output_tokens"),
             totalTokens = int("total_tokens"),
             cachedInputTokens = int("cached_input_tokens"),
-            model = usage["model"]?.jsonPrimitive?.contentOrNull,
+            model = usage["model"].textOrNull(),
         )
         return result.takeIf {
             it.totalTokens > 0 || it.inputTokens > 0 || it.outputTokens > 0 || it.cachedInputTokens > 0 || !it.model.isNullOrBlank()
@@ -1467,14 +1479,14 @@ class AppViewModel(
 
     private fun extractToolName(data: kotlinx.serialization.json.JsonElement?): String? {
         val o = data as? JsonObject ?: return null
-        return o["name"]?.jsonPrimitive?.contentOrNull
-            ?: o["tool"]?.jsonPrimitive?.contentOrNull
+        return o["name"].textOrNull()
+            ?: o["tool"].textOrNull()
     }
 
     private fun extractToolArgs(data: kotlinx.serialization.json.JsonElement?): String? {
         val o = data as? JsonObject ?: return null
-        o["args"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { return it }
-        o["display"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { return it }
+        o["args"].textOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+        o["display"].textOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
         val params = o["params"]
         return when (params) {
             null -> null
@@ -1487,7 +1499,10 @@ class AppViewModel(
     private fun appendAssistant(piece: String) {
         if (piece.isEmpty()) return
         if (assistantBufferId == null) assistantBufferId = "a-${System.currentTimeMillis()}"
-        assistantPending.append(piece)
+        // Retain one extra character so the flush can show a truncation marker.
+        val remaining = (MAX_UI_MESSAGE_CHARS + 1 - assistantPending.length).coerceAtLeast(0)
+        if (remaining == 0) return
+        assistantPending.append(piece.take(remaining))
         if (assistantFlushJob == null) {
             assistantFlushJob = viewModelScope.launch {
                 kotlinx.coroutines.delay(40)
@@ -1508,9 +1523,12 @@ class AppViewModel(
                 ?.takeIf { it in list.indices && list[it].id == id }
             val idx = cachedIndex ?: list.indexOfLast { it.id == id }
             if (idx >= 0) {
-                list[idx] = list[idx].copy(content = list[idx].content + piece, streaming = true)
+                list[idx] = list[idx].copy(
+                    content = appendUiText(list[idx].content, piece, MAX_UI_MESSAGE_CHARS),
+                    streaming = true,
+                )
             } else {
-                list += ChatBubble(id = id, role = "assistant", content = piece, streaming = true)
+                list += ChatBubble(id = id, role = "assistant", content = capUiText(piece, MAX_UI_MESSAGE_CHARS), streaming = true)
             }
             assistantBufferIndex = if (idx >= 0) idx else list.lastIndex
             st.copy(bubbles = list, isResponding = true)
@@ -1523,6 +1541,8 @@ class AppViewModel(
         usage: TokenUsage? = null,
         attachments: List<ChatMedia> = emptyList(),
     ) {
+        val safeFull = full?.let { capUiText(it, MAX_UI_MESSAGE_CHARS) }
+        val safeAttachments = attachments.take(MAX_UI_ATTACHMENTS)
         assistantFlushJob?.cancel()
         assistantFlushJob = null
         val pending = assistantPending.toString()
@@ -1538,42 +1558,43 @@ class AppViewModel(
             val duplicateHistoryAnswer = id == null &&
                 !hasUserAfterLastAssistant &&
                 lastAssistantIndex >= 0 &&
-                (full.isNullOrBlank() || list[lastAssistantIndex].content == full) &&
-                (attachments.isEmpty() || list[lastAssistantIndex].attachments.map(::mediaKey) == attachments.map(::mediaKey))
+                (safeFull.isNullOrBlank() || list[lastAssistantIndex].content == safeFull) &&
+                (safeAttachments.isEmpty() || list[lastAssistantIndex].attachments.map(::mediaKey) == safeAttachments.map(::mediaKey))
             if (duplicateHistoryAnswer) {
                 return@update st.copy(isResponding = false)
             }
             if (id != null) {
                 val idx = list.indexOfLast { it.id == id }
                 if (idx >= 0) {
-                    val content = full?.takeIf { it.isNotBlank() } ?: list[idx].content + pending
+                    val content = safeFull?.takeIf { it.isNotBlank() }
+                        ?: appendUiText(list[idx].content, pending, MAX_UI_MESSAGE_CHARS)
                     val answer = list.removeAt(idx)
                     list += answer.copy(
                         content = content,
                         streaming = false,
                         createdAt = createdAt ?: answer.createdAt,
                         usage = usage ?: answer.usage,
-                        attachments = if (attachments.isNotEmpty()) attachments else answer.attachments,
+                        attachments = if (safeAttachments.isNotEmpty()) safeAttachments else answer.attachments,
                     )
                 } else if (!full.isNullOrBlank() || pending.isNotEmpty() || attachments.isNotEmpty()) {
                     list += ChatBubble(
                         id = id,
                         role = "assistant",
-                        content = full?.takeIf { it.isNotBlank() } ?: pending,
+                        content = safeFull?.takeIf { it.isNotBlank() } ?: capUiText(pending, MAX_UI_MESSAGE_CHARS),
                         streaming = false,
                         createdAt = createdAt,
                         usage = usage,
-                        attachments = attachments,
+                        attachments = safeAttachments,
                     )
                 }
             } else if (!full.isNullOrBlank() || attachments.isNotEmpty()) {
                 list += ChatBubble(
                     id = "a-${System.currentTimeMillis()}",
                     role = "assistant",
-                    content = full.orEmpty(),
+                    content = safeFull.orEmpty(),
                     createdAt = createdAt,
                     usage = usage,
-                    attachments = attachments,
+                    attachments = safeAttachments,
                 )
             }
             st.copy(bubbles = list, isResponding = false)
@@ -1617,7 +1638,11 @@ class AppViewModel(
     }
 
     private fun pushBubble(bubble: ChatBubble) {
-        _ui.update { it.copy(bubbles = it.bubbles + bubble) }
+        val safeBubble = bubble.copy(
+            content = capUiText(bubble.content, MAX_UI_MESSAGE_CHARS),
+            attachments = bubble.attachments.take(MAX_UI_ATTACHMENTS),
+        )
+        _ui.update { it.copy(bubbles = it.bubbles + safeBubble) }
     }
 
     fun navigate(dest: AppDestination) {
@@ -2109,7 +2134,8 @@ class AppViewModel(
             val connection = container.settingsRepository.snapshot()
             val apiBase = connection.apiBase
             val apiKey = connection.apiKey
-            val cached = runCatching { container.sessionCache.listSessions(apiBase, apiKey) }.getOrDefault(emptyList())
+            val cached = runCatching { dedupeSessions(container.sessionCache.listSessions(apiBase, apiKey)) }
+                .getOrDefault(emptyList())
             if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
             _ui.update { state ->
                 state.copy(
@@ -2122,7 +2148,7 @@ class AppViewModel(
             val result = container.api.listSessions(q)
             if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
             if (result.isSuccess) {
-                val remote = result.getOrDefault(emptyList())
+                val remote = dedupeSessions(result.getOrDefault(emptyList()))
                 if (q.isBlank()) {
                     runCatching { container.sessionCache.saveSessionList(apiBase, remote, apiKey = apiKey) }
                 }
@@ -2519,7 +2545,7 @@ class AppViewModel(
 
     private fun ProviderMessage.toBubbles(idx: Int): List<ChatBubble> {
         val role = role ?: "assistant"
-        val base = content.orEmpty()
+        val base = capUiText(content.orEmpty(), MAX_UI_MESSAGE_CHARS)
         val messageAttachments = distinctMedia(attachments.map(::ChatMedia) + contentParts.mapNotNull { part ->
             val image = part.image ?: return@mapNotNull null
             if (image.url.isNullOrBlank() && image.filePath.isNullOrBlank()) return@mapNotNull null
@@ -2531,13 +2557,13 @@ class AppViewModel(
                     mimeType = image.mimeType,
                 ),
             )
-        } + extractArtifactAttachments(base))
+        } + extractArtifactAttachments(base)).take(MAX_UI_ATTACHMENTS)
         val result = mutableListOf<ChatBubble>()
         reasoningContent?.takeIf { it.isNotBlank() }?.let { reasoning ->
             result += ChatBubble(
                 id = "h-$idx-reasoning",
                 role = "reasoning",
-                content = reasoning,
+                content = capUiText(reasoning, MAX_UI_REASONING_CHARS),
                 reasoningHasContent = true,
             )
         }
@@ -2547,13 +2573,13 @@ class AppViewModel(
                 role = "tool",
                 content = buildToolContent(
                     name = tool.name ?: "tool",
-                    args = tool.arguments,
+                    args = capUiText(tool.arguments.orEmpty(), MAX_UI_TOOL_ARGS_CHARS),
                     output = null,
                     done = true,
                     success = null,
                 ),
                 toolName = tool.name,
-                toolArgs = tool.arguments,
+                toolArgs = capUiText(tool.arguments.orEmpty(), MAX_UI_TOOL_ARGS_CHARS).takeIf { tool.arguments != null },
                 toolDone = true,
                 stepId = tool.id,
                 attachments = messageAttachments,
@@ -2563,9 +2589,9 @@ class AppViewModel(
             result += ChatBubble(
                 id = "h-$idx-tool-result",
                 role = "tool",
-                content = base,
+                content = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS),
                 toolName = name ?: "tool",
-                toolOutput = base.takeIf { it.isNotBlank() },
+                toolOutput = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS).takeIf { it.isNotBlank() },
                 toolDone = true,
                 attachments = messageAttachments,
             )
