@@ -1,7 +1,6 @@
 package com.luckyagent.android.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,7 +19,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilterChip
@@ -46,11 +44,13 @@ import com.luckyagent.android.data.api.AutonomyWorker
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.BackgroundFilter
+import com.luckyagent.android.ui.components.CardTitleRow
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.ScreenHeader
+import com.luckyagent.android.ui.components.StatusChip
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverError
@@ -101,12 +101,8 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
             } else {
                 detail.task.id
             },
+            onBack = if (detail != null) vm::clearSelectedBackgroundTask else null,
             actions = {
-                if (detail != null) {
-                    IconButton(onClick = vm::clearSelectedBackgroundTask) {
-                        Icon(Icons.Outlined.ArrowBack, contentDescription = "Back to background tasks")
-                    }
-                }
                 IconButton(onClick = { if (detail == null) vm.refreshBackground() else vm.selectBackgroundTask(detail.task.id) }) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
                 }
@@ -305,20 +301,12 @@ private fun BackgroundHeartbeat(state: AppUiState) {
 
 @Composable
 private fun BackgroundTaskCard(task: AutonomyTaskSummary, onClick: () -> Unit) {
-    CloverCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-    ) {
-        Row(verticalAlignment = Alignment.Top) {
-            BackgroundStatusDot(task.state)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(task.title.ifBlank { task.id }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(task.id, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            MetaChip(task.state.ifBlank { "unknown" })
-        }
+    CloverCard(onClick = onClick) {
+        CardTitleRow(
+            title = task.title.ifBlank { task.id },
+            subtitle = task.id.takeIf { task.title.isNotBlank() },
+            trailing = { StatusChip(task.state.ifBlank { "unknown" }) },
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MetaChip(task.priority.ifBlank { "normal" })
             task.assignedTo?.takeIf { it.isNotBlank() }?.let { MetaChip(it) }

@@ -517,9 +517,12 @@ private fun relativeTime(time: Long): String { val seconds = ((System.currentTim
             entry.tier?.let { MetaChip(it) }
             entry.importance?.let { Spacer(Modifier.width(6.dp)); MetaChip("imp ${"%.1f".format(it)}") }
         }
-        Text(entry.content.orEmpty().ifBlank { "(empty)" }, style = MaterialTheme.typography.bodyMedium)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            entry.tags.forEach { MetaChip(it) }; entry.stateKey?.let { MetaChip("$it=${entry.stateValue ?: "?"}") }; entry.id?.let { MetaChip(it.take(12)) }
+        Text(entry.content.orEmpty().ifBlank { "(empty)" }, style = MaterialTheme.typography.bodyMedium, maxLines = 6, overflow = TextOverflow.Ellipsis)
+        if (entry.tags.isNotEmpty() || entry.stateKey != null) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                entry.tags.forEach { MetaChip(it) }; entry.stateKey?.let { MetaChip("$it=${entry.stateValue ?: "?"}") }
+            }
         }
+        entry.id?.let { Text(it.take(12), style = MaterialTheme.typography.labelSmall, color = CloverText3) }
     }
 }

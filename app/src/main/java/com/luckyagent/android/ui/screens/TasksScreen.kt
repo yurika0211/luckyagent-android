@@ -1,7 +1,6 @@
 package com.luckyagent.android.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,7 +19,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -54,6 +52,7 @@ import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.TaskFilter
+import com.luckyagent.android.ui.components.CardTitleRow
 import com.luckyagent.android.ui.components.CloverCard
 import androidx.compose.material.icons.outlined.AssignmentLate
 import com.luckyagent.android.ui.components.EmptyState
@@ -110,12 +109,8 @@ fun TasksScreen(state: AppUiState, vm: AppViewModel) {
             } else {
                 detail.root.summary.id
             },
+            onBack = if (detail != null) vm::clearSelectedTask else null,
             actions = {
-                if (detail != null) {
-                    IconButton(onClick = vm::clearSelectedTask) {
-                        Icon(Icons.Outlined.ArrowBack, contentDescription = "Back to tasks")
-                    }
-                }
                 IconButton(onClick = { if (detail == null) vm.refreshTasks() else vm.selectTask(detail.root.summary.id) }) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
                 }
@@ -213,26 +208,12 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
 
 @Composable
 private fun TaskSummaryCard(task: TaskSummary, onClick: () -> Unit) {
-    CloverCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-    ) {
-        Row(verticalAlignment = Alignment.Top) {
-            StatusDot(task.status)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    task.description,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(task.id, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            StatusChip(task.status.ifBlank { "unknown" })
-        }
+    CloverCard(onClick = onClick) {
+        CardTitleRow(
+            title = task.description,
+            subtitle = task.id,
+            trailing = { StatusChip(task.status.ifBlank { "unknown" }) },
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MetaChip(task.mode.ifBlank { "single" })
             MetaChip(task.source.ifBlank { "task" })

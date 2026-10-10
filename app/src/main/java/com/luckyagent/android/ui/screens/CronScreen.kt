@@ -1,6 +1,5 @@
 package com.luckyagent.android.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,19 +11,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material3.Button
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.api.CronJob
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
+import com.luckyagent.android.ui.components.CardTitleRow
 import com.luckyagent.android.ui.components.CloverCard
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.outlined.EventBusy
@@ -54,9 +52,8 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
                 else -> "Scheduler stopped · ${state.cronCount} task(s)"
             },
             actions = {
-                Button(onClick = vm::refreshCron, enabled = !state.cronLoading) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = null)
-                    Text(if (state.cronLoading) "Querying…" else "Query tasks")
+                IconButton(onClick = vm::refreshCron, enabled = !state.cronLoading) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
                 }
             },
         )
@@ -99,39 +96,39 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
 @Composable
 private fun CronJobCard(job: CronJob) {
     CloverCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    job.id.ifBlank { job.name.ifBlank { "Cron task" } },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                job.description.takeIf { it.isNotBlank() }?.let {
-                    Text(it, color = CloverText2, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            StatusChip(job.status.ifBlank { "unknown" })
+        CardTitleRow(
+            title = job.id.ifBlank { job.name.ifBlank { "Cron task" } },
+            subtitle = job.schedule.ifBlank { null },
+            trailing = { StatusChip(job.status.ifBlank { "unknown" }) },
+        )
+        job.description.takeIf { it.isNotBlank() }?.let {
+            Text(it, color = CloverText2, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        Text("Schedule · ${job.schedule.ifBlank { "—" }}", color = CloverText2)
+        val timing = listOfNotNull(
+            job.nextRun?.let { "下次 ${formatCronTimestamp(it)}" },
+            job.lastRun?.let { "上次 ${formatCronTimestamp(it)}" },
+        ).joinToString(" · ")
+        if (timing.isNotBlank()) {
+            Text(timing, color = CloverText3, style = MaterialTheme.typography.bodySmall)
+        }
         job.metadata["session_id"]?.takeIf { it.isNotBlank() }?.let { sessionId ->
             val platform = job.metadata["platform"]?.takeIf { it.isNotBlank() } ?: "android"
             Text(
-                "结果发到会话 · $platform · $sessionId",
-                color = CloverText2,
+                "结果发到 $platform · $sessionId",
+                color = CloverText3,
+                style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MetaChip("Runs ${job.runCount}")
-            if (job.errorCount > 0) MetaChip("Errors ${job.errorCount}", modifier = Modifier)
+            if (job.errorCount > 0) MetaChip("Errors ${job.errorCount}")
             job.metadata["mode"]?.takeIf { it.isNotBlank() }?.let { MetaChip(it) }
         }
-        job.nextRun?.let { Text("Next run · ${formatCronTimestamp(it)}", color = CloverText3, style = MaterialTheme.typography.bodySmall) }
-        job.lastRun?.let { Text("Last run · ${formatCronTimestamp(it)}", color = CloverText3, style = MaterialTheme.typography.bodySmall) }
-        job.lastError?.takeIf { it.isNotBlank() }?.let { Text(it, color = CloverError, style = MaterialTheme.typography.bodySmall) }
+        job.lastError?.takeIf { it.isNotBlank() }?.let {
+            Text(it, color = CloverError, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
