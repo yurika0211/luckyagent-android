@@ -106,6 +106,8 @@ Key 存在 `EncryptedSharedPreferences`，不进 URL / 默认不进 body 日志�
 
 **Release 策略：只打 `v*` tag 才 release**（例如 `v0.1.0`）。普通 push/PR 只做 debug CI。
 
+普通 PR 不会创建 GitHub Release，只有推送 `v*` tag 才会发布版本。
+
 ### 发版（tag → Release）
 
 ```bash
