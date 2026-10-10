@@ -29,6 +29,7 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
   - WebSocket 事件：`stream_chunk` / `assistant_delta`、`tool_call`、`tool_result`、`stream_end` / `final`、`error`、`status`、`reasoning`、`cancel`
   - 流式助手气泡 + 轻量 Markdown（标题 / 列表 / 粗斜体 / 行内代码 / 代码块）
   - 工具调用卡片（名称、参数摘要、结果、running/done/failed）
+  - 长文本在界面内截断并显示提示：正文最多 32,000 字符，思考/工具输出 16,000 字符，工具参数 8,000 字符；每条消息最多显示 32 个附件。限制只影响客户端展示，服务端原始会话不受影响。
   - 连接状态条 + 断线有限次自动重连（最多 8 次，指数退避）
   - 发送 / 停止（cancel）
   - Agent 运行期间普通消息、命令、页面操作、切换会话和修改连接配置不会中断当前任务；只有 Stop 或 `/stop` 会取消

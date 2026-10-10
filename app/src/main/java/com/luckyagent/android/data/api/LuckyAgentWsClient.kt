@@ -237,47 +237,53 @@ class LuckyAgentWsClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                _raw.tryEmit(text)
-                runCatching { json.decodeFromString(WsEnvelope.serializer(), text) }
-                    .onSuccess { env ->
-                        settingsRepository.saveEventCursor(
-                            connection.config.sessionId,
-                            env.eventId ?: env.id.orEmpty(),
-                        )
-                        if (isCurrent(connection)) {
-                            when (env.type) {
-                                "stream_chunk", "assistant_delta", "delta", "chunk",
-                                "tool_call", "tool", "running", "status", "reasoning", "approval",
-                                -> {
-                                    val stateHint = (env.data as? kotlinx.serialization.json.JsonObject)
-                                        ?.get("state")
-                                        ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
-                                    _state.value = if (stateHint == "idle") SocketState.Connected else SocketState.Running
-                                }
-                                "stream_end", "final", "done", "chat_done", "assistant_message" -> {
-                                    _state.value = SocketState.Connected
-                                }
-                                "error" -> _state.value = SocketState.Error
-                                "cancel", "cancelled" -> _state.value = SocketState.Connected
+                // A reconnect can replay a large or malformed frame. Do not let
+                // callback-thread exceptions crash the process.
+                if (text.length > MAX_INBOUND_MESSAGE_CHARS) {
+                    _lastError.value = "WebSocket message too large"
+                    return
+                }
+                _raw.tryEmit(text.take(MAX_RAW_MESSAGE_CHARS))
+                val parsed = runCatching {
+                    val env = json.decodeFromString(WsEnvelope.serializer(), text)
+                    settingsRepository.saveEventCursor(
+                        connection.config.sessionId,
+                        env.eventId ?: env.id.orEmpty(),
+                    )
+                    if (isCurrent(connection)) {
+                        when (env.type) {
+                            "stream_chunk", "assistant_delta", "delta", "chunk",
+                            "tool_call", "tool", "running", "status", "reasoning", "approval",
+                            -> {
+                                val stateHint = (env.data as? kotlinx.serialization.json.JsonObject)
+                                    ?.get("state")
+                                    ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                                _state.value = if (stateHint == "idle") SocketState.Connected else SocketState.Running
                             }
+                            "stream_end", "final", "done", "chat_done", "assistant_message" -> {
+                                _state.value = SocketState.Connected
+                            }
+                            "error" -> _state.value = SocketState.Error
+                            "cancel", "cancelled" -> _state.value = SocketState.Connected
                         }
-                        _events.tryEmit(
-                            WsEvent(
-                                connectionId = connection.id,
-                                sessionId = connection.config.sessionId,
-                                envelope = env,
-                            ),
-                        )
                     }
-                    .onFailure {
-                        _events.tryEmit(
-                            WsEvent(
-                                connectionId = connection.id,
-                                sessionId = connection.config.sessionId,
-                                envelope = WsEnvelope(type = "raw", data = null, error = text.take(500)),
-                            ),
-                        )
-                    }
+                    _events.tryEmit(
+                        WsEvent(
+                            connectionId = connection.id,
+                            sessionId = connection.config.sessionId,
+                            envelope = env,
+                        ),
+                    )
+                }
+                if (parsed.isFailure) {
+                    _events.tryEmit(
+                        WsEvent(
+                            connectionId = connection.id,
+                            sessionId = connection.config.sessionId,
+                            envelope = WsEnvelope(type = "raw", data = null, error = text.take(500)),
+                        ),
+                    )
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
@@ -441,5 +447,7 @@ class LuckyAgentWsClient(
     companion object {
         const val RECONNECT_BASE_MS = 50L
         const val RECONNECT_MAX_MS = 250L
+        private const val MAX_INBOUND_MESSAGE_CHARS = 8_000_000
+        private const val MAX_RAW_MESSAGE_CHARS = 64_000
     }
 }

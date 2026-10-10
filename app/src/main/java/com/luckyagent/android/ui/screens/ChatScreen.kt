@@ -215,24 +215,32 @@ import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
 import com.luckyagent.android.ui.util.quoteRoleLabel
 
-private sealed interface ChatTimelineItem {
+internal sealed interface ChatTimelineItem {
     val key: String
 
-    data class Message(val bubble: ChatBubble) : ChatTimelineItem {
-        override val key = bubble.id
-    }
+    data class Message(val bubble: ChatBubble, override val key: String) : ChatTimelineItem
 
-    data class Process(val steps: List<ChatBubble>) : ChatTimelineItem {
-        override val key = steps.first().id
-    }
+    data class Process(val steps: List<ChatBubble>, override val key: String) : ChatTimelineItem
 }
 
-private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
+internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
     val result = mutableListOf<ChatTimelineItem>()
     val steps = mutableListOf<ChatBubble>()
+    val usedKeys = mutableSetOf<String>()
+    fun uniqueKey(base: String): String {
+        // Keep server-supplied IDs separate from the LazyColumn's fixed rows.
+        val prefix = "timeline:${base.ifBlank { "item" }}"
+        var candidate = prefix
+        var suffix = 1
+        while (!usedKeys.add(candidate)) {
+            candidate = "$prefix-$suffix"
+            suffix++
+        }
+        return candidate
+    }
     fun flushSteps() {
         if (steps.isNotEmpty()) {
-            result += ChatTimelineItem.Process(steps.toList())
+            result += ChatTimelineItem.Process(steps.toList(), uniqueKey(steps.first().id))
             steps.clear()
         }
     }
@@ -242,7 +250,7 @@ private fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
             steps += bubble
         } else {
             flushSteps()
-            result += ChatTimelineItem.Message(bubble)
+            result += ChatTimelineItem.Message(bubble, uniqueKey(bubble.id))
         }
     }
     flushSteps()
@@ -3569,7 +3577,7 @@ private fun SessionDrawer(
                             )
                         }
                         if (!collapsed) {
-                            items(group.sessions, key = { it.id }) { session ->
+                            items(group.sessions, key = { "session-${it.id}" }) { session ->
                                 SessionDrawerRow(
                                     session = session,
                                     selected = session.id == state.settings.sessionId,
