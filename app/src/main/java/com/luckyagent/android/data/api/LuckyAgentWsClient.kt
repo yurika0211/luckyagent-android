@@ -237,53 +237,7 @@ class LuckyAgentWsClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                // A reconnect can replay a large or malformed frame. Do not let
-                // callback-thread exceptions crash the process.
-                if (text.length > MAX_INBOUND_MESSAGE_CHARS) {
-                    _lastError.value = "WebSocket message too large"
-                    return
-                }
-                _raw.tryEmit(text.take(MAX_RAW_MESSAGE_CHARS))
-                val parsed = runCatching {
-                    val env = json.decodeFromString(WsEnvelope.serializer(), text)
-                    settingsRepository.saveEventCursor(
-                        connection.config.sessionId,
-                        env.eventId ?: env.id.orEmpty(),
-                    )
-                    if (isCurrent(connection)) {
-                        when (env.type) {
-                            "stream_chunk", "assistant_delta", "delta", "chunk",
-                            "tool_call", "tool", "running", "status", "reasoning", "approval",
-                            -> {
-                                val stateHint = (env.data as? kotlinx.serialization.json.JsonObject)
-                                    ?.get("state")
-                                    ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
-                                _state.value = if (stateHint == "idle") SocketState.Connected else SocketState.Running
-                            }
-                            "stream_end", "final", "done", "chat_done", "assistant_message" -> {
-                                _state.value = SocketState.Connected
-                            }
-                            "error" -> _state.value = SocketState.Error
-                            "cancel", "cancelled" -> _state.value = SocketState.Connected
-                        }
-                    }
-                    _events.tryEmit(
-                        WsEvent(
-                            connectionId = connection.id,
-                            sessionId = connection.config.sessionId,
-                            envelope = env,
-                        ),
-                    )
-                }
-                if (parsed.isFailure) {
-                    _events.tryEmit(
-                        WsEvent(
-                            connectionId = connection.id,
-                            sessionId = connection.config.sessionId,
-                            envelope = WsEnvelope(type = "raw", data = null, error = text.take(500)),
-                        ),
-                    )
-                }
+                handleInboundFrame(connection, text)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
@@ -306,6 +260,83 @@ class LuckyAgentWsClient(
             }
         })
         connection.socketRef.set(ws)
+    }
+
+    /**
+     * Process one inbound frame.
+     *
+     * Oversized frames still advance the event cursor, otherwise a reconnect
+     * replays the same frame forever and a dropped stream_end leaves the UI
+     * stuck in Running. The raw diagnostic channel only receives a complete
+     * frame or an already-marked truncation, never a sliced JSON document.
+     */
+    private fun handleInboundFrame(connection: ManagedConnection, text: String) {
+        // A reconnect can replay a large or malformed frame. Do not let
+        // callback-thread exceptions crash the process.
+        if (text.length > MAX_INBOUND_MESSAGE_CHARS) {
+            val cursor = inboundEventCursor(text)
+            if (cursor.isNotEmpty()) {
+                settingsRepository.saveEventCursor(connection.config.sessionId, cursor)
+            }
+            _raw.tryEmit(oversizedFrameNotice(text.length))
+            if (isCurrent(connection)) {
+                _lastError.value = "WebSocket message too large"
+                _state.value = SocketState.Error
+            }
+            _events.tryEmit(
+                WsEvent(
+                    connectionId = connection.id,
+                    sessionId = connection.config.sessionId,
+                    envelope = WsEnvelope(
+                        type = "error",
+                        eventId = cursor.takeIf { it.isNotEmpty() },
+                        error = "WebSocket message too large (${text.length} chars)",
+                    ),
+                ),
+            )
+            return
+        }
+        _raw.tryEmit(text)
+        val parsed = runCatching {
+            val env = json.decodeFromString(WsEnvelope.serializer(), text)
+            settingsRepository.saveEventCursor(
+                connection.config.sessionId,
+                env.eventId ?: env.id.orEmpty(),
+            )
+            if (isCurrent(connection)) {
+                when (env.type) {
+                    "stream_chunk", "assistant_delta", "delta", "chunk",
+                    "tool_call", "tool", "running", "status", "reasoning", "approval",
+                    -> {
+                        val stateHint = (env.data as? kotlinx.serialization.json.JsonObject)
+                            ?.get("state")
+                            ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                        _state.value = if (stateHint == "idle") SocketState.Connected else SocketState.Running
+                    }
+                    "stream_end", "final", "done", "chat_done", "assistant_message" -> {
+                        _state.value = SocketState.Connected
+                    }
+                    "error" -> _state.value = SocketState.Error
+                    "cancel", "cancelled" -> _state.value = SocketState.Connected
+                }
+            }
+            _events.tryEmit(
+                WsEvent(
+                    connectionId = connection.id,
+                    sessionId = connection.config.sessionId,
+                    envelope = env,
+                ),
+            )
+        }
+        if (parsed.isFailure) {
+            _events.tryEmit(
+                WsEvent(
+                    connectionId = connection.id,
+                    sessionId = connection.config.sessionId,
+                    envelope = WsEnvelope(type = "raw", data = null, error = text.take(500)),
+                ),
+            )
+        }
     }
 
     private fun scheduleReconnect(connection: ManagedConnection, reason: String) {
@@ -447,7 +478,47 @@ class LuckyAgentWsClient(
     companion object {
         const val RECONNECT_BASE_MS = 50L
         const val RECONNECT_MAX_MS = 250L
-        private const val MAX_INBOUND_MESSAGE_CHARS = 8_000_000
-        private const val MAX_RAW_MESSAGE_CHARS = 64_000
+        /** Reject frames above this size instead of decoding them. */
+        internal const val MAX_INBOUND_MESSAGE_CHARS = 8_000_000
+
+        /** Diagnostic raw channel cap. Full frames at or under this size pass through. */
+        internal const val MAX_RAW_MESSAGE_CHARS = 64_000
+
+        internal fun oversizedFrameNotice(length: Int): String =
+            "{\"type\":\"error\",\"error\":\"frame truncated for display\",\"chars\":$length}"
+
+        /** Find a short event id without decoding or copying the whole frame. */
+        internal fun inboundEventCursor(text: String): String =
+            cursorField(text, "event_id")
+                ?: cursorField(text, "\"id\"")
+                ?: ""
+
+        private fun cursorField(window: String, field: String): String? {
+            val key = if (field.startsWith("\"")) field else "\"$field\""
+            var from = 0
+            while (from < window.length) {
+                val at = window.indexOf(key, from)
+                if (at < 0) return null
+                var i = at + key.length
+                while (i < window.length && window[i].isWhitespace()) i++
+                if (i >= window.length || window[i] != ':') {
+                    from = at + key.length
+                    continue
+                }
+                i++
+                while (i < window.length && window[i].isWhitespace()) i++
+                if (i >= window.length || window[i] != '"') return null
+                i++
+                val start = i
+                while (i < window.length && window[i] != '"') {
+                    if (window[i] == '\\') return null
+                    i++
+                }
+                if (i >= window.length) return null
+                val value = window.substring(start, i)
+                return value.takeIf { it.isNotBlank() }
+            }
+            return null
+        }
     }
 }
