@@ -534,7 +534,7 @@ private fun agentMessageSummary(message: AgentMessage): String? {
         ?.joinToString(", ") { "${it.key}=${it.value}" }
 }
 
-private fun friendlyAgentMessageType(type: String): String = when (type.lowercase()) {
+internal fun friendlyAgentMessageType(type: String): String = when (type.lowercase()) {
     "task_progress" -> "Progress update"
     "task_result" -> "Step result"
     "task_assign" -> "Task assigned"
@@ -768,17 +768,17 @@ private fun TaskMetric(label: String, value: String, color: androidx.compose.ui.
     }
 }
 
-private fun String.taskNeedsAttention(): Boolean = when (lowercase()) {
+internal fun String.taskNeedsAttention(): Boolean = when (lowercase()) {
     "blocked", "failed", "timeout", "error" -> true
     else -> false
 }
 
-private fun String.taskIsActive(): Boolean = when (lowercase()) {
+internal fun String.taskIsActive(): Boolean = when (lowercase()) {
     "pending", "queued", "running", "in_progress", "in-progress" -> true
     else -> false
 }
 
-private fun friendlyTaskStatus(status: String): String = when (status.lowercase()) {
+internal fun friendlyTaskStatus(status: String): String = when (status.lowercase()) {
     "pending", "queued" -> "Queued"
     "running", "in_progress", "in-progress" -> "In progress"
     "blocked", "waiting" -> "Needs attention"
@@ -789,7 +789,7 @@ private fun friendlyTaskStatus(status: String): String = when (status.lowercase(
     else -> status.ifBlank { "Unknown" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 
-private fun friendlyTaskMode(mode: String): String = when (mode.lowercase()) {
+internal fun friendlyTaskMode(mode: String): String = when (mode.lowercase()) {
     "single" -> "Single step"
     "parallel" -> "Parallel"
     "pipeline" -> "Step by step"
@@ -799,7 +799,7 @@ private fun friendlyTaskMode(mode: String): String = when (mode.lowercase()) {
     else -> mode.ifBlank { "Task" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 
-private fun friendlyTaskSource(source: String): String = when (source.lowercase()) {
+internal fun friendlyTaskSource(source: String): String = when (source.lowercase()) {
     "tool" -> "Assistant"
     "gateway" -> "Gateway"
     "autonomy" -> "Background"
@@ -833,7 +833,7 @@ private fun taskStatusColor(status: String): androidx.compose.ui.graphics.Color 
     }
 }
 
-private fun friendlyEventType(type: String): String = when (type.lowercase()) {
+internal fun friendlyEventType(type: String): String = when (type.lowercase()) {
     "task.created" -> "Task created"
     "task.planned" -> "Plan ready"
     "task.started" -> "Work started"

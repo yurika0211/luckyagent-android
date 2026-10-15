@@ -164,6 +164,9 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.data.api.TaskSummary
+import com.luckyagent.android.data.api.executionSession
+import com.luckyagent.android.data.api.isTerminalTaskStatus
 import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.inputPrompt
 import com.luckyagent.android.data.api.isSecureCredentialForm
@@ -235,6 +238,27 @@ internal sealed interface ChatTimelineItem {
     data class Message(val bubble: ChatBubble, override val key: String) : ChatTimelineItem
 
     data class Process(val steps: List<ChatBubble>, override val key: String) : ChatTimelineItem
+}
+
+internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): String? {
+    val collabModes = setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue")
+    val matched = tasks.filter { task ->
+        task.mode.lowercase() in collabModes && (task.childCount > 0 || task.mode.lowercase() in setOf("parallel", "pipeline", "debate"))
+    }
+    val task = matched.firstOrNull { !it.status.isTerminalTaskStatus() } ?: matched.firstOrNull() ?: return null
+    val done = task.status.isTerminalTaskStatus()
+    val mode = task.mode.lowercase()
+    val total = task.childCount.coerceAtLeast(1)
+    val completed = task.completedChildren.coerceIn(0, total)
+    val round = ((task.progress * total).toInt()).coerceIn(1, total)
+    val body = when (mode) {
+        "parallel" -> "并行 · $completed/$total"
+        "pipeline" -> if (done) "流水线 · $completed/$total" else "流水线 · 第 ${completed.coerceAtLeast(1)} 步"
+        "debate" -> if (done) "辩论 · $completed 轮" else "辩论 · 第 $round 轮"
+        "autonomy_queue" -> "黑板 · $total 人"
+        else -> "协作 · $completed/$total"
+    }
+    return if (done) "$body · 完成" else body
 }
 
 internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
@@ -908,6 +932,12 @@ private fun ChatConversation(
                                     selectedThinkingSteps = item.steps
                                     showThinkingSheet = true
                                 },
+                                collabLabel = collabFoldLabel(
+                                    state.tasks.filter {
+                                        it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
+                                    },
+                                    state.isResponding,
+                                ),
                             )
                         }
                     }
@@ -1009,6 +1039,16 @@ private fun ChatConversation(
         if (showThinkingSheet) {
             ThinkingSheet(
                 steps = selectedThinkingSteps,
+                collabLabel = collabFoldLabel(
+                    state.tasks.filter {
+                        it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
+                    },
+                    state.isResponding,
+                ),
+                collabTasks = state.tasks.filter {
+                    it.sessionId == state.settings.sessionId || it.executionSession() == state.settings.sessionId
+                },
+                onOpenTask = { vm.selectTask(it); vm.navigate(com.luckyagent.android.ui.AppDestination.Tasks) },
                 imageHeaders = imageHeaders,
                 imageBaseUrl = state.settings.apiBase,
                 onDismiss = { showThinkingSheet = false },
@@ -1729,6 +1769,7 @@ private fun ApprovalCard(
 private fun ProcessTimeline(
     steps: List<ChatBubble>,
     isResponding: Boolean,
+    collabLabel: String? = null,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
@@ -1751,6 +1792,7 @@ private fun ProcessTimeline(
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
+                    collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
                     isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"
@@ -1774,6 +1816,9 @@ private fun ProcessTimeline(
 @Composable
 private fun ThinkingSheet(
     steps: List<ChatBubble>,
+    collabLabel: String? = null,
+    collabTasks: List<TaskSummary> = emptyList(),
+    onOpenTask: (String) -> Unit = {},
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDismiss: () -> Unit,
@@ -1796,7 +1841,7 @@ private fun ThinkingSheet(
                 Text("🧠", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "思考了 ${steps.size} 步",
+                    collabLabel ?: "思考了 ${steps.size} 步",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
@@ -1806,6 +1851,23 @@ private fun ThinkingSheet(
                 }
             }
             Spacer(Modifier.height(8.dp))
+            collabTasks.filter { it.childCount > 0 || it.mode.lowercase() in setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue") }.forEach { task ->
+                Surface(
+                    onClick = { onOpenTask(task.id) },
+                    color = CloverSurface2,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(task.description.ifBlank { task.id }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${task.mode} · ${task.completedChildren}/${task.childCount.coerceAtLeast(0)} · ${task.status}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = CloverText3,
+                        )
+                    }
+                }
+            }
             steps.forEach { step ->
                 when {
                     step.role == "compact" -> CompactProgressRow(step.content)

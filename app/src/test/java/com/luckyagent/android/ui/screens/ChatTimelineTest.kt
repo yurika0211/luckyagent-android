@@ -1,5 +1,6 @@
 package com.luckyagent.android.ui.screens
 
+import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.ui.ChatBubble
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -36,3 +37,18 @@ class ChatTimelineTest {
         assertEquals(3, timeline.map { it.key }.toSet().size)
     }
 }
+
+    @Test
+    fun collabFoldLabelUsesModeAndFinishedState() {
+        val running = TaskSummary(id = "p", source = "tool", mode = "parallel", status = "running", description = "split", childCount = 3, completedChildren = 2)
+        assertEquals("并行 · 2/3", collabFoldLabel(listOf(running), responding = true))
+        val pipeline = TaskSummary(id = "s", source = "tool", mode = "pipeline", status = "running", description = "chain", childCount = 4, completedChildren = 1)
+        assertEquals("流水线 · 第 1 步", collabFoldLabel(listOf(pipeline), responding = true))
+        val debate = TaskSummary(id = "d", source = "tool", mode = "debate", status = "running", description = "argue", childCount = 3, completedChildren = 1, progress = 0.66)
+        assertEquals("辩论 · 第 2 轮", collabFoldLabel(listOf(debate), responding = true))
+        val board = TaskSummary(id = "b", source = "autonomy", mode = "autonomy_queue", status = "running", description = "board", childCount = 3)
+        assertEquals("黑板 · 3 人", collabFoldLabel(listOf(board), responding = true))
+        val done = running.copy(status = "completed", completedChildren = 3)
+        assertEquals("并行 · 3/3 · 完成", collabFoldLabel(listOf(done), responding = false))
+        assertEquals(null, collabFoldLabel(emptyList(), responding = true))
+    }
