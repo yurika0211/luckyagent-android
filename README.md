@@ -28,18 +28,33 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 - **Chat**
   - WebSocket 事件：`stream_chunk` / `assistant_delta`、`tool_call`、`tool_result`、`stream_end` / `final`、`error`、`status`、`reasoning`、`cancel`
   - 流式助手气泡 + 轻量 Markdown（标题 / 列表 / 粗斜体 / 行内代码 / 代码块）
+  - 同一 query 的多轮推理、工具过程和中途说明统一折叠，最终答复保留在主会话；历史加载与实时工具轮次采用同一规则
   - 工具调用卡片（名称、参数摘要、结果、running/done/failed）
   - 长文本在界面内截断并显示提示：正文最多 32,000 字符，思考/工具输出 16,000 字符，工具参数 8,000 字符；每条消息最多显示 32 个附件。限制只影响客户端展示，服务端原始会话不受影响。
   - 入站帧另有一层保护，和界面展示上限不是同一件事：超过 8,000,000 字符的 WebSocket 帧不解析，记一条截断错误并照常推进事件游标，避免重连反复重放；64,000 字符以内的完整帧才会原样进入调试通道，超限帧不会把半截 JSON 当正常消息。
   - 连接状态条 + 断线有限次自动重连（最多 8 次，指数退避）
   - 发送 / 停止（cancel）
   - Agent 运行期间普通消息、命令、页面操作、切换会话和修改连接配置不会中断当前任务；只有 Stop 或 `/stop` 会取消
+- **HTML 展示**
+  - 聊天正文、标题、列表和表格共用结构化富文本渲染；支持嵌套样式、换行、字符实体、下划线/删除线/高亮、上下标、HTML 列表/表格/图片与 details 折叠
+  - 支持语义颜色及常用行内 CSS（颜色、背景、字号、粗斜体、装饰、对齐）；代码与转义标签保持原文
+  - HTML 代码块、完整文档和 HTML 附件可进入整页预览，展示 CSS/SVG/DOM 交互；支持源码切换、缩放和保存/下载，切换源码保留页面交互状态
+  - 预览通过隔离域名加载当前文档目录内的 CSS、图片、脚本等资源，支持 artifacts 与普通 HTTP(S) 附件；每次重定向重新校验同源及目录范围，越界即阻止请求。鉴权只附加到配置 API 的 `/api/v1/artifacts`，拒绝目录穿越；任意绝对资源 URL 不走应用代拉。代码块与本地附件不隐式获得 API 资源访问权限
+  - 页面保留 DOM 交互，不接入原生 JS 桥；CSP 禁止 Worker、connect/form 与 eval。聊天中的外部图片需点击后加载，不携带 API 凭证；artifact 图片共用受限加载器，防止重定向泄露凭证
+  - HTML 文档和单个资源上限 2 MiB；每次预览最多 64 次请求（含重定向）、8 MiB 资源总量、4 个并发加载。源码窗口最多显示 32,000 字符，可下载完整文件。复杂 CSS、表格合并和交互由整页预览承载
 - **Sessions**
-  - 抽屉搜索、切换 session、加载历史（含历史 tool_calls）
-- **Settings**
+  - 手机主会话右滑进入整页功能导航，左滑或点击会话按钮进入整页会话列表
+  - 会话搜索、切换 session、加载历史（含历史 tool_calls）；左右滑动、关闭按钮或系统返回可回到主会话
+- **基础设置（Settings）**
   - API Base / API Key / Session
   - Bearer vs `X-API-Key`
   - Health 探测、WS 重连、加密存储 Key
+- **config.json**
+  - 从功能导航进入独立的服务器配置页，按字段编辑、校验预览、保存或从文件重载
+  - 进入该页面时加载服务器配置；基础设置只管理设备端配置
+- **后台黑板**
+  - 默认以可拖动、缩放的节点画布展示共享任务黑板、Worker 和任务；归属连线来自后台接口，已完成任务用虚线区分
+  - 点击节点查看状态，进入任务详情或执行对话；也可用节点列表选择，保留任务列表视图和筛选
 - **Memory**
   - recall 查询、tier stats、真实 wikilink 图谱、动态布局和召回路径回放
 - **Trajectory / Gateways / Skills**
@@ -56,12 +71,14 @@ LuckyAgent 的 **Android 客户端**（独立仓库）。手机只当客户端�
 
 | GUI (`UI/GUI`) | Android |
 |----------------|---------|
-| 左侧 sidebar 导航 | `NavigationBar` / `NavigationRail` |
+| 左侧 sidebar 导航 | 整页 `NavigationPage` / 宽屏 `NavigationRail` |
 | Chat | `ChatScreen` |
+| 后台任务黑板 | `BackgroundScreen` / `BackgroundBlackboardCanvas` |
 | Trajectory | `TrajectoryScreen` |
 | Gateways | `GatewaysScreen` |
 | Skills | `SkillsScreen` |
 | Settings | `SettingsScreen` |
+| config.json | `RuntimeConfigScreen` |
 | Memory graph | `MemoryScreen` |
 | 会话列表 + 搜索 | `SessionDrawer` |
 | topbar + composer | `ChatTopBar` + `ComposerBar` |
@@ -181,3 +198,14 @@ docs/GUI-MAPPING.md
 - 本仓：仅 Android 客户端 → `yurika0211/luckyagent-android`
 - 协议：`internal/websocket/message.go` + HTTP `/api/v1/*`
 - Electron 在主仓 `UI/desktop`；手机端不复用 Electron，也不内嵌 Go 运行时
+
+### HTML 渲染回归
+
+UI 测试使用独立包名，避免测试清理卸载日常使用的 debug 应用：
+
+```bash
+./gradlew :app:testDebugUnitTest :app:connectedDebugAndroidTest -PisolatedUiTest=true
+./gradlew :app:assembleDebug
+```
+
+第二条命令恢复正常 debug 包名。验收覆盖标题/列表/表格内 HTML、链接点击、代码文字、details 流式状态、CSS/DOM 预览、源码切换保留状态、HTML 附件和深色大字显示。

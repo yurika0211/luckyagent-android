@@ -2,6 +2,8 @@ package com.luckyagent.android.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -40,6 +42,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.Json
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RuntimeSettingsPanel(state: AppUiState, vm: AppViewModel) {
     val schema = state.runtimeConfigSchema
@@ -47,7 +50,11 @@ fun RuntimeSettingsPanel(state: AppUiState, vm: AppViewModel) {
     CloverCard {
         Text("运行时配置", fontWeight = FontWeight.SemiBold)
         Text("配置来自服务器。修改先暂存，可预览校验后保存；需要重启的项不会自动重启。", color = CloverText2)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             OutlinedButton(onClick = { vm.loadRuntimeConfig(force = true) }) { Text("刷新") }
             OutlinedButton(onClick = { vm.reloadRuntimeConfig() }) { Text("从文件重载") }
             Button(onClick = { vm.previewRuntimeConfig() }, enabled = !state.runtimeConfigSaving) { Text("校验预览") }

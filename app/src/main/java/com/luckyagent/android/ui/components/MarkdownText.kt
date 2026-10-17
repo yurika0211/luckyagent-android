@@ -2,68 +2,35 @@ package com.luckyagent.android.ui.components
 
 import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.foundation.text.ClickableText
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.dp
-import coil.request.ImageRequest
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import com.luckyagent.android.ui.theme.CloverBgSide
-import com.luckyagent.android.ui.theme.CloverAccent
-import com.luckyagent.android.ui.theme.CloverLine
-import com.luckyagent.android.ui.theme.CloverText
-import com.luckyagent.android.ui.theme.CloverText2
-import com.luckyagent.android.ui.theme.CloverWarning
+import com.luckyagent.android.ui.theme.*
 
-/**
- * Lightweight Markdown renderer: bold, italic, inline code, fenced code blocks,
- * headings, bullet and ordered lists, links, and GFM tables. Tables use a stateful row
- * tokenizer (escaped/code/link pipes are safe), support alignment markers, and
- * use content-based column widths inside a horizontally scrollable row. One-column
- * tables are supported when written with explicit outer pipes. A table is held
- * back while [streaming] until its delimiter row is complete. Malformed
- * delimiter rows remain ordinary text; colspan and nested block Markdown in a
- * cell are outside this lightweight renderer's scope.
- */
+/** Native Markdown and HTML fragments share one rich-text painter in every context. */
 @Composable
 fun MarkdownText(
     markdown: String,
@@ -73,161 +40,179 @@ fun MarkdownText(
     imageBaseUrl: String = "",
     streaming: Boolean = false,
 ) {
-    val context = LocalContext.current
-    val blocks = remember(markdown, streaming) {
-        splitMarkdownBlocks(markdown, hideIncompleteTables = streaming)
+    val blocks = remember(markdown, streaming) { splitMarkdownBlocks(markdown, hideIncompleteTables = streaming) }
+    val htmlNodes = remember(blocks) {
+        blocks.map { block ->
+            if (block is MdBlock.Html && !requiresHtmlPage(block.source)) parseHtml(block.source).orEmpty()
+            else emptyList()
+        }
     }
-    Column(modifier = modifier) {
-        blocks.forEach { block ->
+    val detailsState = rememberSaveable(saver = HtmlDetailsState.Saver) { HtmlDetailsState() }
+    val detailsContext = remember(htmlNodes, detailsState) {
+        HtmlDetailsContext(detailsState, detailsState.identities(htmlNodes.flatten()))
+    }
+    Column(modifier) {
+        blocks.forEachIndexed { index, block -> key(index) {
             when (block) {
-                is MdBlock.Mermaid -> {
-                    MermaidView(source = block.source)
-                }
+                is MdBlock.Mermaid -> MermaidView(source = block.source)
                 is MdBlock.Html -> {
-                    HtmlBlock(source = block.source, color = color)
-                }
-                is MdBlock.Code -> {
-                    SelectionContainer {
-                        Text(
-                            text = block.body,
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                color = CloverText2,
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .background(CloverBgSide, RoundedCornerShape(8.dp))
-                                .border(1.dp, CloverLine, RoundedCornerShape(8.dp))
-                                .horizontalScroll(rememberScrollState())
-                                .padding(10.dp),
-                        )
+                    if (!requiresHtmlPage(block.source)) {
+                        NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl, htmlNodes[index], detailsContext)
+                    }
+                    if (block.showPreview || requiresHtmlPage(block.source)) {
+                        HtmlPreviewCard(source = block.source, baseUrl = imageBaseUrl, headers = imageHeaders)
                     }
                 }
-                is MdBlock.Image -> {
-                    val imageSource = remember(block.source, imageBaseUrl) {
-                        resolveImageSource(block.source, imageBaseUrl)
-                    }
-                    val bitmap by produceState<android.graphics.Bitmap?>(null, block.source) {
-                        value = withContext(Dispatchers.IO) { decodeMarkdownImage(block.source) }
-                    }
-                    val imageBitmap = bitmap?.asImageBitmap()
-                    if (imageBitmap != null) {
-                        Image(
-                            bitmap = imageBitmap,
-                            contentDescription = block.alt,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        )
-                    } else if (!block.source.startsWith("data:image/")) {
-                        coil.compose.AsyncImage(
-                            model = remember(imageSource, imageBaseUrl, imageHeaders) {
-                                ImageRequest.Builder(context)
-                                    .data(imageSource)
-                                    .apply {
-                                        if (sameOrigin(imageSource, imageBaseUrl)) {
-                                            imageHeaders.forEach { (name, value) -> addHeader(name, value) }
-                                        }
-                                    }
-                                    .build()
-                            },
-                            contentDescription = block.alt,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        )
-                    }
-                }
+                is MdBlock.Code -> CodeText(block.body)
+                is MdBlock.Image -> MarkdownImage(block.source, block.alt, imageHeaders, imageBaseUrl)
                 is MdBlock.Table -> {
-                    // Keep columns aligned while sizing each one from its longest
-                    // visible cell. The bounds prevent a long URL from taking
-                    // over the bubble; the surrounding scroll handles overflow.
-                    val columnWidths = remember(block.rows) {
-                        List(block.alignments.size) { column ->
-                            val maxCharacters = block.rows.maxOfOrNull {
-                                it.getOrNull(column).orEmpty().length
-                            } ?: 0
-                            (maxCharacters * 8 + 16).coerceIn(64, 280).dp
+                    val widths = remember(block.rows) {
+                        List(block.alignments.size) { col ->
+                            ((block.rows.maxOfOrNull { it.getOrNull(col).orEmpty().length } ?: 0) * 8 + 16).coerceIn(64, 280).dp
                         }
                     }
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(vertical = 4.dp),
-                    ) {
-                        block.rows.forEachIndexed { rowIndex, cells ->
-                            Row {
-                                cells.forEachIndexed { columnIndex, cell ->
-                                    Text(
-                                        text = inlineMarkdown(cell),
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            color = color,
-                                            fontWeight = if (rowIndex == 0) FontWeight.SemiBold else FontWeight.Normal,
-                                            textAlign = when (block.alignments.getOrNull(columnIndex)) {
-                                                TableAlignment.CENTER -> TextAlign.Center
-                                                TableAlignment.RIGHT -> TextAlign.End
-                                                else -> TextAlign.Start
-                                            },
-                                        ),
-                                        modifier = Modifier
-                                            .width(columnWidths.getOrElse(columnIndex) { 64.dp })
-                                            .border(1.dp, CloverLine)
-                                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    )
-                                }
+                    Column(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp)) {
+                        block.rows.forEachIndexed { row, cells -> Row {
+                            cells.forEachIndexed { col, cell ->
+                                RichMarkdownText(cell, color,
+                                    modifier = Modifier.width(widths[col]).border(1.dp, CloverLine).padding(8.dp),
+                                    baseUrl = imageBaseUrl, headers = imageHeaders,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = color,
+                                        fontWeight = if (row == 0) FontWeight.SemiBold else FontWeight.Normal,
+                                        textAlign = when (block.alignments[col]) {
+                                            TableAlignment.CENTER -> TextAlign.Center
+                                            TableAlignment.RIGHT -> TextAlign.End
+                                            else -> TextAlign.Start
+                                        },
+                                    ))
                             }
-                        }
+                        } }
                     }
                 }
                 MdBlock.IncompleteTable -> Unit
-                is MdBlock.Rule -> {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 10.dp)
-                            .height(1.dp)
-                            .background(CloverLine),
-                    )
+                is MdBlock.Rule -> HorizontalDivider(Modifier.padding(vertical = 10.dp), color = CloverLine)
+                is MdBlock.Math -> LatexView(block.latex, block.display, color, Modifier.fillMaxWidth())
+                is MdBlock.Heading -> RichMarkdownText(block.text, color,
+                    baseUrl = imageBaseUrl, headers = imageHeaders,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    style = when (block.level) {
+                        1 -> MaterialTheme.typography.titleLarge
+                        2 -> MaterialTheme.typography.titleMedium
+                        3 -> MaterialTheme.typography.titleSmall
+                        else -> MaterialTheme.typography.bodyLarge
+                    }.copy(color = color, fontWeight = FontWeight.SemiBold))
+                is MdBlock.ListItem -> Row(Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp)) {
+                    Text("${block.marker} ", color = color)
+                    RichMarkdownText(block.text, color, baseUrl = imageBaseUrl, headers = imageHeaders, modifier = Modifier.weight(1f))
                 }
-                is MdBlock.Math -> {
-                    LatexBlock(
-                        latex = block.latex,
-                        display = block.display,
-                        color = color,
-                    )
-                }
-                is MdBlock.Heading -> {
-                    Text(
-                        text = inlineMarkdown(block.text),
-                        style = when (block.level) {
-                            1 -> MaterialTheme.typography.titleLarge
-                            2 -> MaterialTheme.typography.titleMedium
-                            3 -> MaterialTheme.typography.titleSmall
-                            4 -> MaterialTheme.typography.bodyLarge
-                            5 -> MaterialTheme.typography.bodyMedium
-                            else -> MaterialTheme.typography.bodySmall
-                        }.copy(color = color, fontWeight = FontWeight.SemiBold),
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                }
-                is MdBlock.ListItem -> {
-                    Text(
-                        text = buildAnnotatedString {
-                            append(block.marker)
-                            append(" ")
-                            append(inlineMarkdown(block.text))
-                        },
-                        style = MaterialTheme.typography.bodyLarge.copy(color = color),
-                        modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
-                    )
-                }
-                is MdBlock.Paragraph -> {
-                    RichMarkdownText(
-                        text = block.text,
-                        color = color,
-                        modifier = Modifier.padding(vertical = 2.dp),
-                    )
-                }
+                is MdBlock.Paragraph -> RichMarkdownText(block.text, color, baseUrl = imageBaseUrl, headers = imageHeaders, modifier = Modifier.padding(vertical = 2.dp))
             }
+        } }
+    }
+}
+
+@Composable
+internal fun CodeText(source: String, modifier: Modifier = Modifier) {
+    SelectionContainer {
+        Text(source, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, color = CloverText2),
+            modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)
+                .background(CloverBgSide, RoundedCornerShape(8.dp)).border(1.dp, CloverLine, RoundedCornerShape(8.dp))
+                .horizontalScroll(rememberScrollState()).padding(10.dp))
+    }
+}
+
+@Composable
+internal fun MarkdownImage(source: String, alt: String, headers: Map<String, String>, baseUrl: String) {
+    val context = LocalContext.current
+    val resolved = remember(source, baseUrl) { resolveHtmlUrl(source, baseUrl) }
+    val artifact = resolved != null && isArtifactResourceUrl(resolved, baseUrl)
+    var approved by remember(resolved) { mutableStateOf(false) }
+    var failed by remember(resolved, source, headers, baseUrl) { mutableStateOf(false) }
+    val loader = remember(resolved, headers, baseUrl) { HtmlResourceLoader(headers, baseUrl) }
+    DisposableEffect(loader) { onDispose { loader.close() } }
+    val bitmap by produceState<android.graphics.Bitmap?>(null, source) {
+        value = withContext(Dispatchers.IO) { if (source.startsWith("data:image/")) decodeMarkdownImage(source) else null }
+    }
+    val artifactBytes by produceState<ByteArray?>(null, resolved, artifact, loader) {
+        value = null
+        if (artifact) {
+            try { value = withContext(Dispatchers.IO) { loader.fetch(resolved).bytes } }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { failed = true }
         }
+    }
+    when {
+        bitmap != null -> Image(bitmap!!.asImageBitmap(), alt, Modifier.fillMaxWidth().padding(vertical = 6.dp))
+        resolved != null && !artifact && !approved -> TextButton(onClick = { approved = true }) {
+            Text(alt.takeIf { it.isNotBlank() }?.let { "$it · 加载远程图片" } ?: "加载远程图片")
+        }
+        artifact && artifactBytes == null && !failed -> CircularProgressIndicator(Modifier.padding(8.dp).size(24.dp))
+        resolved != null && !failed -> coil.compose.AsyncImage(
+            model = remember(resolved, artifactBytes) {
+                // Authenticated images use the same redirect policy as HTML previews.
+                // Coil only decodes their bytes; external images require a gesture and carry no API headers.
+                ImageRequest.Builder(context).data(if (artifact) artifactBytes else resolved).build()
+            },
+            contentDescription = alt,
+            onError = { failed = true },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp, max = 480.dp).padding(vertical = 6.dp))
+        else -> Text(alt.ifBlank { "图片无法加载" }, style = MaterialTheme.typography.bodySmall, color = CloverText2)
+    }
+}
+
+@Composable
+internal fun htmlColorPalette(): Map<String, Color> = mapOf(
+    "accent" to MaterialTheme.colorScheme.primary,
+    "muted" to MaterialTheme.colorScheme.onSurfaceVariant,
+    "success" to CloverAccent,
+    "warning" to CloverWarning,
+    "error" to MaterialTheme.colorScheme.error,
+)
+
+@Composable
+private fun RichMarkdownText(text: String, color: Color, modifier: Modifier = Modifier,
+    baseUrl: String = "", headers: Map<String, String> = emptyMap(), style: TextStyle = MaterialTheme.typography.bodyLarge.copy(color = color)) {
+    val colors = htmlColorPalette()
+    val nodes = remember(text) { richTextNodes(text) }
+    fun hasMedia(nodes: List<HtmlNode>): Boolean = nodes.any { it is HtmlNode.Element &&
+        (it.tag in setOf("img", "details", "table", "ul", "ol", "pre") || hasMedia(it.children)) }
+    if (hasMedia(nodes)) {
+        Box(modifier) { HtmlFlow(nodes, color, headers, baseUrl, style) }
+        return
+    }
+    val annotated = remember(nodes, colors, baseUrl) { htmlAnnotatedText(nodes, colors, baseUrl, parseMath = false) }
+    RichAnnotatedText(annotated, style, color, modifier)
+}
+
+@Composable
+internal fun RichAnnotatedText(text: AnnotatedString, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+    val math = text.getStringAnnotations("math", 0, text.length)
+    if (math.isEmpty()) {
+        LinkedText(text, style, color, modifier)
+    } else {
+        val runs = mutableListOf<InlineMathRun>()
+        var cursor = 0
+        math.forEach { span ->
+            if (cursor < span.start) runs += InlineMathRun.Text(text.subSequence(cursor, span.start))
+            val latex = text.text.substring(span.start, span.end)
+            runs += InlineMathRun.Math(latex, span.item == "display" || latex.contains("\\displaystyle") || latex.contains("\\dfrac"))
+            cursor = span.end
+        }
+        if (cursor < text.length) runs += InlineMathRun.Text(text.subSequence(cursor, text.length))
+        InlineMathText(runs, style, color, modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+internal fun LinkedText(text: AnnotatedString, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+    if (text.getStringAnnotations("url", 0, text.length).isEmpty()) {
+        Text(text, style = style, color = color, modifier = modifier)
+    } else {
+        val handler = LocalUriHandler.current
+        ClickableText(text, style = style.copy(color = color), modifier = modifier, onClick = { offset ->
+            text.getStringAnnotations("url", offset, offset).firstOrNull()?.let { runCatching { handler.openUri(it.item) } }
+        })
     }
 }
 
@@ -241,322 +226,3 @@ private fun decodeMarkdownImage(source: String): android.graphics.Bitmap? = runC
     while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
 }.getOrNull()
-
-private fun resolveImageSource(source: String, baseUrl: String): String {
-    if (source.startsWith("http://") || source.startsWith("https://") || source.startsWith("data:")) return source
-    if (baseUrl.isBlank()) return source
-    return baseUrl.trimEnd('/') + "/" + source.trimStart('/')
-}
-
-private fun sameOrigin(source: String, baseUrl: String): Boolean {
-    val imageUri = runCatching { android.net.Uri.parse(source) }.getOrNull() ?: return false
-    val baseUri = runCatching { android.net.Uri.parse(baseUrl) }.getOrNull() ?: return false
-    return imageUri.scheme == baseUri.scheme &&
-        imageUri.host.equals(baseUri.host, ignoreCase = true) &&
-        (imageUri.port.takeIf { it >= 0 } ?: defaultPort(imageUri.scheme)) ==
-        (baseUri.port.takeIf { it >= 0 } ?: defaultPort(baseUri.scheme))
-}
-
-private fun defaultPort(scheme: String?): Int = if (scheme.equals("https", true)) 443 else 80
-
-private const val HTML_COLOR_MARKER = "\u0002color:"
-private const val HTML_COLOR_END_MARKER = "\u0002/color\u0003"
-private const val HTML_COLOR_MARKER_END = "\u0003"
-
-@Composable
-private fun htmlColorPalette(): Map<String, Color> = mapOf(
-    "accent" to MaterialTheme.colorScheme.primary,
-    "muted" to MaterialTheme.colorScheme.onSurfaceVariant,
-    "success" to CloverAccent,
-    "warning" to CloverWarning,
-    "error" to MaterialTheme.colorScheme.error,
-)
-
-@Composable
-private fun RichMarkdownText(
-    text: String,
-    color: Color,
-    modifier: Modifier = Modifier,
-    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyLarge.copy(color = color),
-) {
-    val rendered = remember(text) { renderHtmlInline(text) }
-    val pieces = remember(rendered) { splitInlineMath(rendered) }
-    val htmlColors = htmlColorPalette()
-    if (pieces.none { it.math }) {
-        LinkedText(text = inlineMarkdown(rendered, htmlColors), style = style, color = color, modifier = modifier)
-        return
-    }
-    Column(modifier) {
-        pieces.chunkedByText().forEach { row ->
-            if (row.size == 1 && row[0].math && row[0].displayFence) {
-                LatexBlock(latex = row[0].value, display = true, color = color)
-            } else {
-                InlineMathText(
-                    runs = row.map { piece ->
-                        if (piece.math) {
-                            InlineMathRun.Math(piece.value, piece.displaySize)
-                        } else {
-                            InlineMathRun.Text(inlineMarkdown(piece.value, htmlColors))
-                        }
-                    },
-                    style = style,
-                    color = color,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
-    }
-}
-
-private data class InlinePiece(
-    val value: String,
-    val math: Boolean = false,
-    val displayFence: Boolean = false,
-    val displaySize: Boolean = false,
-)
-
-private fun splitInlineMath(text: String): List<InlinePiece> {
-    val pieces = mutableListOf<InlinePiece>()
-    var last = 0
-    for (match in inlinePattern.findAll(text)) {
-        if (match.range.first > last) pieces += InlinePiece(text.substring(last, match.range.first))
-        val token = match.value
-        if (token.startsWith("$")) {
-            val displayFence = token.startsWith("$$")
-            val latex = (if (displayFence) token.removeSurrounding("$$") else token.removeSurrounding("$"))
-                .trim()
-                .replace("\\$", "$")
-            pieces += InlinePiece(
-                value = latex,
-                math = true,
-                displayFence = displayFence,
-                displaySize = displayFence || latex.contains("\\displaystyle") || latex.contains("\\dfrac"),
-            )
-        } else {
-            pieces += InlinePiece(token)
-        }
-        last = match.range.last + 1
-    }
-    if (last < text.length) pieces += InlinePiece(text.substring(last))
-    return pieces
-}
-
-private fun List<InlinePiece>.chunkedByText(): List<List<InlinePiece>> {
-    val rows = mutableListOf<MutableList<InlinePiece>>()
-    var current = mutableListOf<InlinePiece>()
-    forEach { piece ->
-        if (!piece.math && piece.value.contains('\n')) {
-            val parts = piece.value.split('\n')
-            parts.forEachIndexed { index, part ->
-                if (part.isNotEmpty()) current += piece.copy(value = part)
-                if (index < parts.lastIndex) {
-                    if (current.isNotEmpty()) rows += current
-                    current = mutableListOf()
-                }
-            }
-        } else {
-            current += piece
-        }
-    }
-    if (current.isNotEmpty()) rows += current
-    return rows
-}
-
-@Composable
-private fun LinkedText(
-    text: AnnotatedString,
-    style: androidx.compose.ui.text.TextStyle,
-    color: Color,
-    modifier: Modifier = Modifier,
-) {
-    if (text.getStringAnnotations("url", 0, text.length).isEmpty()) {
-        Text(text = text, style = style, color = color, modifier = modifier)
-        return
-    }
-    val handler = LocalUriHandler.current
-    ClickableText(
-        text = text,
-        style = style.copy(color = color),
-        modifier = modifier,
-        onClick = { offset ->
-            text.getStringAnnotations("url", offset, offset).firstOrNull()?.let {
-                runCatching { handler.openUri(it.item) }
-            }
-        },
-    )
-}
-
-@Composable
-private fun LatexBlock(latex: String, display: Boolean, color: Color) {
-    LatexView(latex = latex, display = display, color = color, modifier = Modifier.fillMaxWidth())
-}
-
-private val inlinePattern = Regex(
-    """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\$\$[\s\S]+?\$\$)|(\$(?:\\\$|[^$\n])+\$)|(\[[^\]]+\]\([^)]+\))"""
-)
-
-private val htmlColorMarkerPattern = Regex(
-    "${Regex.escape(HTML_COLOR_MARKER)}([a-z]+)${Regex.escape(HTML_COLOR_MARKER_END)}|" +
-        Regex.escape(HTML_COLOR_END_MARKER),
-)
-
-private fun inlineMarkdown(
-    text: String,
-    htmlColors: Map<String, Color> = emptyMap(),
-): AnnotatedString = buildAnnotatedString {
-    val colorStack = ArrayDeque<Color>()
-    var cursor = 0
-    for (marker in htmlColorMarkerPattern.findAll(text)) {
-        if (marker.range.first > cursor) {
-            appendMarkdownSegment(text.substring(cursor, marker.range.first), colorStack.lastOrNull())
-        }
-        val name = marker.groupValues.getOrNull(1).orEmpty()
-        if (name.isNotEmpty()) {
-            htmlColors[name]?.let(colorStack::addLast)
-        } else if (colorStack.isNotEmpty()) {
-            colorStack.removeLast()
-        }
-        cursor = marker.range.last + 1
-    }
-    if (cursor < text.length) appendMarkdownSegment(text.substring(cursor), colorStack.lastOrNull())
-}
-
-private fun AnnotatedString.Builder.appendMarkdownSegment(text: String, color: Color?) {
-    // patterns: **bold**, *italic*, `code`, [label](url)
-    val pattern = Regex(
-        """(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\$\$[^$]+\$\$)|(\$[^$]+\$)|(\[[^\]]+\]\([^)]+\))"""
-    )
-    fun styled(style: SpanStyle, body: AnnotatedString.Builder.() -> Unit) {
-        if (color == null) withStyle(style, body) else withStyle(SpanStyle(color = color).merge(style), body)
-    }
-    var last = 0
-    for (m in pattern.findAll(text)) {
-        if (m.range.first > last) {
-            if (color == null) append(text.substring(last, m.range.first))
-            else withStyle(SpanStyle(color = color)) { append(text.substring(last, m.range.first)) }
-        }
-        val token = m.value
-        when {
-            token.startsWith("**") && token.endsWith("**") -> {
-                styled(SpanStyle(fontWeight = FontWeight.Bold)) { append(token.removeSurrounding("**")) }
-            }
-            token.startsWith("`") && token.endsWith("`") -> {
-                styled(
-                    SpanStyle(
-                        fontFamily = FontFamily.Monospace,
-                        background = Color(0x143F8A37),
-                    ),
-                ) { append(token.removeSurrounding("`")) }
-            }
-            token.startsWith("$") -> styled(SpanStyle()) { append(renderLatex(token.trim('$'))) }
-            token.startsWith("*") && token.endsWith("*") -> {
-                styled(SpanStyle(fontStyle = FontStyle.Italic)) { append(token.removeSurrounding("*")) }
-            }
-            token.startsWith("[") -> {
-                val lm = Regex("""\[([^\]]+)\]\(([^)]+)\)""").matchEntire(token)
-                val href = lm?.groupValues?.get(2)
-                if (lm != null && href != null && (href.startsWith("http://") || href.startsWith("https://"))) {
-                    pushStringAnnotation("url", href)
-                    withStyle(
-                        SpanStyle(
-                            color = Color(0xFF3F8A37),
-                            textDecoration = TextDecoration.Underline,
-                        ),
-                    ) { append(lm.groupValues[1]) }
-                    pop()
-                } else if (lm != null) {
-                    if (color == null) append(lm.groupValues[1])
-                    else withStyle(SpanStyle(color = color)) { append(lm.groupValues[1]) }
-                } else appendStyledText(token, color)
-            }
-            else -> appendStyledText(token, color)
-        }
-        last = m.range.last + 1
-    }
-    if (last < text.length) appendStyledText(text.substring(last), color)
-}
-
-private fun AnnotatedString.Builder.appendStyledText(text: String, color: Color?) {
-    if (color == null) append(text) else withStyle(SpanStyle(color = color)) { append(text) }
-}
-
-
-/**
- * Renders the allowed inline HTML as Markdown markers the existing painter
- * already understands. A fragment that fails [parseHtml] is returned unchanged.
- */
-internal fun renderHtmlInline(text: String): String {
-    if ('<' !in text) return text
-    val nodes = parseHtml(text) ?: return text
-    return nodes.joinToString("") { renderNode(it) }
-}
-
-private fun renderNode(node: HtmlNode): String = when (node) {
-    is HtmlNode.Text -> node.value
-    is HtmlNode.Element -> {
-        val inner = node.children.joinToString("") { renderNode(it) }
-        when (node.tag) {
-            "b", "strong" -> "**$inner**"
-            "i", "em" -> "*$inner*"
-            "code" -> "`$inner`"
-            "br" -> " "
-            "p" -> inner
-            "a" -> if (node.href != null) "[$inner](${node.href})" else inner
-            "span" -> node.color?.let { color ->
-                "$HTML_COLOR_MARKER${color.name.lowercase()}$HTML_COLOR_MARKER_END$inner$HTML_COLOR_END_MARKER"
-            } ?: inner
-            else -> inner
-        }
-    }
-}
-
-@Composable
-private fun HtmlBlock(source: String, color: Color) {
-    val nodes = remember(source) { parseHtml(source) }
-    if (nodes == null) {
-        Text(text = source, color = color, style = MaterialTheme.typography.bodyLarge)
-        return
-    }
-    val htmlColors = htmlColorPalette()
-    Column {
-        nodes.forEach { node -> HtmlNodeView(node, color, htmlColors) }
-    }
-}
-
-@Composable
-private fun HtmlNodeView(node: HtmlNode, color: Color, htmlColors: Map<String, Color>) {
-    when (node) {
-        is HtmlNode.Text -> if (node.value.isNotBlank()) {
-            RichMarkdownText(text = node.value, color = color)
-        }
-        is HtmlNode.Element -> when (node.tag) {
-            "details" -> DetailsView(node, color, htmlColors)
-            "br" -> Spacer(Modifier.height(8.dp))
-            else -> RichMarkdownText(text = renderNode(node), color = color)
-        }
-    }
-}
-
-@Composable
-private fun DetailsView(node: HtmlNode.Element, color: Color, htmlColors: Map<String, Color>) {
-    val summary = node.children.firstOrNull { it is HtmlNode.Element && it.tag == "summary" }
-        ?.let { (it as HtmlNode.Element).children.joinToString("") { child -> renderNode(child) } }
-        ?: "详情"
-    val body = node.children.filterNot { it is HtmlNode.Element && it.tag == "summary" }
-    var open by rememberSaveable(node) { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        TextButton(onClick = { open = !open }) {
-            androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = if (open) "▾ " else "▸ ", color = color)
-                LinkedText(
-                    text = inlineMarkdown(summary, htmlColors),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = color,
-                )
-            }
-        }
-        if (open) {
-            body.forEach { HtmlNodeView(it, color, htmlColors) }
-        }
-    }
-}

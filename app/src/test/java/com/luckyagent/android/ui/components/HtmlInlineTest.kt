@@ -1,93 +1,127 @@
 package com.luckyagent.android.ui.components
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import org.junit.Assert.*
 import org.junit.Test
 
 class HtmlInlineTest {
-    @Test
-    fun boldAndItalicBecomeMarkdownMarkers() {
-        assertEquals("this is **bold** and *italic*", renderHtmlInline("this is <b>bold</b> and <i>italic</i>"))
+    private fun html(source: String) = htmlAnnotatedText(parseHtml(source).orEmpty(), baseUrl = "https://example.test/docs/")
+
+    @Test fun preservesHtmlInsideInlineCode() {
+        assertEquals("<b>x</b>", richInlineText("`<b>x</b>`").text)
     }
-
-    @Test
-    fun strongEmAndCodeAreRecognized() {
-        assertEquals("**a** *b* `c`", renderHtmlInline("<strong>a</strong> <em>b</em> <code>c</code>"))
+    @Test fun escapedMarkupIsDecodedExactlyOnce() {
+        assertEquals("<b>x</b>", html("<p>&lt;b&gt;x&lt;/b&gt;</p>").text)
+        assertEquals("<b>x</b>", richInlineText("&lt;b&gt;x&lt;/b&gt;").text)
+        assertEquals("&lt;b&gt;", richInlineText("`&lt;b&gt;`").text)
     }
-
-    @Test
-    fun httpsLinkBecomesAMarkdownLink() {
-        assertEquals("[link](https://example.com)", renderHtmlInline("<a href=\"https://example.com\">link</a>"))
+    @Test fun nestedBoldItalicComposeWithoutMarkers() {
+        val text = richInlineText("<b><i>x</i></b>")
+        assertEquals("x", text.text)
+        assertTrue(text.spanStyles.any { it.item.fontWeight == FontWeight.Bold })
+        assertTrue(text.spanStyles.any { it.item.fontStyle == FontStyle.Italic })
     }
-
-    @Test
-    fun javascriptLinkKeepsOnlyTheText() {
-        assertEquals("x", renderHtmlInline("<a href=\"javascript:alert(1)\">x</a>"))
+    @Test fun mixedMarkdownAndHtmlRetainsNestedStyles() {
+        val text = richInlineText("<span style='color:red'>**bold** and *italic*</span>")
+        assertEquals("bold and italic", text.text)
+        assertTrue(text.spanStyles.any { it.item.color == Color.Red })
+        assertTrue(text.spanStyles.any { it.item.fontWeight == FontWeight.Bold })
     }
-
-    @Test
-    fun scriptIsRejectedWhole() {
-        val source = "<script>alert(1)</script>"
-
-        assertNull(parseHtml(source))
-        assertEquals(source, renderHtmlInline(source))
+    @Test fun lineBreaksAndParagraphsKeepTheirBoundaries() {
+        assertEquals("a\nb", html("<p>a<br>b</p>").text)
+        assertEquals("intro\nfirst\nsecond\noutro", html("intro<p>first</p><p>second</p>outro").text)
     }
-
-    @Test
-    fun unclosedTagIsLeftUntouched() {
-        val source = "<b>bold"
-
-        assertNull(parseHtml(source))
-        assertEquals(source, renderHtmlInline(source))
+    @Test fun quotedAngleBracketAndParenthesesStayInsideUrl() {
+        val text = html("<a href='https://example.test/a(b)?q=a&gt;b'>link</a>")
+        assertEquals("link", text.text)
+        assertEquals("https://example.test/a(b)?q=a%3Eb", text.getStringAnnotations("url", 0, text.length).singleOrNull()?.item)
     }
-
-    @Test
-    fun nestingPastTheLimitIsRejected() {
-        val source = (1..9).joinToString("") { "<b>" } + "x" + (1..9).joinToString("") { "</b>" }
-
-        assertNull(parseHtml(source))
+    @Test fun literalGreaterThanInAttributeDoesNotEndTag() {
+        val element = parseHtml("<a href='https://example.test/?q=a>b'>link</a>")!!.single() as HtmlNode.Element
+        assertEquals("https://example.test/?q=a>b", element.href)
+        assertEquals("link", htmlAnnotatedText(listOf(element)).text)
     }
-
-    @Test
-    fun detailsParsesWithSummary() {
-        val nodes = parseHtml("<details><summary>more</summary>body</details>")
-
-        val details = nodes?.single() as HtmlNode.Element
-        assertEquals("details", details.tag)
-        assertEquals("summary", (details.children.first() as HtmlNode.Element).tag)
+    @Test fun markdownLinksSupportBalancedParentheses() {
+        val text = richInlineText("[link](https://example.test/a(b))")
+        assertEquals("link", text.text)
+        assertEquals("https://example.test/a(b)", text.getStringAnnotations("url", 0, text.length).single().item)
     }
-
-    @Test
-    fun textWithoutTagsPassesThrough() {
-        assertEquals("plain text", renderHtmlInline("plain text"))
+    @Test fun relativeUrlsResolveAgainstDocument() {
+        val text = html("<a href='../help#part'>help</a>")
+        assertEquals("https://example.test/help#part", text.getStringAnnotations("url", 0, text.length).single().item)
     }
-
-    @Test
-    fun lineBreakBecomesASpace() {
-        assertEquals("a b", renderHtmlInline("a<br>b"))
+    @Test fun nonWebLinksRetainTextWithoutAction() {
+        val text = html("<a href='javascript:alert(1)'>x</a>")
+        assertEquals("x", text.text)
+        assertTrue(text.getStringAnnotations("url", 0, text.length).isEmpty())
     }
-
-    @Test
-    fun semanticColorSpanIsAccepted() {
-        val nodes = parseHtml("<span data-color=\"accent\">重点</span>")
-        val span = nodes?.single() as HtmlNode.Element
-
-        assertEquals("span", span.tag)
-        assertEquals(HtmlColor.ACCENT, span.color)
+    @Test fun entityNamesDecimalAndHexAreSupported() {
+        assertEquals("A\u00a0B 你 — 你 &", html("<p>A&nbsp;B &#x4F60; &mdash; &#20320; &amp;</p>").text)
+        assertEquals("A\u00a0B", richInlineText("A&nbsp;B").text)
     }
-
-    @Test
-    fun arbitraryStyleOnColorSpanIsRejected() {
-        assertNull(parseHtml("<span style=\"color:red\">危险</span>"))
+    @Test fun unfinishedFragmentsAreRepairedForStreaming() {
+        assertEquals("bold", html("<b>bold").text)
     }
-
-    @Test
-    fun colorSpanRendersWithoutHtmlTags() {
-        val rendered = renderHtmlInline("普通 <span data-color=\"warning\">警告</span>")
-
-        assertTrue(rendered.contains("警告"))
-        assertFalse(rendered.contains("<span"))
+    @Test fun unknownWrapperKeepsSupportedChildren() {
+        assertEquals("bold underline", richInlineText("<b>bold</b> <u>underline</u>").text)
+        assertTrue(richInlineText("<u>underline</u>").spanStyles.any { it.item.textDecoration == TextDecoration.Underline })
+    }
+    @Test fun scriptAndStyleNeverAppearInNativeText() {
+        assertEquals("visible", html("<script>alert(1)</script><style>p{color:red}</style><p>visible</p>").text)
+    }
+    @Test fun excessiveNestingPreservesText() {
+        assertEquals("x", html("<b>".repeat(100) + "x" + "</b>".repeat(100)).text)
+    }
+    @Test fun detailsRetainsDefaultOpenAndNestedSummary() {
+        val node = parseHtml("<details open><summary>more</summary><details><summary>inner</summary>x</details></details>")!!.single() as HtmlNode.Element
+        assertTrue("open" in node.attributes)
+        assertEquals("details", (node.children.last() as HtmlNode.Element).tag)
+    }
+    @Test fun semanticAndCssColorsCompose() {
+        val node = parseHtml("<span data-color='warning' style='color:#123;background-color:rgba(1,2,3,0.5)'>x</span>")!!.single() as HtmlNode.Element
+        assertEquals(HtmlColor.WARNING, node.color)
+        assertEquals(Color(0xFF112233), htmlSpanStyle(node, emptyMap()).color)
+        assertEquals(Color(1, 2, 3, 127), htmlSpanStyle(node, emptyMap()).background)
+    }
+    @Test fun htmlCodeDoesNotInterpretMarkdownOrMath() {
+        val text = html("<code>&lt;b&gt; **literal** ${'$'}x${'$'}</code>")
+        assertEquals("<b> **literal** ${'$'}x${'$'}", text.text)
+        assertTrue(text.getStringAnnotations("math", 0, text.length).isEmpty())
+    }
+    @Test fun mathOutsideCodeKeepsItsNativeAnnotation() {
+        val text = richInlineText("area ${'$'}x^2${'$'} and `${'$'}literal${'$'}`")
+        assertEquals(1, text.getStringAnnotations("math", 0, text.length).size)
+        assertTrue(text.text.contains("${'$'}literal${'$'}"))
+    }
+    @Test fun originCheckIncludesSchemeAndEffectivePort() {
+        assertTrue(sameHtmlOrigin("https://EXAMPLE.test/x", "https://example.test:443/"))
+        assertFalse(sameHtmlOrigin("https://example.test.evil/x", "https://example.test/"))
+        assertFalse(sameHtmlOrigin("http://example.test/x", "https://example.test/"))
+        assertFalse(sameHtmlOrigin("https://example.test:444/x", "https://example.test/"))
+    }
+    @Test fun mathMultiplicationAndEscapesAreProtectedBeforeMarkdownParsing() {
+        val text = richInlineText("${'$'}x*y*z${'$'} and \\${'$'}literal\\${'$'}")
+        assertEquals("x*y*z and ${'$'}literal${'$'}", text.text)
+        assertEquals(1, text.getStringAnnotations("math", 0, text.length).size)
+    }
+    @Test fun invalidHugeCssValuesDoNotThrow() {
+        assertNull(parseHtmlColor("rgb(999999999999999999,2,3)"))
+        val element = parseHtml("<span style='font-size:NaN'>x</span>")!!.single() as HtmlNode.Element
+        htmlSpanStyle(element, emptyMap())
+    }
+    @Test fun preformattedTextRetainsIndentationNewlinesAndDollarSigns() {
+        val node = parseHtml("<pre>  &lt;b&gt; ${'$'}x${'$'}\n  line 2\n</pre>")!!.single() as HtmlNode.Element
+        assertEquals("  <b> ${'$'}x${'$'}\n  line 2\n", htmlLiteralText(node.children))
+    }
+    @Test fun detectsDocumentsAndHtmlAttachments() {
+        assertTrue(requiresHtmlPage("<!doctype html><html><style>p{}</style></html>"))
+        assertTrue(requiresHtmlPage("<div style='display:flex'>x</div>"))
+        assertFalse(requiresHtmlPage("<table><tr><td>x</td></tr></table>"))
+        assertTrue(isHtmlAttachment("text/html; charset=utf-8", "file"))
+        assertTrue(isHtmlAttachment(null, "PAGE.HTML"))
+        assertFalse(isHtmlAttachment("text/plain", "file.txt"))
     }
 }

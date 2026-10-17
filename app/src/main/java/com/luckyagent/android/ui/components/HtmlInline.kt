@@ -1,37 +1,21 @@
 package com.luckyagent.android.ui.components
 
-/**
- * The small set of HTML the chat renderer draws. Everything else stays text.
- *
- * No script, no style, no remote resources. A fragment that is unbalanced,
- * nested past [MAX_DEPTH], or contains a tag outside [ALLOWED] is rejected
- * whole so the caller shows the original source.
- */
-internal const val HTML_MAX_DEPTH = 8
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.TextNode
+import java.net.URI
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
-private val ALLOWED = setOf("b", "strong", "i", "em", "code", "br", "p", "a", "span", "details", "summary")
-private val VOID_TAGS = setOf("br")
+internal const val HTML_MAX_DEPTH = 32
 
 internal enum class HtmlColor {
-    ACCENT,
-    MUTED,
-    SUCCESS,
-    WARNING,
-    ERROR,
-    ;
-
+    ACCENT, MUTED, SUCCESS, WARNING, ERROR;
     companion object {
-        fun parse(value: String): HtmlColor? = when (value.trim().lowercase()) {
-            "accent" -> ACCENT
-            "muted" -> MUTED
-            "success" -> SUCCESS
-            "warning" -> WARNING
-            "error" -> ERROR
-            else -> null
-        }
+        fun parse(value: String): HtmlColor? = entries.firstOrNull { it.name.equals(value.trim(), true) }
     }
 }
 
+/** Shared native rich-text tree. Text is decoded once and never parsed as markup again. */
 internal sealed class HtmlNode {
     data class Text(val value: String) : HtmlNode()
     data class Element(
@@ -39,122 +23,53 @@ internal sealed class HtmlNode {
         val href: String? = null,
         val color: HtmlColor? = null,
         val children: List<HtmlNode> = emptyList(),
+        val attributes: Map<String, String> = emptyMap(),
     ) : HtmlNode()
 }
 
-/** Parses [source] against the allow-list. Returns null when it should stay text. */
+private val hiddenTags = setOf("script", "style", "head", "template", "iframe", "object")
+
+/** HTML5 parsing handles entities, quoted attributes and unfinished streaming fragments. */
 internal fun parseHtml(source: String): List<HtmlNode>? {
     if ('<' !in source) return null
-    val tokens = tokenize(source) ?: return null
-    return buildTree(tokens)
-}
-
-private sealed class Tok {
-    data class Text(val value: String) : Tok()
-    data class Open(val tag: String, val href: String?, val color: HtmlColor?) : Tok()
-    data class Close(val tag: String) : Tok()
-}
-
-private fun tokenize(source: String): List<Tok>? {
-    val out = mutableListOf<Tok>()
-    var i = 0
-    while (i < source.length) {
-        val lt = source.indexOf('<', i)
-        if (lt < 0) {
-            out += Tok.Text(unescape(source.substring(i)))
-            break
-        }
-        if (lt > i) out += Tok.Text(unescape(source.substring(i, lt)))
-        val gt = source.indexOf('>', lt + 1)
-        if (gt < 0) return null
-        val raw = source.substring(lt + 1, gt).trim()
-        if (raw.isEmpty() || raw.startsWith("!") || raw.startsWith("?")) return null
-        val closing = raw.startsWith("/")
-        val selfClose = raw.endsWith("/")
-        val body = raw.removePrefix("/").removeSuffix("/").trim()
-        val tag = body.substringBefore(' ').substringBefore('\t').lowercase()
-        if (tag !in ALLOWED) return null
-        if (closing) {
-            if (tag in VOID_TAGS) return null
-            out += Tok.Close(tag)
-        } else {
-            val href = if (tag == "a") linkHref(body) else null
-            if (tag == "a" && href == null && body.contains("href", ignoreCase = true)) {
-                // An href was present but not http(s). Keep the words, drop the link.
-                out += Tok.Open("a", null, null)
-            } else {
-                val color = if (tag == "span") parseSpanColor(body) else null
-                if (tag == "span" && spanHasUnsupportedAttributes(body, color)) return null
-                out += Tok.Open(tag, href, color)
+    val document = Jsoup.parseBodyFragment(source)
+    fun convert(node: org.jsoup.nodes.Node, depth: Int): HtmlNode? = when (node) {
+        is TextNode -> HtmlNode.Text(node.wholeText)
+        is Element -> {
+            val tag = node.normalName()
+            when {
+                tag in hiddenTags -> null
+                depth >= HTML_MAX_DEPTH -> HtmlNode.Text(node.wholeText())
+                else -> HtmlNode.Element(
+                    tag = tag,
+                    href = node.attr("href").takeIf { it.isNotBlank() },
+                    color = HtmlColor.parse(node.attr("data-color")),
+                    attributes = node.attributes().associate { it.key.lowercase() to it.value },
+                    children = node.childNodes().mapNotNull { convert(it, depth + 1) },
+                )
             }
-            if (selfClose || tag in VOID_TAGS) out += Tok.Close(tag)
         }
-        i = gt + 1
+        else -> null
     }
-    return out
+    return document.body().childNodes().mapNotNull { convert(it, 0) }
 }
 
-private fun linkHref(body: String): String? {
-    val match = Regex("""href\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""", RegexOption.IGNORE_CASE)
-        .find(body) ?: return null
-    val value = (match.groupValues[1].ifEmpty { match.groupValues[2] }).ifEmpty { match.groupValues[3] }
-    val href = unescape(value).trim()
-    return href.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-}
+internal fun resolveHtmlUrl(source: String, baseUrl: String): String? =
+    (source.trim().toHttpUrlOrNull() ?: baseUrl.toHttpUrlOrNull()?.resolve(source.trim()))?.toString()
 
-private val spanColorAttribute = Regex(
-    """data-color\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""",
+internal fun sameHtmlOrigin(source: String, baseUrl: String): Boolean = runCatching {
+    val target = URI(source)
+    val base = URI(baseUrl)
+    fun port(uri: URI) = if (uri.port >= 0) uri.port else if (uri.scheme.equals("https", true)) 443 else 80
+    target.host != null && target.scheme.equals(base.scheme, true) &&
+        target.host.equals(base.host, true) && port(target) == port(base)
+}.getOrDefault(false)
+
+internal fun requiresHtmlPage(source: String): Boolean = Regex(
+    """<!doctype|<(?:html|head|body|style|script|svg|canvas|form|input|button|iframe)\b|(?:display\s*:\s*(?:grid|flex)|position\s*:\s*(?:absolute|fixed))""",
     RegexOption.IGNORE_CASE,
-)
+).containsMatchIn(source)
 
-private fun parseSpanColor(body: String): HtmlColor? {
-    val match = spanColorAttribute.find(body) ?: return null
-    val value = (match.groupValues[1].ifEmpty { match.groupValues[2] })
-        .ifEmpty { match.groupValues[3] }
-    return HtmlColor.parse(unescape(value))
-}
-
-private fun spanHasUnsupportedAttributes(body: String, color: HtmlColor?): Boolean {
-    val attributes = body.substringAfter(' ', "").trim()
-    if (attributes.isEmpty()) return false
-    if (color == null) return true
-    return spanColorAttribute.replace(attributes, "").trim().isNotEmpty()
-}
-
-private fun buildTree(tokens: List<Tok>): List<HtmlNode>? {
-    data class Frame(
-        val tag: String,
-        val href: String?,
-        val color: HtmlColor?,
-        val children: MutableList<HtmlNode>,
-    )
-    val root = mutableListOf<HtmlNode>()
-    val stack = ArrayDeque<Frame>()
-    fun add(node: HtmlNode) {
-        val frame = stack.lastOrNull()
-        if (frame == null) root += node else frame.children += node
-    }
-    for (tok in tokens) {
-        when (tok) {
-            is Tok.Text -> if (tok.value.isNotEmpty()) add(HtmlNode.Text(tok.value))
-            is Tok.Open -> {
-                if (stack.size >= HTML_MAX_DEPTH) return null
-                stack.addLast(Frame(tok.tag, tok.href, tok.color, mutableListOf()))
-            }
-            is Tok.Close -> {
-                val frame = stack.removeLastOrNull() ?: return null
-                if (frame.tag != tok.tag) return null
-                add(HtmlNode.Element(frame.tag, frame.href, frame.color, frame.children.toList()))
-            }
-        }
-    }
-    if (stack.isNotEmpty()) return null
-    return root
-}
-
-private fun unescape(value: String): String = value
-    .replace("&lt;", "<")
-    .replace("&gt;", ">")
-    .replace("&quot;", "\"")
-    .replace("&#39;", "'")
-    .replace("&amp;", "&")
+internal fun isHtmlAttachment(mimeType: String?, name: String?): Boolean =
+    mimeType?.substringBefore(';')?.trim()?.equals("text/html", true) == true ||
+        name.orEmpty().substringBefore('?').substringBefore('#').lowercase().let { it.endsWith(".html") || it.endsWith(".htm") }

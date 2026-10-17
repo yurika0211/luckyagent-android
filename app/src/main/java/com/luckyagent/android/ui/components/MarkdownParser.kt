@@ -12,7 +12,7 @@ internal sealed class MdBlock {
     data class Heading(val level: Int, val text: String) : MdBlock()
     data class ListItem(val text: String, val marker: String = "•") : MdBlock()
     data class Code(val body: String, val lang: String = "") : MdBlock()
-    data class Html(val source: String) : MdBlock()
+    data class Html(val source: String, val showPreview: Boolean = false) : MdBlock()
     data class Mermaid(val source: String) : MdBlock()
     data class Rule(val marker: String = "---") : MdBlock()
     data class Math(val latex: String, val display: Boolean) : MdBlock()
@@ -148,9 +148,9 @@ internal fun splitMarkdownBlocks(
             }
             val body = code.toString()
             out += when {
-                !closed -> MdBlock.Code(body, lang)
+                !closed && lang !in setOf("html", "htm") -> MdBlock.Code(body, lang)
                 lang == "mermaid" -> MdBlock.Mermaid(body)
-                lang == "html" && parseHtml(body) != null -> MdBlock.Html(body)
+                lang in setOf("html", "htm") -> MdBlock.Html(body, showPreview = true)
                 else -> MdBlock.Code(body, lang)
             }
             continue
@@ -350,26 +350,67 @@ internal fun isClosingFence(line: String): Boolean {
 internal fun fenceLang(opener: String): String =
     opener.trim().removePrefix("```").trim().substringBefore(' ').substringBefore('\t').lowercase()
 
-/**
- * A run of lines whose top-level tag is allowed HTML, consumed as one block.
- * Inline tags inside a sentence stay in the paragraph. Returns null when the
- * run is not renderable HTML, so the caller keeps it as text.
- */
+/** Tags are scanned once per line, without copying the accumulated prefix. */
+private val htmlBlockTag = Regex("""^\s*<(?:!doctype\s+html|([a-z][a-z0-9]*))\b""", RegexOption.IGNORE_CASE)
+private val htmlTagName = Regex("""^<\s*(/?)\s*([a-z][a-z0-9]*)\b""", RegexOption.IGNORE_CASE)
+private val htmlBlockTags = setOf("html", "head", "body", "style", "script", "svg", "canvas", "form", "details", "p", "div", "ul", "ol", "li", "table", "blockquote", "pre", "section", "article", "header", "footer", "main", "h1", "h2", "h3", "h4", "h5", "h6", "img", "hr")
+
 private fun takeHtmlBlock(lines: List<String>, start: Int): Pair<String, Int>? {
     val first = lines[start].trimStart()
-    val tag = Regex("""^<([A-Za-z]+)""").find(first)?.groupValues?.get(1)?.lowercase() ?: return null
-    if (tag !in setOf("details", "p")) return null
-    val close = "</$tag>"
-    val buf = StringBuilder()
-    var i = start
-    while (i < lines.size && lines[i].isNotBlank()) {
-        if (buf.isNotEmpty()) buf.append('\n')
-        buf.append(lines[i])
-        i++
-        if (buf.toString().contains(close, ignoreCase = true)) break
+    val opening = htmlBlockTag.find(first) ?: return null
+    val tag = opening.groupValues[1].lowercase().ifEmpty { "html" }
+    if (tag !in htmlBlockTags) return null
+    var depth = 0
+    var sawRoot = false
+    var end = start
+    var inTag = false
+    var quote: Char? = null
+    var comment = false
+    var rawTextTag: String? = null
+    val token = StringBuilder()
+    while (end < lines.size) {
+        val line = lines[end]
+        if (end > start && !inTag && rawTextTag == null && line.trimStart().startsWith("```")) break
+        for (index in line.indices) {
+            val char = line[index]
+            if (!inTag) {
+                if (char != '<' || (rawTextTag != null && !line.regionMatches(index, "</$rawTextTag", 0, rawTextTag!!.length + 2, true))) continue
+                inTag = true
+                token.clear()
+            }
+            token.append(char)
+            if (token.length == 4 && token.toString() == "<!--") comment = true
+            if (comment) {
+                if (token.length >= 3 && token[token.length - 3] == '-' && token[token.length - 2] == '-' && char == '>') {
+                    inTag = false; comment = false
+                }
+                continue
+            }
+            if (quote != null) {
+                if (char == quote) quote = null
+                continue
+            }
+            if (char == '\'' || char == '"') { quote = char; continue }
+            if (char != '>') continue
+            val value = token.toString()
+            val match = htmlTagName.find(value)
+            if (match != null) {
+                val name = match.groupValues[2].lowercase()
+                val closing = match.groupValues[1].isNotEmpty()
+                if (name == tag) {
+                    if (closing) depth-- else {
+                        sawRoot = true; depth++
+                        if (tag in setOf("img", "hr") || value.endsWith("/>")) depth--
+                    }
+                }
+                if (name in setOf("script", "style")) rawTextTag = if (closing) null else name
+            }
+            inTag = false
+        }
+        end++
+        if (sawRoot && depth <= 0) break
+        if (inTag) token.append('\n')
     }
-    val source = buf.toString()
-    if (!source.contains(close, ignoreCase = true)) return null
-    if (parseHtml(source) == null) return null
-    return source to i
+    // HTML5 tree repair keeps incomplete streaming blocks in the same rendering branch.
+    return lines.subList(start, end).joinToString("\n") to end
 }

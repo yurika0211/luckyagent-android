@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +31,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +52,7 @@ import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
 import com.luckyagent.android.ui.BackgroundFilter
 import com.luckyagent.android.ui.components.CardTitleRow
+import com.luckyagent.android.ui.components.BackgroundBlackboardCanvas
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.EmptyState
 import com.luckyagent.android.ui.components.ErrorLine
@@ -97,16 +103,18 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = if (detail == null) "Background" else "Background details",
+            title = if (detail == null) "后台黑板" else "后台任务详情",
             subtitle = if (detail == null) {
-                if (state.backgroundPolling) "Watching autonomy queue" else "Autonomy worker monitor"
+                if (state.backgroundDashboard == null) "正在获取后台状态" else
+                "${state.backgroundDashboard.workers.size} Worker · ${state.backgroundTasks.size} 项任务" +
+                    if (state.backgroundPolling) " · 自动更新" else ""
             } else {
                 detail.task.id
             },
             onBack = if (detail != null) vm::clearSelectedBackgroundTask else null,
             actions = {
                 IconButton(onClick = { if (detail == null) vm.refreshBackground() else vm.selectBackgroundTask(detail.task.id) }) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
+                    Icon(Icons.Outlined.Refresh, contentDescription = "刷新后台黑板")
                 }
             },
         )
@@ -121,56 +129,86 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
 
 @Composable
 private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSummary>, vm: AppViewModel) {
+    var canvasView by rememberSaveable { mutableStateOf(true) }
+    var showFilters by rememberSaveable {
+        mutableStateOf(state.backgroundFilter != BackgroundFilter.All || state.backgroundQuery.isNotBlank())
+    }
+    val hasFilter = state.backgroundFilter != BackgroundFilter.All || state.backgroundQuery.isNotBlank()
     state.backgroundError?.let { ErrorLine(it) }
-
-    BackgroundOverview(state, onOpenSettings = { vm.navigate(com.luckyagent.android.ui.AppDestination.Settings) })
-    BackgroundWorkers(state, vm)
-    BackgroundHeartbeat(state)
-
-    val filters = listOf(
-        BackgroundFilter.All to "All",
-        BackgroundFilter.Ready to "Ready",
-        BackgroundFilter.Running to "Running",
-        BackgroundFilter.Blocked to "Blocked",
-        BackgroundFilter.Done to "Done",
-    )
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        items(filters, key = { it.first.name }) { (filter, label) ->
-            FilterChip(
-                selected = state.backgroundFilter == filter,
-                onClick = { vm.setBackgroundFilter(filter) },
-                label = { Text(label) },
-            )
+    if (state.backgroundDetailLoading && state.selectedBackgroundTask == null) {
+        Text("正在加载任务详情…", color = CloverText2, modifier = Modifier.padding(horizontal = 16.dp))
+    }
+    state.backgroundDetailError?.takeIf { state.selectedBackgroundTask == null }?.let { ErrorLine(it) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        FilterChip(selected = canvasView, onClick = { canvasView = true }, label = { Text("画布") })
+        FilterChip(selected = !canvasView, onClick = { canvasView = false }, label = { Text("列表") })
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = { showFilters = !showFilters }) {
+            Icon(Icons.Outlined.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(if (hasFilter) "筛选中" else "筛选")
         }
     }
 
-    BasicTextField(
-        value = state.backgroundQuery,
-        onValueChange = vm::updateBackgroundQuery,
-        singleLine = true,
-        cursorBrush = SolidColor(CloverAccent),
-        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(CloverSurface2)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        decorationBox = { inner ->
-            if (state.backgroundQuery.isEmpty()) Text("Filter by title, worker, priority or status", color = CloverText3)
-            inner()
-        },
-    )
+    if (showFilters) {
+        val filters = listOf(
+            BackgroundFilter.All to "全部",
+            BackgroundFilter.Ready to "待处理",
+            BackgroundFilter.Running to "运行中",
+            BackgroundFilter.Blocked to "阻塞",
+            BackgroundFilter.Done to "已完成",
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            items(filters, key = { it.first.name }) { (filter, label) ->
+                FilterChip(
+                    selected = state.backgroundFilter == filter,
+                    onClick = { vm.setBackgroundFilter(filter) },
+                    label = { Text(label) },
+                )
+            }
+        }
+
+        BasicTextField(
+            value = state.backgroundQuery,
+            onValueChange = vm::updateBackgroundQuery,
+            singleLine = true,
+            cursorBrush = SolidColor(CloverAccent),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(CloverSurface2)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            decorationBox = { inner ->
+                if (state.backgroundQuery.isEmpty()) Text("搜索任务、Worker 或状态", color = CloverText3)
+                inner()
+            },
+        )
+    }
+
+    if (canvasView) {
+        BackgroundBlackboardCanvas(
+            dashboard = state.backgroundDashboard,
+            tasks = tasks,
+            loading = state.backgroundLoading,
+            onOpenTask = vm::selectBackgroundTask,
+            onOpenSession = vm::openBackgroundSession,
+            modifier = Modifier.fillMaxSize(),
+        )
+        return
+    }
 
     when {
         state.backgroundLoading && state.backgroundDashboard == null -> {
             Text("Loading background tasks…", color = CloverText2, modifier = Modifier.padding(16.dp))
         }
-        !state.backgroundLoading && tasks.isEmpty() -> {
+        !state.backgroundLoading && tasks.isEmpty() && state.backgroundDashboard == null -> {
             EmptyState(
                 title = "No background tasks",
                 body = if (state.backgroundTasks.isEmpty()) {
@@ -196,6 +234,14 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
+                item(key = "runtime-overview") {
+                    BackgroundOverview(state, onOpenSettings = { vm.navigate(com.luckyagent.android.ui.AppDestination.Settings) })
+                }
+                item(key = "runtime-workers") { BackgroundWorkers(state, vm) }
+                item(key = "runtime-heartbeat") { BackgroundHeartbeat(state) }
+                if (tasks.isEmpty()) item(key = "empty-tasks") {
+                    Text("当前筛选范围内没有任务。", color = CloverText3, modifier = Modifier.padding(12.dp))
+                }
                 items(tasks, key = { it.id }) { task ->
                     BackgroundTaskCard(
                         task,
@@ -211,7 +257,7 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
 @Composable
 private fun BackgroundOverview(state: AppUiState, onOpenSettings: () -> Unit) {
     val dashboard = state.backgroundDashboard ?: return
-    CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+    CloverCard(Modifier.padding(vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             BackgroundStatusDot(if (dashboard.started) "running" else "stopped")
             Spacer(Modifier.width(10.dp))
@@ -247,7 +293,7 @@ private fun BackgroundOverview(state: AppUiState, onOpenSettings: () -> Unit) {
 private fun BackgroundWorkers(state: AppUiState, vm: AppViewModel) {
     val workers = state.backgroundDashboard?.workers.orEmpty()
     if (workers.isEmpty()) return
-    CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
+    CloverCard(Modifier.padding(vertical = 2.dp)) {
         Text("Workers", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         workers.forEach { worker ->
             BackgroundWorkerRow(worker, onOpenSession = vm::openBackgroundSession)
@@ -288,7 +334,7 @@ private fun BackgroundWorkerRow(worker: AutonomyWorker, onOpenSession: (String?)
 private fun BackgroundHeartbeat(state: AppUiState) {
     val events = state.backgroundDashboard?.heartbeatEvents.orEmpty().takeLast(3).asReversed()
     if (events.isEmpty()) return
-    CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
+    CloverCard(Modifier.padding(vertical = 2.dp)) {
         Text("Recent heartbeat", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         events.forEach { event ->
             Row(verticalAlignment = Alignment.Top) {

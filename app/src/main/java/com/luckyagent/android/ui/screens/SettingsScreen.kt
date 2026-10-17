@@ -98,12 +98,10 @@ fun SettingsScreen(
     ) {
         ScreenHeader(
             eyebrow = "Connection",
-            title = "You",
-            subtitle = "LuckyAgent on this device",
+            title = "基础设置",
+            subtitle = "此设备的连接、外观与通知",
             onBack = onBack,
         )
-
-        RuntimeSettingsPanel(state, vm)
 
         if (!showDetails) {
             Column(Modifier.padding(horizontal = 16.dp)) {

@@ -99,12 +99,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
-import java.net.URLEncoder
+import com.luckyagent.android.ui.util.artifactDownloadUrl
 import java.io.File
 import java.util.UUID
 
 enum class AppDestination {
-    Chat, Tasks, Background, Cron, Trajectory, Gateways, Skills, Settings, Memory
+    Chat, Tasks, Background, Cron, Trajectory, Gateways, Skills, Settings, Memory, RuntimeConfig
 }
 
 enum class TrajectoryFilter { All, Success, Failure }
@@ -138,6 +138,8 @@ data class ChatBubble(
     val reasoningHasContent: Boolean = false,
     val attachments: List<ChatMedia> = emptyList(),
     val quote: MessageQuote? = null,
+    /** Assistant commentary from a tool/continuation round belongs inside the process fold. */
+    val isIntermediate: Boolean = false,
 )
 
 data class ChatMedia(
@@ -739,6 +741,7 @@ class AppViewModel(
                             val round = extractField(env.data, "round")?.toIntOrNull()
                             val summary = extractField(env.data, "summary")?.trim().orEmpty()
                             val content = extractField(env.data, "content")?.trim().orEmpty()
+                            if (stage == "continue") foldAssistantRound()
                             val label = when {
                                 summary.isNotEmpty() -> summary
                                 stage == "continue" -> "Reviewing tool results"
@@ -1079,6 +1082,7 @@ class AppViewModel(
     }
 
     private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
+        foldAssistantRound()
         val name = extractToolName(data) ?: "tool"
         val stepId = extractField(data, "step_id").orEmpty()
         val args = extractToolArgs(data)?.let { capUiText(it, MAX_UI_TOOL_ARGS_CHARS) }
@@ -1376,24 +1380,6 @@ class AppViewModel(
         if (answerIndex >= 0) add(answerIndex, bubble) else add(bubble)
     }
 
-    private fun buildToolContent(
-        name: String,
-        args: String?,
-        output: String?,
-        done: Boolean,
-        success: Boolean?,
-    ): String {
-        val status = when {
-            !done -> "running"
-            success == false -> "failed"
-            else -> "done"
-        }
-        val parts = mutableListOf("$name · $status")
-        if (!args.isNullOrBlank()) parts += "args: ${args.take(400)}"
-        if (!output.isNullOrBlank()) parts += "out: ${output.take(600)}"
-        return parts.joinToString("\n")
-    }
-
     private fun extractText(data: kotlinx.serialization.json.JsonElement?): String? {
         if (data == null) return null
         return when (data) {
@@ -1449,33 +1435,14 @@ class AppViewModel(
     }
 
     private fun artifactDescriptor(path: String): MediaAttachment? {
-        val normalized = path.replace('\\', '/')
-        val roots = listOf(
-            "~/.luckyagent/workspace/" to "workspace/",
-            "~/.luckyagent/uploads/" to "uploads/",
-        )
-        val configuredRoot = roots.firstOrNull { normalized.startsWith(it.first) }
-        val relative = if (configuredRoot != null) {
-            configuredRoot.second + normalized.removePrefix(configuredRoot.first)
-        } else {
-            val workspaceMarker = "/.luckyagent/workspace/"
-            val uploadsMarker = "/.luckyagent/uploads/"
-            when {
-                normalized.contains(workspaceMarker) -> "workspace/" + normalized.substringAfter(workspaceMarker)
-                normalized.contains(uploadsMarker) -> "uploads/" + normalized.substringAfter(uploadsMarker)
-                else -> return null
-            }
-        }
-        val fileName = relative.substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
+        val downloadUrl = artifactDownloadUrl(path, container.settingsRepository.snapshot().apiBase) ?: return null
+        val fileName = path.replace('\\', '/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
         val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(
             fileName.substringAfterLast('.', "").lowercase(),
         ) ?: "application/octet-stream"
-        val base = container.settingsRepository.snapshot().apiBase.trimEnd('/')
-        if (base.isBlank()) return null
-        val encodedPath = URLEncoder.encode(relative, Charsets.UTF_8.name())
         return MediaAttachment(
             type = normalizeMediaType(mimeType),
-            fileUrl = "$base/api/v1/artifacts?path=$encodedPath",
+            fileUrl = downloadUrl,
             fileName = fileName,
             mimeType = mimeType,
         )
@@ -1545,7 +1512,7 @@ class AppViewModel(
 
     private fun appendAssistant(piece: String) {
         if (piece.isEmpty()) return
-        if (assistantBufferId == null) assistantBufferId = "a-${System.currentTimeMillis()}"
+        if (assistantBufferId == null) assistantBufferId = "a-${UUID.randomUUID()}"
         // Retain one extra character so the flush can show a truncation marker.
         val remaining = (MAX_UI_MESSAGE_CHARS + 1 - assistantPending.length).coerceAtLeast(0)
         if (remaining == 0) return
@@ -1598,7 +1565,7 @@ class AppViewModel(
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
             val lastAssistantIndex = list.indexOfLast { bubble ->
-                bubble.role == "assistant" && !bubble.streaming
+                bubble.role == "assistant" && !bubble.streaming && !bubble.isIntermediate
             }
             val hasUserAfterLastAssistant = lastAssistantIndex >= 0 &&
                 list.subList(lastAssistantIndex + 1, list.size).any { bubble -> bubble.role == "user" }
@@ -1667,6 +1634,21 @@ class AppViewModel(
         assistantBufferIndex = null
     }
 
+    private fun foldAssistantRound() {
+        val id = assistantBufferId ?: return
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
+        // Tool events can arrive before the 40 ms stream flush. Preserve that text
+        // before closing this round and starting the next assistant buffer.
+        flushAssistantPending()
+        _ui.update { state ->
+            state.copy(bubbles = state.bubbles.map { bubble ->
+                if (bubble.id == id) bubble.copy(streaming = false, isIntermediate = true) else bubble
+            })
+        }
+        resetAssistantStream()
+    }
+
     private fun pushBubble(bubble: ChatBubble) {
         val safeBubble = bubble.copy(
             content = capUiText(bubble.content, MAX_UI_MESSAGE_CHARS),
@@ -1691,7 +1673,8 @@ class AppViewModel(
             AppDestination.Gateways -> refreshGateways()
             AppDestination.Trajectory -> refreshTrajectory()
             AppDestination.Chat -> Unit
-            AppDestination.Settings -> loadRuntimeConfig()
+            AppDestination.Settings -> Unit
+            AppDestination.RuntimeConfig -> loadRuntimeConfig()
         }
     }
 
@@ -2729,61 +2712,11 @@ class AppViewModel(
                 ),
             )
         } + extractArtifactAttachments(base)).take(MAX_UI_ATTACHMENTS)
-        val result = mutableListOf<ChatBubble>()
-        reasoningContent?.takeIf { it.isNotBlank() }?.let { reasoning ->
-            result += ChatBubble(
-                id = "h-$idx-reasoning",
-                role = "reasoning",
-                content = capUiText(reasoning, MAX_UI_REASONING_CHARS),
-                reasoningHasContent = true,
-            )
-        }
-        toolCalls.forEachIndexed { toolIndex, tool ->
-            result += ChatBubble(
-                id = "h-$idx-tool-$toolIndex",
-                role = "tool",
-                content = buildToolContent(
-                    name = tool.name ?: "tool",
-                    args = capUiText(tool.arguments.orEmpty(), MAX_UI_TOOL_ARGS_CHARS),
-                    output = null,
-                    done = true,
-                    success = null,
-                ),
-                toolName = tool.name,
-                toolArgs = capUiText(tool.arguments.orEmpty(), MAX_UI_TOOL_ARGS_CHARS).takeIf { tool.arguments != null },
-                toolDone = true,
-                stepId = tool.id,
-                attachments = messageAttachments,
-            )
-        }
-        if (role == "tool") {
-            result += ChatBubble(
-                id = "h-$idx-tool-result",
-                role = "tool",
-                content = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS),
-                toolName = name ?: "tool",
-                toolOutput = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS).takeIf { it.isNotBlank() },
-                toolDone = true,
-                attachments = messageAttachments,
-            )
-        } else if (role == "system" && looksLikeCompactTrace(base)) {
-            result += ChatBubble(
-                id = "h-$idx-compact",
-                role = "compact",
-                content = compactTraceLabel(base),
-                createdAt = createdAt,
-            )
-        } else if (base.isNotBlank() || (result.isEmpty() && toolCalls.isEmpty())) {
-            result += ChatBubble(
-                id = "h-$idx-${role.hashCode()}",
-                role = role,
-                content = base,
-                createdAt = createdAt,
-                usage = usage,
-                attachments = messageAttachments,
-            )
-        }
-        return result
+        return toHistoryBubbles(
+            idx = idx,
+            messageAttachments = messageAttachments,
+            compactLabel = if (role == "system" && looksLikeCompactTrace(base)) compactTraceLabel(base) else null,
+        )
     }
 
     private fun looksLikeCompactTrace(content: String): Boolean {

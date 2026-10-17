@@ -237,4 +237,35 @@ class MarkdownParserTest {
 
         assertEquals("flowchart LR\n  A-->B", block.source.trim())
     }
+    @Test fun detailsWithBlankLinesAndNestedDetailsStaysOneBlock() {
+        val source = "<details><summary>outer</summary>\n\n<details>\n<summary>inner</summary>\nx\n</details>\n</details >"
+        assertEquals(source, (splitMarkdownBlocks(source).single() as MdBlock.Html).source)
+    }
+    @Test fun incompleteHtmlFenceRemainsAPreviewableHtmlBlock() {
+        val block = splitMarkdownBlocks("```html\n<div><p>streaming").single() as MdBlock.Html
+        assertTrue(block.showPreview)
+        assertTrue(block.source.contains("streaming"))
+    }
+    @Test fun completeDocumentHasPreviewRegardlessOfNativeTagSupport() {
+        val block = splitMarkdownBlocks("```html\n<!doctype html><html><body><svg></svg></body></html>\n```").single() as MdBlock.Html
+        assertTrue(block.showPreview)
+    }
+    @Test fun unfinishedDetailsDoesNotFlickerBackToParagraph() {
+        assertTrue(splitMarkdownBlocks("<details><summary>more</summary>\nbody").single() is MdBlock.Html)
+    }
+    @Test fun closingTagInsideQuotedAttributeDoesNotCloseBlock() {
+        val source = "<div title='</div>'>\n<p>body</p>\n</div>"
+        assertEquals(source, (splitMarkdownBlocks(source).single() as MdBlock.Html).source)
+    }
+    @Test fun longHtmlIsConsumedAsOneBlockIncludingBlankLines() {
+        val source = "<p>\n" + "字\n".repeat(15000) + "</p>"
+        assertEquals(source, (splitMarkdownBlocks(source).single() as MdBlock.Html).source)
+    }
+    @Test fun multilineCommentsAndQuotedAttributesDoNotCloseBlocks() {
+        val source = "<div title='a\n</div>'>\n<!--\n</div>\n-->\n<p>body</p>\n</div>"
+        val blocks = splitMarkdownBlocks(source + "\n\nafter")
+        assertEquals(source, (blocks[0] as MdBlock.Html).source)
+        assertEquals("after", (blocks[1] as MdBlock.Paragraph).text)
+    }
+
 }
