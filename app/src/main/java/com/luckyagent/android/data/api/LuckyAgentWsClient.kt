@@ -1,5 +1,6 @@
 package com.luckyagent.android.data.api
 
+import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.data.settings.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,6 +14,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -33,20 +36,30 @@ enum class SocketState {
     Idle, Connecting, Connected, Running, Reconnecting, Error, Closed
 }
 
-class LuckyAgentWsClient(
-    private val settingsRepository: SettingsRepository,
+internal interface WsSettings {
+    fun snapshot(): ClientSettings
+    fun eventCursor(sessionId: String): String
+    fun saveEventCursor(sessionId: String, cursor: String)
+}
+
+class LuckyAgentWsClient internal constructor(
+    private val settingsRepository: WsSettings,
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .pingInterval(25, TimeUnit.SECONDS)
+        .build(),
 ) {
+    constructor(repository: SettingsRepository) : this(object : WsSettings {
+        override fun snapshot() = repository.snapshot()
+        override fun eventCursor(sessionId: String) = repository.eventCursor(sessionId)
+        override fun saveEventCursor(sessionId: String, cursor: String) = repository.saveEventCursor(sessionId, cursor)
+    })
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
         encodeDefaults = true
     }
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(25, TimeUnit.SECONDS)
-        .build()
 
     private data class ConnectionConfig(
         val apiBase: String,
@@ -61,6 +74,9 @@ class LuckyAgentWsClient(
         val config: ConnectionConfig,
     ) {
         val socketRef = AtomicReference<WebSocket?>(null)
+        // A non-null OkHttp WebSocket may still be waiting for its HTTP upgrade.
+        val readiness = MutableStateFlow(SocketState.Connecting)
+        var generation: Long = 0 // Guarded by this connection's monitor.
         val userClosed = AtomicBoolean(false)
         val reconnectAttempt = AtomicInteger(0)
         @Volatile var reconnectJob: Job? = null
@@ -109,7 +125,9 @@ class LuckyAgentWsClient(
             if (existing != null) {
                 currentConnectionId.set(existing.id)
                 existing.touch()
-                if (existing.socketRef.get() == null && existing.reconnectJob == null) {
+                if (existing.socketRef.get() == null && existing.reconnectJob == null &&
+                    existing.readiness.value != SocketState.Error
+                ) {
                     openSocket(existing, isReconnect = false)
                 } else {
                     markCurrentConnected(existing)
@@ -129,34 +147,41 @@ class LuckyAgentWsClient(
         return connection.id
     }
 
+    /** Wait for the actual upgrade, including transient reconnect attempts, before sending. */
+    suspend fun awaitConnected(sessionId: String, timeoutMs: Long = CONNECT_WAIT_MS): Boolean {
+        val id = connect(sessionId)
+        val connection = connections[id] ?: return false
+        val ready = withTimeoutOrNull(timeoutMs) {
+            connection.readiness.first {
+                it == SocketState.Connected || it == SocketState.Error || it == SocketState.Closed
+            }
+        }
+        return synchronized(connection) {
+            ready == SocketState.Connected && connection.readiness.value == SocketState.Connected &&
+                connection.config == snapshotConfig(sessionId) && !connection.userClosed.get()
+        }
+    }
+
     fun reconnectNow() {
         val id = currentConnectionId.get() ?: return
         val connection = connections[id] ?: return
-        connection.userClosed.set(false)
+        if (connection.config != snapshotConfig(connection.config.sessionId)) {
+            connect(connection.config.sessionId)
+            return
+        }
         connection.reconnectAttempt.set(0)
-        reopenSocket(connection, isReconnect = true)
+        openSocket(connection, isReconnect = true)
     }
 
     fun replaySession(sessionId: String) {
-        val connection = connections.values.firstOrNull { connection ->
-            connection.config.sessionId == sessionId && !connection.userClosed.get()
+        val id = connect(sessionId)
+        val connection = connections[id] ?: return
+        synchronized(connection) {
+            if (connection.readiness.value == SocketState.Connected) {
+                connection.socketRef.get()?.let { sendReconnect(connection, it) }
+            }
+            // A connecting socket sends the replay request from onOpen.
         }
-        if (connection == null) {
-            connect(sessionId)
-            return
-        }
-        currentConnectionId.set(connection.id)
-        connection.touch()
-        connection.userClosed.set(false)
-        trimIdleConnections()
-        // A warm socket only needs a replay request; the handshake is skipped.
-        val ws = connection.socketRef.get()
-        if (ws != null && sendReconnect(connection, ws)) {
-            markCurrentConnected(connection)
-            return
-        }
-        connection.reconnectAttempt.set(0)
-        reopenSocket(connection, isReconnect = true)
     }
 
     private fun sendReconnect(connection: ManagedConnection, webSocket: WebSocket): Boolean {
@@ -169,14 +194,6 @@ class LuckyAgentWsClient(
             ),
         )
         return webSocket.send(reconnect)
-    }
-
-    private fun reopenSocket(connection: ManagedConnection, isReconnect: Boolean) {
-        val previous = connection.socketRef.get()
-        openSocket(connection, isReconnect)
-        if (previous != null && previous !== connection.socketRef.get()) {
-            previous.close(1000, "reconnect")
-        }
     }
 
     private fun snapshotConfig(sessionId: String): ConnectionConfig {
@@ -195,89 +212,120 @@ class LuckyAgentWsClient(
 
     private fun markCurrentConnected(connection: ManagedConnection) {
         if (!isCurrent(connection)) return
-        _lastError.value = null
-        _reconnectInfo.value = null
-        _state.value = if (connection.socketRef.get() == null) SocketState.Connecting else SocketState.Connected
+        val readiness = connection.readiness.value
+        if (readiness != SocketState.Error) _lastError.value = null
+        if (readiness == SocketState.Connected) _reconnectInfo.value = null
+        _state.value = readiness
     }
 
     private fun openSocket(connection: ManagedConnection, isReconnect: Boolean) {
-        if (connection.userClosed.get()) return
-        connection.reconnectJob?.cancel()
-        connection.reconnectJob = null
-        connection.socketRef.getAndSet(null)?.close(1000, "reconnect")
+        synchronized(connection) {
+            if (connection.userClosed.get()) return
+            connection.generation += 1
+            val generation = connection.generation
+            connection.reconnectJob?.cancel()
+            connection.reconnectJob = null
+            connection.readiness.value = SocketState.Connecting
+            connection.socketRef.getAndSet(null)?.cancel()
 
-        val sessionQ = java.net.URLEncoder.encode(connection.config.sessionId, Charsets.UTF_8.name())
-        val override = connection.config.wsUrl
-        val url = if (override.isNotEmpty()) {
-            if (override.contains("?")) "$override&session=$sessionQ" else "$override?session=$sessionQ"
-        } else {
+            val sessionQ = java.net.URLEncoder.encode(connection.config.sessionId, Charsets.UTF_8.name())
+            val override = connection.config.wsUrl
             val base = connection.config.apiBase
-            if (base.isEmpty()) {
+            val url = if (override.isNotEmpty()) {
+                if (override.contains("?")) "$override&session=$sessionQ" else "$override?session=$sessionQ"
+            } else {
+                val wsBase = when {
+                    base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
+                    base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
+                    base.startsWith("wss://") || base.startsWith("ws://") -> base
+                    base.isNotEmpty() -> "ws://$base"
+                    else -> ""
+                }
+                if (wsBase.isEmpty()) "" else "$wsBase/api/v1/ws?session=$sessionQ"
+            }
+            val request = runCatching {
+                Request.Builder().url(url).apply {
+                    if (connection.config.apiKey.isNotEmpty()) {
+                        if (connection.config.useBearer) header("Authorization", "Bearer ${connection.config.apiKey}")
+                        else header("X-API-Key", connection.config.apiKey)
+                    }
+                }.build()
+            }.getOrElse {
+                connection.readiness.value = SocketState.Error
                 if (isCurrent(connection)) {
                     _state.value = SocketState.Error
-                    _lastError.value = "API Base is empty"
+                    _lastError.value = "WebSocket 地址无效，请检查 API Base / WebSocket URL"
                 }
                 return
             }
-            val wsBase = when {
-                base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
-                base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
-                base.startsWith("wss://") || base.startsWith("ws://") -> base
-                else -> "ws://$base"
+            if (isCurrent(connection)) {
+                _state.value = if (isReconnect) SocketState.Reconnecting else SocketState.Connecting
+                _lastError.value = null
+                _reconnectInfo.value = if (isReconnect) "reconnect ${connection.reconnectAttempt.get()}" else null
             }
-            "$wsBase/api/v1/ws?session=$sessionQ"
-        }
 
-        val builder = Request.Builder().url(url)
-        if (connection.config.apiKey.isNotEmpty()) {
-            if (connection.config.useBearer) builder.header("Authorization", "Bearer ${connection.config.apiKey}")
-            else builder.header("X-API-Key", connection.config.apiKey)
-        }
-        if (isCurrent(connection)) {
-            _state.value = if (isReconnect) SocketState.Reconnecting else SocketState.Connecting
-            _lastError.value = null
-            _reconnectInfo.value = if (isReconnect) {
-                "reconnect ${connection.reconnectAttempt.get()}"
-            } else {
-                null
-            }
-        }
+            val ws = client.newWebSocket(request, object : WebSocketListener() {
+                // Old socket callbacks must not clear or replace a newer connection.
+                private fun isActive() = connection.generation == generation && !connection.userClosed.get()
 
-        val ws = client.newWebSocket(builder.build(), object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                connection.socketRef.set(webSocket)
-                connection.reconnectAttempt.set(0)
-                sendReconnect(connection, webSocket)
-                if (isCurrent(connection)) {
-                    _reconnectInfo.value = null
-                    _state.value = SocketState.Connected
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    synchronized(connection) {
+                        if (!isActive()) {
+                            webSocket.cancel()
+                            return
+                        }
+                        connection.socketRef.set(webSocket)
+                        connection.reconnectAttempt.set(0)
+                        sendReconnect(connection, webSocket)
+                        connection.readiness.value = SocketState.Connected
+                        markCurrentConnected(connection)
+                    }
                 }
-            }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleInboundFrame(connection, text)
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                onMessage(webSocket, bytes.utf8())
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (!connection.socketRef.compareAndSet(webSocket, null)) return
-                if (isCurrent(connection)) {
-                    _lastError.value = t.message ?: "WebSocket failure"
-                    _state.value = SocketState.Error
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    synchronized(connection) {
+                        if (isActive()) handleInboundFrame(connection, text)
+                    }
                 }
-                scheduleReconnect(connection, "failure: ${t.message ?: "unknown"}")
-            }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (!connection.socketRef.compareAndSet(webSocket, null)) return
-                if (isCurrent(connection)) _state.value = SocketState.Closed
-                if (code != 1000) scheduleReconnect(connection, "closed $code $reason")
-            }
-        })
-        connection.socketRef.set(ws)
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    onMessage(webSocket, bytes.utf8())
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    synchronized(connection) {
+                        if (!isActive()) return
+                        connection.socketRef.set(null)
+                        val unauthorized = response?.code == 401 || response?.code == 403
+                        connection.readiness.value = if (unauthorized) SocketState.Error else SocketState.Reconnecting
+                        if (isCurrent(connection)) {
+                            _lastError.value = if (unauthorized) "WebSocket 认证失败（${response?.code}），请检查 API Key" else t.message ?: "WebSocket 连接失败"
+                            _state.value = SocketState.Error
+                        }
+                        // A rejected key needs a settings change or an explicit retry.
+                        if (!unauthorized) scheduleReconnect(connection, "failure")
+                    }
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    synchronized(connection) {
+                        if (!isActive()) return
+                        connection.readiness.value = SocketState.Reconnecting
+                        webSocket.close(code, reason)
+                    }
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    synchronized(connection) {
+                        if (!isActive()) return
+                        connection.socketRef.set(null)
+                        connection.readiness.value = SocketState.Reconnecting
+                        scheduleReconnect(connection, "closed $code")
+                    }
+                }
+            })
+            connection.socketRef.set(ws)
+        }
     }
 
     /**
@@ -363,7 +411,7 @@ class LuckyAgentWsClient(
         val delayMs = (RECONNECT_BASE_MS * attempt).coerceAtMost(RECONNECT_MAX_MS)
         if (isCurrent(connection)) {
             _state.value = SocketState.Reconnecting
-            _reconnectInfo.value = "reconnect $attempt in ${delayMs}ms"
+            _reconnectInfo.value = "reconnect $attempt in ${delayMs}ms ($reason)"
         }
         connection.reconnectJob?.cancel()
         connection.reconnectJob = scope.launch {
@@ -398,6 +446,7 @@ class LuckyAgentWsClient(
             ),
         )
         synchronized(connection) {
+            if (connection.readiness.value != SocketState.Connected) return null
             val ws = connection.socketRef.get() ?: return null
             if (!ws.send(payload)) return null
             if (trackLease) connection.leases += 1
@@ -422,6 +471,7 @@ class LuckyAgentWsClient(
             ),
         )
         synchronized(connection) {
+            if (connection.readiness.value != SocketState.Connected) return false
             val ws = connection.socketRef.get() ?: return false
             return ws.send(payload)
         }
@@ -437,27 +487,32 @@ class LuckyAgentWsClient(
                 data = LuckyOutboundData(action = action),
             ),
         )
-        val ws = connection.socketRef.get() ?: return false
-        return ws.send(payload)
+        synchronized(connection) {
+            if (connection.readiness.value != SocketState.Connected) return false
+            val ws = connection.socketRef.get() ?: return false
+            return ws.send(payload)
+        }
     }
 
     private fun connectionFor(sessionId: String?): ManagedConnection? {
-        val wanted = sessionId?.trim().orEmpty()
-        if (wanted.isNotEmpty()) {
-            connections.values.firstOrNull { connection ->
-                connection.config.sessionId == wanted && !connection.userClosed.get() && connection.socketRef.get() != null
-            }?.let { return it }
-        }
-        val id = currentConnectionId.get() ?: return null
-        return connections[id]
+        val current = currentConnectionId.get()?.let { connections[it] }
+        val wanted = sessionId?.trim()?.takeIf { it.isNotEmpty() } ?: current?.config?.sessionId ?: return null
+        val config = snapshotConfig(wanted)
+        fun usable(connection: ManagedConnection) = connection.config == config &&
+            !connection.userClosed.get() && connection.readiness.value == SocketState.Connected
+        if (current != null && usable(current)) return current
+        return connections.values.firstOrNull(::usable)
     }
 
     fun cancel(handle: WsChatHandle): Boolean {
         val connection = connections[handle.connectionId] ?: return false
-        val ws = connection.socketRef.get() ?: return false
         val payload =
             """{"type":"cancel","session_id":${json.encodeToString(handle.sessionId)},"data":{"session_id":${json.encodeToString(handle.sessionId)}}}"""
-        return ws.send(payload)
+        synchronized(connection) {
+            if (connection.readiness.value != SocketState.Connected) return false
+            val ws = connection.socketRef.get() ?: return false
+            return ws.send(payload)
+        }
     }
 
     fun release(connectionId: String) {
@@ -497,10 +552,14 @@ class LuckyAgentWsClient(
 
     private fun closeConnection(connection: ManagedConnection) {
         if (!connections.remove(connection.id, connection)) return
-        connection.userClosed.set(true)
-        connection.reconnectJob?.cancel()
-        connection.reconnectJob = null
-        connection.socketRef.getAndSet(null)?.close(1000, "idle connection")
+        synchronized(connection) {
+            connection.userClosed.set(true)
+            connection.generation += 1
+            connection.readiness.value = SocketState.Closed
+            connection.reconnectJob?.cancel()
+            connection.reconnectJob = null
+            connection.socketRef.getAndSet(null)?.cancel()
+        }
     }
 
     fun disconnect() {
@@ -518,8 +577,9 @@ class LuckyAgentWsClient(
         internal fun idleConnectionsToEvict(idle: List<Pair<String, Long>>, keep: Int): List<String> =
             idle.sortedByDescending { it.second }.drop(keep.coerceAtLeast(0)).map { it.first }
 
-        const val RECONNECT_BASE_MS = 50L
-        const val RECONNECT_MAX_MS = 250L
+        const val RECONNECT_BASE_MS = 500L
+        const val RECONNECT_MAX_MS = 10_000L
+        const val CONNECT_WAIT_MS = 20_000L
         /** Reject frames above this size instead of decoding them. */
         internal const val MAX_INBOUND_MESSAGE_CHARS = 8_000_000
 

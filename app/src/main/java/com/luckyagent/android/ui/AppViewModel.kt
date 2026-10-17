@@ -802,16 +802,16 @@ class AppViewModel(
             return
         }
 
-        // One retry per session. Later composer submits stay queued and cannot
-        // start a second connection attempt for the same session.
+        // Wait for the HTTP upgrade. Later submits share this session's dispatch
+        // job instead of racing the handshake with a fixed-delay retry.
         outboundChatQueue.update(item.id, status = OutboundQueueStatus.Queued, error = "正在连接")
         publishOutboundQueue(sessionId)
-        container.wsClient.connect(sessionId)
         outboundDispatchJobs[sessionId] = viewModelScope.launch {
-            delay(450)
-            val retryHandle = container.wsClient.sendChat(item.message, attachments = item.attachments, sessionId = sessionId)
+            val retryHandle = if (container.wsClient.awaitConnected(sessionId)) {
+                container.wsClient.sendChat(item.message, attachments = item.attachments, sessionId = sessionId)
+            } else null
             if (retryHandle == null) {
-                markOutboundFailed(item.id, sessionId, "WebSocket 未连接，请检查 API Base / Key")
+                markOutboundFailed(item.id, sessionId, container.wsClient.lastError.value ?: "WebSocket 连接超时，请检查网络后重试")
             } else {
                 markOutboundSent(item.id, retryHandle)
                 registerRun(retryHandle)
@@ -3172,9 +3172,11 @@ class AppViewModel(
             requestId = segment.id,
         )
         if (handle != null) return
-        container.wsClient.connect(segment.sessionId)
         viewModelScope.launch {
-            delay(450)
+            if (!container.wsClient.awaitConnected(segment.sessionId)) {
+                markLuckySegmentFailed(segment.id, container.wsClient.lastError.value ?: "连接超时，没有送进收集，点重试")
+                return@launch
+            }
             val retry = container.wsClient.sendChat(
                 segment.message,
                 attachments = segment.attachments,
@@ -3245,10 +3247,8 @@ class AppViewModel(
             return
         }
         if (!container.wsClient.sendLucky(sessionId, action)) {
-            container.wsClient.connect(sessionId)
             viewModelScope.launch {
-                delay(450)
-                if (!container.wsClient.sendLucky(sessionId, action)) {
+                if (!container.wsClient.awaitConnected(sessionId) || !container.wsClient.sendLucky(sessionId, action)) {
                     val notice = "Lucky 命令没有发出，请检查连接"
                     if (currentSessionId() == sessionId) {
                         pushBubble(ChatBubble(id = "lucky-err-$now", role = "assistant", content = notice, createdAt = nowIsoTimestamp()))
