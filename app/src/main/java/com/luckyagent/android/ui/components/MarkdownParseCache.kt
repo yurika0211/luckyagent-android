@@ -10,6 +10,7 @@ internal data class ParsedMarkdown(
     val blocks: List<MdBlock>,
     val htmlNodes: List<List<HtmlNode>>,
     val richNodes: Map<String, List<HtmlNode>>,
+    val svgNodes: List<SvgDocument?>,
 ) {
     /** WebView / native drawing blocks. Plain text replies stay false. */
     val needsLiveSurface: Boolean = blocks.any(::blockNeedsLiveSurface)
@@ -82,6 +83,7 @@ internal object MarkdownParseCache {
     internal fun parse(source: String, streaming: Boolean): ParsedMarkdown {
         val blocks = splitMarkdownBlocks(source, hideIncompleteTables = streaming)
         val htmlNodes = ArrayList<List<HtmlNode>>(blocks.size)
+        val svgNodes = ArrayList<SvgDocument?>(blocks.size)
         val richSources = LinkedHashSet<String>()
         for (block in blocks) {
             htmlNodes += if (block is MdBlock.Html && !requiresHtmlPage(block.source)) {
@@ -89,6 +91,9 @@ internal object MarkdownParseCache {
             } else {
                 emptyList()
             }
+            // The static drawing is projected here, off the UI thread, together
+            // with the rest of the block. Recomposition must not re-parse it.
+            svgNodes += if (block is MdBlock.Html) staticSvgDocument(block.source) else null
             when (block) {
                 is MdBlock.Heading -> richSources += block.text
                 is MdBlock.ListItem -> richSources += block.text
@@ -99,7 +104,7 @@ internal object MarkdownParseCache {
         }
         val richNodes = HashMap<String, List<HtmlNode>>(richSources.size)
         for (text in richSources) richNodes[text] = richTextNodes(text)
-        return ParsedMarkdown(blocks, htmlNodes, richNodes)
+        return ParsedMarkdown(blocks, htmlNodes, richNodes, svgNodes)
     }
 
     internal fun clearForTest() {
