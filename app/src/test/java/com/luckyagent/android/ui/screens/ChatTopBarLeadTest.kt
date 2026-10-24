@@ -46,6 +46,19 @@ class ChatTopBarLeadTest {
     }
 
     @Test
+    fun standaloneDoesNotOfferLuckyCommands() {
+        assertEquals(false, showsLuckyComposer("standalone"))
+        assertEquals(true, showsLuckyComposer("runtime"))
+        assertEquals(true, showsLuckyComposer(""))
+    }
+
+    @Test
+    fun luckyCommandLeavesTheUnsentDraft() {
+        assertEquals("还没发的草稿", composerAfterLuckyCommand("还没发的草稿"))
+        assertEquals("", composerAfterLuckyCommand(""))
+    }
+
+    @Test
     fun collectingLabelNamesTheCount() {
         assertEquals("正在收集 · 已 3 条", luckyCollectingLabel(3))
         assertEquals("正在收集 · 已 0 条", luckyCollectingLabel(0))

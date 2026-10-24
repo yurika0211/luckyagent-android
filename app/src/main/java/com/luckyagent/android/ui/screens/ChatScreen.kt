@@ -315,6 +315,19 @@ internal fun showsContextRing(connectionMode: String, socketState: SocketState):
 internal fun approvalsStillHidden(total: Int, visible: Int): Int =
     (total - visible).coerceAtLeast(0)
 
+/**
+ * Lucky talks to the runtime collector. Standalone chat has no such collector,
+ * so the composer must not offer commands that would be sent to the model.
+ */
+internal fun showsLuckyComposer(connectionMode: String): Boolean =
+    connectionMode != "standalone"
+
+/**
+ * A Lucky button must not replace an unsent draft. The command goes out on its
+ * own, and the draft returns to the composer.
+ */
+internal fun composerAfterLuckyCommand(draft: String): String = draft
+
 /** The collecting state stays visible next to the composer instead of a long-press menu. */
 internal fun luckyCollectingLabel(segments: Int): String =
     "正在收集 · 已 ${segments.coerceAtLeast(0)} 条"
@@ -3273,14 +3286,13 @@ private fun ComposerBar(
                 )
             }
         }
-        LuckyComposerControl(
-            state = state,
-            onCommand = { command ->
-                onChange(command)
-                onSend()
-            },
-            onRetry = vm::retryLuckySegment,
-        )
+        if (showsLuckyComposer(state.settings.connectionMode)) {
+            LuckyComposerControl(
+                state = state,
+                onCommand = { command -> vm.runLuckyCommand(command) },
+                onRetry = vm::retryLuckySegment,
+            )
+        }
         Box(Modifier.fillMaxWidth()) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -3354,12 +3366,11 @@ private fun ComposerBar(
                 .size(44.dp),
             contentAlignment = Alignment.Center,
         ) {
-            if (showLuckyCommands) {
+            if (showLuckyCommands && showsLuckyComposer(state.settings.connectionMode)) {
                 LuckyClover(
                     modifier = Modifier.wrapContentSize(unbounded = true),
                     onCommand = { action ->
-                        onChange(action)
-                        onSend()
+                        vm.runLuckyCommand(action)
                         showLuckyCommands = false
                     },
                     onDismiss = { showLuckyCommands = false },
@@ -3379,7 +3390,11 @@ private fun ComposerBar(
                     enabled = hasInput || chatWorking && isStopCommand,
                     contentDescription = if (isStopCommand) "发送 /stop" else "发送，长按打开 Lucky",
                     onClick = onSend,
-                    onLongClick = { showLuckyCommands = !showLuckyCommands },
+                    onLongClick = {
+                        if (showsLuckyComposer(state.settings.connectionMode)) {
+                            showLuckyCommands = !showLuckyCommands
+                        }
+                    },
                 )
             }
         }
