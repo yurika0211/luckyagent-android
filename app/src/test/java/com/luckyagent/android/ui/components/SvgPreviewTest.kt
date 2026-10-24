@@ -19,6 +19,7 @@ class SvgPreviewTest {
         val frame = svg(source).frame
         assertNotNull(frame)
         assertTrue(requiresHtmlPage(source))
+        assertTrue(svgPreviewDocument(svg(source), fit = true).contains("viewBox"))
         assertEquals(SvgFrame(200f, 80f), frame)
         assertEquals(128f, svgCardHeight(frame, widthDp = 320f, viewportDp = 800f))
         assertFalse(svgCardScrolls(frame, widthDp = 320f, viewportDp = 800f))
@@ -32,10 +33,9 @@ class SvgPreviewTest {
         assertTrue(svgCardScrolls(frame, widthDp = 300f, viewportDp = 800f))
     }
 
-    @Test fun missingFrameUsesASquareUntilLayoutReturns() {
+    @Test fun graphicWithoutAFrameKeepsTheHtmlPagePath() {
         val source = "<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>"
-        assertNull(svg(source).frame)
-        assertEquals(200f, svgCardHeight(null, widthDp = 200f, viewportDp = 800f))
+        assertNull(staticSvgDocument(source))
     }
 
     @Test fun scriptOrExternalReferenceStaysOnTheHtmlPagePath() {

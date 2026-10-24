@@ -4,12 +4,14 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.TextNode
+import org.jsoup.parser.Parser
 
 /**
  * A self-contained SVG parsed once per message source.
  *
- * [root] is cloned into the preview page and [styles] carries page-level CSS that
- * the graphic may rely on. Parsing happens once per message; callers remember it.
+ * The root is parsed with the XML parser after the HTML parser has validated the
+ * surrounding fragment. SVG attributes such as viewBox and preserveAspectRatio
+ * are case-sensitive, so the WebView must receive an XML-preserved tree.
  */
 internal class SvgDocument(
     internal val root: Element,
@@ -22,34 +24,29 @@ internal data class SvgFrame(
     val height: Float,
 )
 
-/**
- * Returns the graphic alone, when the fragment is exactly one static `<svg>`.
- *
- * Everything else keeps the HTML page path. Text or markup next to the drawing
- * would be silently dropped by the page-less renderer, and a drawing with a
- * script, an inline event handler, or an external reference stays under the page
- * resource policy. Sources above [INLINE_HTML_ACTIVE_LIMIT] keep the inline page
- * guard they had before.
- */
 internal fun staticSvgDocument(source: String): SvgDocument? {
     if (source.length > INLINE_HTML_ACTIVE_LIMIT) return null
     if (!source.contains("<svg", ignoreCase = true)) return null
+    val graphicSource = graphicSource(source) ?: return null
     val doc = Jsoup.parse(source)
     if (doc.head().select("link, script, base, iframe, object, embed").isNotEmpty()) return null
     if (doc.body().childNodes().any { it is TextNode && it.text().isNotBlank() }) return null
     val drawn = doc.body().children()
     if (drawn.size != 1) return null
-    val root = drawn[0]
-    if (root.normalName() != "svg") return null
-    if (root.select("script, foreignObject, iframe, object, embed, video, audio").isNotEmpty()) return null
-    if (root.getElementsByAttribute("src").isNotEmpty()) return null
-    if (hasExternalReference(root)) return null
-    if (hasEventHandler(root)) return null
+    val htmlRoot = drawn[0]
+    if (htmlRoot.normalName() != "svg") return null
+    if (htmlRoot.select("script, foreignObject, iframe, object, embed, video, audio").isNotEmpty()) return null
+    if (htmlRoot.getElementsByAttribute("src").isNotEmpty()) return null
+    if (hasExternalReference(htmlRoot)) return null
+    if (hasEventHandler(htmlRoot)) return null
+
+    val xmlRoot = Jsoup.parse(graphicSource, "", Parser.xmlParser()).selectFirst("svg") ?: return null
+    val frame = frameOf(xmlRoot) ?: return null
     val styles = doc.head().select("style").joinToString("\n") { it.data() }
-    return SvgDocument(root, styles, frameOf(root))
+    return SvgDocument(root = xmlRoot, styles = styles, frame = frame)
 }
 
-/** Message card height for the full graphic. Tall drawings stay scrollable instead of being cropped. */
+/** Card height for the full graphic. Tall drawings remain reachable inside the card. */
 internal fun svgCardHeight(frame: SvgFrame?, widthDp: Float, viewportDp: Float): Float {
     val width = widthDp.coerceAtLeast(1f)
     val ratio = if (frame == null || frame.width <= 0f) 1f else frame.height / frame.width
@@ -71,11 +68,6 @@ internal const val SVG_SIZE_JS =
         "if(!(w>0)||!(h>0)){w=s.clientWidth;h=s.clientHeight}" +
         "return Math.ceil(w)+','+Math.ceil(h)})()"
 
-/**
- * Wraps the graphic for the WebView. `fit` fills the frame exactly; otherwise the
- * drawing takes the full frame width and scrolls vertically, so nothing is cropped
- * sideways and the rest is reachable without leaving the message.
- */
 internal fun svgPreviewDocument(document: SvgDocument, fit: Boolean): String {
     val doc = Document.createShell("")
     doc.select("base").remove()
@@ -85,7 +77,6 @@ internal fun svgPreviewDocument(document: SvgDocument, fit: Boolean): String {
         "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; " +
             "connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'",
     )
-    // Page-level CSS first, our frame rules last, so the frame wins on equal specificity.
     if (document.styles.isNotBlank()) doc.head().appendElement("style").appendText(document.styles)
     doc.head().appendElement("style").appendText(
         "html,body{margin:0;background:transparent}" + if (fit) {
@@ -95,8 +86,17 @@ internal fun svgPreviewDocument(document: SvgDocument, fit: Boolean): String {
             "html,body{overflow:auto}svg{display:block;width:100%;height:auto;max-width:none}"
         },
     )
+    // xmlRoot preserves viewBox/preserveAspectRatio/xlink names and is cloned only
+    // after XML parsing, avoiding the lossy HTML parse -> HTML serialization round trip.
     doc.body().appendChild(document.root.clone())
     return doc.outerHtml()
+}
+
+private fun graphicSource(source: String): String? {
+    val start = source.indexOf("<svg", ignoreCase = true)
+    val end = source.lastIndexOf("</svg>", ignoreCase = true)
+    if (start < 0 || end < start) return null
+    return source.substring(start, end + "</svg>".length)
 }
 
 private fun frameOf(root: Element): SvgFrame? {
@@ -123,7 +123,6 @@ private fun svgLength(value: String): Float? {
     return number.toFloatOrNull()?.takeIf { it > 0f }
 }
 
-/** A same-document `#id` reference is part of the drawing; anything else is a fetch. */
 private fun hasExternalReference(root: Element): Boolean {
     for (element in root.allElements) {
         for (name in listOf("href", "xlink:href")) {
@@ -134,7 +133,6 @@ private fun hasExternalReference(root: Element): Boolean {
     return false
 }
 
-/** `on*` attributes are inline scripts, even without a `<script>` element. */
 private fun hasEventHandler(root: Element): Boolean =
     root.allElements.any { element ->
         element.attributes().any { it.key.startsWith("on", ignoreCase = true) }
