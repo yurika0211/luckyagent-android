@@ -28,6 +28,24 @@ class ChatTopBarLeadTest {
     }
 
     @Test
+    fun contextRingNeedsALiveRuntimeSocket() {
+        assertEquals(false, showsContextRing("standalone", SocketState.Connected))
+        assertEquals(false, showsContextRing("standalone", SocketState.Idle))
+        assertEquals(false, showsContextRing("runtime", SocketState.Idle))
+        assertEquals(false, showsContextRing("runtime", SocketState.Connecting))
+        assertEquals(false, showsContextRing("runtime", SocketState.Error))
+        assertEquals(true, showsContextRing("runtime", SocketState.Connected))
+        assertEquals(true, showsContextRing("runtime", SocketState.Running))
+    }
+
+    @Test
+    fun pinnedApprovalsNameTheOnesBelowTheFold() {
+        assertEquals(0, approvalsStillHidden(0, 2))
+        assertEquals(0, approvalsStillHidden(2, 2))
+        assertEquals(2, approvalsStillHidden(4, 2))
+    }
+
+    @Test
     fun collectingLabelNamesTheCount() {
         assertEquals("正在收集 · 已 3 条", luckyCollectingLabel(3))
         assertEquals("正在收集 · 已 0 条", luckyCollectingLabel(0))

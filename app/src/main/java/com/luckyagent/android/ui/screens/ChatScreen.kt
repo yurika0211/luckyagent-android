@@ -303,6 +303,18 @@ internal fun chatTopBarLead(connectionMode: String, socketState: SocketState): C
         ChatTopBarLead.Model
     }
 
+/**
+ * The context ring reads GET /api/v1/context from the runtime. Standalone chat
+ * and an offline socket have no such reading, so the ring stays hidden.
+ * This is separate from [chatTopBarLead]: standalone still shows the model switch.
+ */
+internal fun showsContextRing(connectionMode: String, socketState: SocketState): Boolean =
+    connectionMode != "standalone" && socketStateLive(socketState)
+
+/** How many approvals sit below the first screen of the pinned list. */
+internal fun approvalsStillHidden(total: Int, visible: Int): Int =
+    (total - visible).coerceAtLeast(0)
+
 /** The collecting state stays visible next to the composer instead of a long-press menu. */
 internal fun luckyCollectingLabel(segments: Int): String =
     "正在收集 · 已 ${segments.coerceAtLeast(0)} 条"
@@ -2613,20 +2625,34 @@ private fun ApprovalCards(
     onDecision: (PendingApproval, String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier
-            .fillMaxWidth()
-            // Pinned above the composer, so several approvals must scroll here
-            // instead of pushing the input off screen.
-            .heightIn(max = 240.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        approvals.forEach { approval ->
-            ApprovalCard(approval = approval, onDecision = onDecision)
+    Column(modifier.fillMaxWidth()) {
+        val hidden = approvalsStillHidden(approvals.size, APPROVALS_VISIBLE_WITHOUT_SCROLL)
+        if (hidden > 0) {
+            Text(
+                "共 ${approvals.size} 条待审批，还有 $hidden 条在下面",
+                color = CloverAccent,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+        }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                // Pinned above the composer, so several approvals must scroll here
+                // instead of pushing the input off screen.
+                .heightIn(max = 240.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            approvals.forEach { approval ->
+                ApprovalCard(approval = approval, onDecision = onDecision)
+            }
         }
     }
 }
+
+/** Cards that fit in the 240 dp pin before the rest must be scrolled to. */
+private const val APPROVALS_VISIBLE_WITHOUT_SCROLL = 2
 
 @Composable
 private fun ApprovalCard(
@@ -3307,8 +3333,7 @@ private fun ComposerBar(
                     inner()
                 },
             )
-            if (chatTopBarLead(state.settings.connectionMode, state.socketState) == ChatTopBarLead.Model) {
-                // The ring reads live context from the runtime; offline it is a blank dash.
+            if (showsContextRing(state.settings.connectionMode, state.socketState)) {
                 ContextUsageButton(
                     state = state,
                     onClick = { showContextSheet = true },
