@@ -206,7 +206,7 @@ private fun StandaloneConnectionCard(settings: ClientSettings, vm: AppViewModel)
         }
         OutlinedTextField(apiBase, { apiBase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("模型 URL") }, placeholder = { Text("https://api.example.com/v1") }, singleLine = true)
         OutlinedTextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("模型 Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
-        OutlinedTextField(model, { model = it }, modifier = Modifier.fillMaxWidth(), label = { Text("模型名") }, placeholder = { Text("gpt-4o-mini") }, singleLine = true)
+        OutlinedTextField(model, { model = it }, modifier = Modifier.fillMaxWidth(), label = { Text("模型名") }, placeholder = { Text("留空时使用网关返回的第一个模型") }, singleLine = true)
         Button(
             onClick = { vm.saveStandaloneSettings(apiBase, apiKey, model) },
             enabled = apiBase.isNotBlank() && apiKey.isNotBlank(),
