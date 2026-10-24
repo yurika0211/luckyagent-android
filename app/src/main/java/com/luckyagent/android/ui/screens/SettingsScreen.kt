@@ -246,7 +246,7 @@ private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
     }?.takeIf { it.exists() }
     CloverCard {
         Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("只保存在这台手机上，不会上传。背景铺在每个页面后面。输入区只留中间那条，长按发送键会在四周展开 Lucky 指令。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
+        Text("只保存在这台手机上，不会上传。背景铺在每个页面后面。输入区只留中间那条；Lucky 收集状态显示在输入框上方，可以随时提交或放弃，长按发送键仍能打开同一组指令。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
         state.snackbarMessage?.let { message ->
             Text(message, color = if (message.contains("没能")) CloverError else CloverText, style = MaterialTheme.typography.bodyMedium)
         }

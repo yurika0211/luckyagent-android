@@ -55,6 +55,7 @@ import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.LuckyAction
 import com.luckyagent.android.data.api.LuckyCommand
 import com.luckyagent.android.data.api.parseLuckyCommand
+import com.luckyagent.android.ui.screens.composerAfterLuckyCommand
 import com.luckyagent.android.data.api.RuntimeCommand
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.SessionPatchRequest
@@ -3989,6 +3990,24 @@ class AppViewModel(
 
     fun saveScrollAnchor(sessionId: String, index: Int, offset: Int) {
         container.settingsRepository.saveScrollAnchor(sessionId, index, offset)
+    }
+
+    /**
+     * A Lucky button sends the command without using the composer. An unsent
+     * draft, its attachments, and its quote stay where the user left them.
+     */
+    fun runLuckyCommand(rawText: String) {
+        if (_ui.value.settings.connectionMode == "standalone") return
+        val command = parseLuckyCommand(rawText) ?: return
+        val draft = _ui.value
+        handleLuckyCommand(rawText.trim(), command)
+        _ui.update {
+            it.copy(
+                composer = composerAfterLuckyCommand(draft.composer),
+                pendingMedia = draft.pendingMedia,
+                pendingQuote = draft.pendingQuote,
+            )
+        }
     }
 
     fun sendComposer() {
