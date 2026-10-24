@@ -125,6 +125,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.luckyagent.android.ui.components.CloverCard
@@ -208,7 +209,6 @@ import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
-import com.luckyagent.android.ui.components.socketStateLabel
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverBgSide
@@ -1153,24 +1153,27 @@ private fun ChatConversation(
                 },
             )
         }
-        SessionNavigationCard(
-            sessionId = state.settings.sessionId,
-            tasks = state.tasks,
-            background = state.backgroundTasks,
-            tasksError = state.tasksError,
-            backgroundError = state.backgroundError,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            onOpenTask = { taskId ->
-                if (taskId != null) vm.selectTask(taskId)
-                vm.navigate(AppDestination.Tasks)
-            },
-            onOpenBackground = { taskId ->
-                if (taskId != null) vm.selectBackgroundTask(taskId)
-                vm.navigate(AppDestination.Background)
-            },
-            onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
-            onOpenMemory = { vm.navigate(AppDestination.Memory) },
-        )
+        if (state.settings.showSessionCard) {
+            SessionNavigationCard(
+                sessionId = state.settings.sessionId,
+                tasks = state.tasks,
+                background = state.backgroundTasks,
+                tasksError = state.tasksError,
+                backgroundError = state.backgroundError,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                onOpenTask = { taskId ->
+                    if (taskId != null) vm.selectTask(taskId)
+                    vm.navigate(AppDestination.Tasks)
+                },
+                onOpenBackground = { taskId ->
+                    if (taskId != null) vm.selectBackgroundTask(taskId)
+                    vm.navigate(AppDestination.Background)
+                },
+                onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
+                onOpenMemory = { vm.navigate(AppDestination.Memory) },
+                onDismiss = { vm.updateSettings { it.copy(showSessionCard = false) } },
+            )
+        }
 
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
@@ -1547,6 +1550,7 @@ private fun SessionNavigationCard(
     onOpenBackground: (String?) -> Unit,
     onOpenTrace: () -> Unit,
     onOpenMemory: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val mine = remember(tasks, sessionId) { tasksForSession(tasks, sessionId) }
     val board = remember(background, sessionId) { backgroundForSession(background, sessionId) }
@@ -1563,7 +1567,17 @@ private fun SessionNavigationCard(
         else -> null
     }
     CloverCard(modifier = modifier) {
-        Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "当前会话",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                color = CloverText3,
+            )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.DeleteOutline, contentDescription = "隐藏当前会话卡", tint = CloverText3)
+            }
+        }
         when {
             featured != null -> Text(
                 featured.description.ifBlank { "正在处理的任务" },
@@ -1660,23 +1674,11 @@ private fun ChatTopBar(
                     Icon(Icons.Outlined.Menu, contentDescription = "打开会话", tint = CloverText2)
                 }
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-                ModelSwitchButton(
-                    state = state,
-                    onClick = onOpenModel,
-                )
-                Text(
-                    socketStateLabel(
-                        state.socketState,
-                        responding = state.isResponding,
-                        addressMissing = state.settings.apiBase.isBlank(),
-                    ),
-                    modifier = Modifier.padding(start = 8.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (connectionNeedsAction(state.socketState, state.settings.apiBase.isBlank())) CloverError else CloverText3,
-                    maxLines = 1,
-                )
-            }
+            ModelSwitchButton(
+                state = state,
+                onClick = onOpenModel,
+                modifier = Modifier.weight(1f),
+            )
             IconButton(onClick = onNewSession) {
                 Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = CloverText2)
             }
@@ -2754,6 +2756,10 @@ private fun ComposerBar(
         AnimatedVisibility(visible = showAttachmentOptions && !isRecordingVoice) {
             Column {
                 AttachmentActionRow(
+                    showSessionCard = state.settings.showSessionCard,
+                    onToggleSessionCard = { shown ->
+                        vm.updateSettings { it.copy(showSessionCard = shown) }
+                    },
                     onCameraCapture = onCameraCapture,
                     onVoiceCapture = onVoiceCapture,
                     onVisualPick = onVisualPick,
@@ -3473,13 +3479,14 @@ private fun contextSectionLabel(label: String): String = when (label) {
 private fun ModelSwitchButton(
     state: AppUiState,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val activeChat = state.activeModels["chat"]
         ?: state.models.firstOrNull { it.kind.equals("chat", ignoreCase = true) && it.current }
     val label = activeChat?.displayName?.takeIf { it.isNotBlank() } ?: activeChat?.id ?: "模型"
     val switching = state.modelSwitchingKey?.startsWith("chat|") == true
     Row(
-        modifier = Modifier
+        modifier = modifier
             .widthIn(max = 180.dp)
             .heightIn(min = 48.dp)
             .clickable(enabled = !switching, role = Role.Button, onClick = onClick)
@@ -3884,19 +3891,53 @@ private fun ModelOptionRow(
 
 @Composable
 private fun AttachmentActionRow(
+    showSessionCard: Boolean,
+    onToggleSessionCard: (Boolean) -> Unit,
     onCameraCapture: () -> Unit,
     onVoiceCapture: () -> Unit,
     onVisualPick: () -> Unit,
     onFilePick: () -> Unit,
 ) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            AttachmentAction(Icons.Outlined.CameraAlt, "拍照", onCameraCapture)
+            AttachmentAction(Icons.Outlined.Mic, "录音", onVoiceCapture)
+            AttachmentAction(Icons.Outlined.PhotoLibrary, "相册", onVisualPick)
+            AttachmentAction(Icons.Outlined.AttachFile, "文件", onFilePick)
+        }
+        SessionCardToggle(showSessionCard, onToggleSessionCard)
+    }
+}
+
+@Composable
+private fun SessionCardToggle(
+    shown: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        AttachmentAction(Icons.Outlined.CameraAlt, "拍照", onCameraCapture)
-        AttachmentAction(Icons.Outlined.Mic, "录音", onVoiceCapture)
-        AttachmentAction(Icons.Outlined.PhotoLibrary, "相册", onVisualPick)
-        AttachmentAction(Icons.Outlined.AttachFile, "文件", onFilePick)
+        Column(Modifier.weight(1f)) {
+            Text("当前会话卡", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                if (shown) "显示在聊天顶部" else "已隐藏",
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+            )
+        }
+        Switch(
+            checked = shown,
+            onCheckedChange = onToggle,
+            modifier = Modifier.semantics { contentDescription = "显示当前会话卡" },
+        )
     }
 }
 
