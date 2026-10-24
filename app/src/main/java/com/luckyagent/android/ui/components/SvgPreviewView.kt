@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceResponse
@@ -45,7 +46,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import java.io.ByteArrayInputStream
 
 /**
  * Static SVG in the message. The card keeps the graphic's aspect ratio.
@@ -170,6 +170,13 @@ private fun SvgPage(
         modifier = modifier,
         factory = { context ->
             WebView(context).apply {
+                // AndroidView's default WRAP_CONTENT makes WebView treat CSS
+                // percentage/viewport heights as content-dependent (zero). The
+                // enclosing card already supplies an exact size.
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
                 setBackgroundColor(0)
                 // The injected size probe is the only script this page needs; the
                 // document policy in svgPreviewDocument allows none from the source.
@@ -210,10 +217,10 @@ private fun SvgPage(
             }
         },
         update = { view ->
-            // fit flips after the first measurement of an undeclared frame, and the
-            // card width changes on rotation. Either one needs a new document.
-            val loaded = view.tag as? String
-            if (loaded != document) {
+            // AndroidView keeps the native view across recompositions. A history
+            // refresh (or a fit/scroll layout change) must load the new document,
+            // while unrelated recompositions must not restart it.
+            if (view.tag != document) {
                 view.tag = document
                 view.loadDataWithBaseURL(null, document, "text/html", "utf-8", null)
             }

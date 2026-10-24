@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240" width="320" height="240">
+  <line x1="60" y1="50" x2="260" y2="50" stroke="#c5c9d0" stroke-width="2"/>
+  <line x1="60" y1="50" x2="260" y2="190" stroke="#c5c9d0" stroke-width="2"/>
+  <line x1="260" y1="50" x2="60" y2="190" stroke="#c5c9d0" stroke-width="2"/>
+  <line x1="60" y1="50" x2="60" y2="190" stroke="#1f6feb" stroke-width="4"/>
+  <line x1="60" y1="190" x2="260" y2="190" stroke="#1f6feb" stroke-width="4"/>
+  <line x1="260" y1="50" x2="260" y2="190" stroke="#1f6feb" stroke-width="4"/>
+  <text x="160" y="40" text-anchor="middle" font-size="14" fill="#667">4</text>
+  <text x="168" y="112" text-anchor="middle" font-size="14" fill="#667">5</text>
+  <text x="148" y="128" text-anchor="middle" font-size="14" fill="#667">6</text>
+  <text x="44" y="124" text-anchor="middle" font-size="14" fill="#1f6feb">2</text>
+  <text x="160" y="210" text-anchor="middle" font-size="14" fill="#1f6feb">1</text>
+  <text x="276" y="124" text-anchor="middle" font-size="14" fill="#1f6feb">3</text>
+  <circle cx="60" cy="50" r="16" fill="#fff" stroke="#222" stroke-width="2"/>
+  <circle cx="260" cy="50" r="16" fill="#fff" stroke="#222" stroke-width="2"/>
+  <circle cx="60" cy="190" r="16" fill="#fff" stroke="#222" stroke-width="2"/>
+  <circle cx="260" cy="190" r="16" fill="#fff" stroke="#222" stroke-width="2"/>
+  <text x="60" y="55" text-anchor="middle" font-size="14">A</text>
+  <text x="260" y="55" text-anchor="middle" font-size="14">B</text>
+  <text x="60" y="195" text-anchor="middle" font-size="14">C</text>
+  <text x="260" y="195" text-anchor="middle" font-size="14">D</text>
+</svg>

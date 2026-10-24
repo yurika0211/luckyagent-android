@@ -6,6 +6,7 @@ internal data class ParsedMarkdown(
     val blocks: List<MdBlock>,
     val htmlNodes: List<List<HtmlNode>>,
     val richNodes: Map<String, List<HtmlNode>>,
+    val svgNodes: List<SvgDocument?>,
 )
 
 /**
@@ -41,6 +42,10 @@ internal object MarkdownParseCache {
                 emptyList()
             }
         }
+        val svgNodes = blocks.map { block ->
+            if (block is MdBlock.Html) staticSvgDocument(block.source) else null
+        }
+
         val richSources = linkedSetOf<String>()
         blocks.forEach { block ->
             when (block) {
@@ -55,6 +60,7 @@ internal object MarkdownParseCache {
             blocks = blocks,
             htmlNodes = htmlNodes,
             richNodes = richSources.associateWith(::richTextNodes),
+            svgNodes = svgNodes,
         )
 
         synchronized(entries) {

@@ -71,6 +71,7 @@ fun MarkdownText(
     val blocks = parsedMarkdown.blocks
     val htmlNodes = parsedMarkdown.htmlNodes
     val richNodes = parsedMarkdown.richNodes
+    val svgNodes = parsedMarkdown.svgNodes
     val detailsState = rememberSaveable(saver = HtmlDetailsState.Saver) { HtmlDetailsState() }
     val detailsContext = remember(htmlNodes, detailsState) {
         HtmlDetailsContext(detailsState, detailsState.identities(htmlNodes.flatten()))
@@ -80,9 +81,8 @@ fun MarkdownText(
             when (block) {
                 is MdBlock.Mermaid -> MermaidView(source = block.source)
                 is MdBlock.Html -> {
-                    // Parsed once per source. A static drawing renders itself, and the
-                    // parse must not run again on every recomposition.
-                    val svg = remember(block.source) { staticSvgDocument(block.source) }
+                    // Parsed off the UI thread with the rest of the projection.
+                    val svg = svgNodes[index]
                     if (svg != null) {
                         InlineSvgPreview(source = block.source, svg = svg)
                     } else if (block.showPreview || requiresHtmlPage(block.source)) {
