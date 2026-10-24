@@ -57,6 +57,8 @@ data class ClientSettings(
     val standaloneApiKey: String = "",
     val standaloneModel: String = "",
     val standaloneSessionId: String = "standalone-main",
+    /** Chat-top session card. Hidden until the composer plus menu turns it on. */
+    val showSessionCard: Boolean = false,
 )
 
 /**
@@ -126,6 +128,7 @@ class SettingsRepository(context: Context) {
             standaloneApiKey = prefs.getString(KEY_STANDALONE_KEY, "") ?: "",
             standaloneModel = prefs.getString(KEY_STANDALONE_MODEL, "") ?: "",
             standaloneSessionId = prefs.getString(KEY_STANDALONE_SESSION, "standalone-main") ?: "standalone-main",
+            showSessionCard = prefs.getBoolean(KEY_SHOW_SESSION_CARD, false),
         )
     }
 
@@ -201,6 +204,7 @@ class SettingsRepository(context: Context) {
             if (next.standaloneApiKey != previous.standaloneApiKey) putString(KEY_STANDALONE_KEY, next.standaloneApiKey)
             if (next.standaloneModel != previous.standaloneModel) putString(KEY_STANDALONE_MODEL, next.standaloneModel)
             if (next.standaloneSessionId != previous.standaloneSessionId) putString(KEY_STANDALONE_SESSION, next.standaloneSessionId)
+            if (next.showSessionCard != previous.showSessionCard) putBoolean(KEY_SHOW_SESSION_CARD, next.showSessionCard)
         }.apply()
         _settings.value = next
     }
@@ -313,6 +317,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_STANDALONE_SESSION = "standalone_session_id"
         private const val KEY_DISMISSED_WORK_CARDS = "dismissed_work_cards"
         private const val KEY_HIDDEN_SESSION_CARDS = "hidden_session_cards"
+        private const val KEY_SHOW_SESSION_CARD = "show_session_card"
     }
 }
 
