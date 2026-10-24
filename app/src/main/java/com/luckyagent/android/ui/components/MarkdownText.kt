@@ -71,6 +71,7 @@ fun MarkdownText(
     val blocks = parsedMarkdown.blocks
     val htmlNodes = parsedMarkdown.htmlNodes
     val richNodes = parsedMarkdown.richNodes
+    val svgNodes = parsedMarkdown.svgNodes
     val detailsState = rememberSaveable(saver = HtmlDetailsState.Saver) { HtmlDetailsState() }
     val detailsContext = remember(htmlNodes, detailsState) {
         HtmlDetailsContext(detailsState, detailsState.identities(htmlNodes.flatten()))
@@ -88,6 +89,7 @@ fun MarkdownText(
                     imageHeaders = imageHeaders,
                     imageBaseUrl = imageBaseUrl,
                     htmlNodes = htmlNodes.getOrNull(index).orEmpty(),
+                    svg = svgNodes.getOrNull(index),
                     richNodes = richNodes,
                     detailsContext = detailsContext,
                 )
@@ -104,6 +106,7 @@ private fun MarkdownBlock(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     htmlNodes: List<HtmlNode>,
+    svg: SvgDocument?,
     richNodes: Map<String, List<HtmlNode>>,
     detailsContext: HtmlDetailsContext,
 ) {
@@ -114,9 +117,8 @@ private fun MarkdownBlock(
                     HeavyBlockPlaceholder("图表离屏，滚回来再画")
                 }
                 is MdBlock.Html -> {
-                    // Parsed once per source. A static drawing renders itself, and the
-                    // parse must not run again on every recomposition.
-                    val svg = remember(block.source) { staticSvgDocument(block.source) }
+                    // The static drawing was projected off the UI thread with the
+                    // rest of the block, so recomposition never re-parses it.
                     val heavy = svg != null || block.showPreview || requiresHtmlPage(block.source)
                     if (!active && heavy) {
                         HeavyBlockPlaceholder("预览离屏，滚回来再画")
