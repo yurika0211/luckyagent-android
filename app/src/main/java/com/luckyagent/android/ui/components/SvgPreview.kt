@@ -1,7 +1,9 @@
 package com.luckyagent.android.ui.components
 
 import org.jsoup.Jsoup
+import org.jsoup.nodes.DataNode
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.DocumentType
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.TextNode
 import org.jsoup.parser.Parser
@@ -70,6 +72,8 @@ internal const val SVG_SIZE_JS =
 
 internal fun svgPreviewDocument(document: SvgDocument, fit: Boolean): String {
     val doc = Document.createShell("")
+    // Keep preview layout in standards mode instead of relying on HTML quirks.
+    doc.prependChild(DocumentType("html", "", ""))
     doc.select("base").remove()
     doc.head().prependElement("meta").attr("name", "viewport").attr("content", "width=device-width, initial-scale=1")
     doc.head().prependElement("meta").attr("http-equiv", "Content-Security-Policy").attr(
@@ -77,15 +81,17 @@ internal fun svgPreviewDocument(document: SvgDocument, fit: Boolean): String {
         "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; " +
             "connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'",
     )
-    if (document.styles.isNotBlank()) doc.head().appendElement("style").appendText(document.styles)
-    doc.head().appendElement("style").appendText(
+    if (document.styles.isNotBlank()) doc.head().appendElement("style").appendChild(DataNode(document.styles))
+    doc.head().appendElement("style").appendChild(DataNode(
         "html,body{margin:0;background:transparent}" + if (fit) {
-            "html,body{width:100%;height:100%;overflow:hidden}" +
-                "svg{display:block;width:100%;height:100%;max-width:100%;max-height:100%}"
+            // WebView's percentage-height chain can resolve to zero on first
+            // layout. The viewport is the already measured native card.
+            "html,body{width:100%;height:100vh;overflow:hidden}" +
+                "body>svg{display:block;width:100%;height:100vh;max-width:100%;max-height:100vh}"
         } else {
-            "html,body{overflow:auto}svg{display:block;width:100%;height:auto;max-width:none}"
+            "html,body{overflow:auto}body>svg{display:block;width:100%;height:auto;max-width:none}"
         },
-    )
+    ))
     // xmlRoot preserves viewBox/preserveAspectRatio/xlink names and is cloned only
     // after XML parsing, avoiding the lossy HTML parse -> HTML serialization round trip.
     doc.body().appendChild(document.root.clone())
