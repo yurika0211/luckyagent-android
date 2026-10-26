@@ -128,6 +128,10 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.luckyagent.android.ui.components.CloverCard
+import com.luckyagent.android.ui.components.CloverMark
+import com.luckyagent.android.ui.components.StartupPhase
+import com.luckyagent.android.ui.components.StartupReconcileBar
+import com.luckyagent.android.ui.components.StartupWait
 import com.luckyagent.android.ui.components.StatusChip
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -1364,13 +1368,23 @@ private fun ChatConversation(
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
-            if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
-                CircularProgressIndicator(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(10.dp)
-                        .size(18.dp),
-                    strokeWidth = 2.dp,
+            if (state.historyLoading && timeline.isEmpty()) {
+                StartupWait(
+                    phase = StartupPhase.History,
+                    next = StartupPhase.HistoryNext,
+                    modifier = Modifier.align(Alignment.Center),
+                    onTimedOut = {
+                        TextButton(onClick = { vm.loadHistory(forceSync = true) }) { Text("重试") }
+                    },
+                )
+            } else if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
+                StartupReconcileBar(
+                    phase = when {
+                        state.historyLoadingMore -> "正在读取更早的对话"
+                        state.historyRefreshing -> "正在刷新"
+                        else -> StartupPhase.History
+                    },
+                    modifier = Modifier.align(Alignment.TopCenter),
                 )
             }
             if (!atBottom && timeline.size > 1) {
@@ -4624,8 +4638,8 @@ private fun SessionDrawer(
                         innerTextField()
                     }
                     Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                        if (state.sessionsLoading) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        if (state.sessionsLoading && sessions.isNotEmpty()) {
+                            CloverMark(size = 18.dp, contentDescription = StartupPhase.Sessions)
                         } else {
                             IconButton(onClick = onRefresh) {
                                 Icon(Icons.Outlined.Refresh, contentDescription = "Refresh sessions")
@@ -4677,15 +4691,13 @@ private fun SessionDrawer(
         when {
             showInitialLoading -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = CloverAccent, strokeWidth = 3.dp)
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            "正在读取会话",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = CloverText3,
-                        )
-                    }
+                    StartupWait(
+                        phase = StartupPhase.Sessions,
+                        next = StartupPhase.SessionsNext,
+                        onTimedOut = {
+                            TextButton(onClick = onRefresh) { Text("重试") }
+                        },
+                    )
                 }
             }
 

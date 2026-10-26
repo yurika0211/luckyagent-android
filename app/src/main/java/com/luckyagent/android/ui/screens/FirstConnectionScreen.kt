@@ -13,7 +13,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -28,6 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.luckyagent.android.ui.AppUiState
+import com.luckyagent.android.ui.components.StartupPhase
+import com.luckyagent.android.ui.components.StartupReconcileBar
 import com.luckyagent.android.ui.theme.CloverError
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
@@ -98,8 +99,7 @@ fun FirstConnectionScreen(
             ) { Text("连接") }
         }
         if (probing) {
-            CircularProgressIndicator()
-            Text("正在连接…", color = CloverText2)
+            StartupReconcileBar(StartupPhase.Connecting)
         }
         if (failed) {
             Text(

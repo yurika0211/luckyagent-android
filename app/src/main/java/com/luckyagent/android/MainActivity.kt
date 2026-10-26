@@ -18,6 +18,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var appViewModel: AppViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Drop the starting window as soon as Compose can draw. Do not hold it for the session API.
+        setTheme(R.style.Theme_LuckyAgent)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
