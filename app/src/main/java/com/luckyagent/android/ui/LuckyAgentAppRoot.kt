@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -50,6 +51,7 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -366,6 +368,18 @@ private fun AppScaffold(
                     }
                 }
             }
+            state.cronPopup?.let { popup ->
+                CronPopupBanner(
+                    title = popup.title,
+                    body = popup.body,
+                    onOpen = vm::openCronPopup,
+                    onDismiss = vm::dismissCronPopup,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
+                        .padding(top = 8.dp),
+                )
+            }
             if (scanningPairing) {
                 com.luckyagent.android.ui.screens.PairingScannerDialog(
                     onDismiss = { scanningPairing = false },
@@ -593,4 +607,36 @@ private fun DrawerNavItem(
             .height(48.dp)
             .padding(vertical = 2.dp),
     )
+}
+
+@Composable
+private fun CronPopupBanner(
+    title: String,
+    body: String,
+    onOpen: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .padding(horizontal = 16.dp)
+            .widthIn(max = 560.dp)
+            .fillMaxWidth()
+            .clickable(onClick = onOpen),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 6.dp,
+        border = BorderStroke(1.dp, CloverLeaf.copy(alpha = 0.45f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title.ifBlank { "定时消息" }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(body, style = MaterialTheme.typography.bodySmall, color = CloverText2, maxLines = 2)
+            }
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    }
 }

@@ -15,8 +15,10 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.luckyagent.android.data.AppContainer
+import com.luckyagent.android.data.notification.CronPopup
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.notification.RuntimeNoticePolicy
+import com.luckyagent.android.data.notification.cronPopupSuppressed
 import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.cache.CachedOutboundMessage
 import com.luckyagent.android.data.cache.HistorySync
@@ -94,6 +96,7 @@ import com.luckyagent.android.data.standalone.compactStandaloneSession
 import com.luckyagent.android.data.standalone.standaloneContextTokens
 import com.luckyagent.android.data.update.AvailableUpdate
 import com.luckyagent.android.data.work.AgentTaskWork
+import com.luckyagent.android.data.work.CronWatchWork
 import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.TokenFormat
@@ -342,6 +345,8 @@ data class AppUiState(
     val cronCount: Int = 0,
     val cronLoading: Boolean = false,
     val cronError: String? = null,
+    /** A cron run the person should see without opening the notification shade. */
+    val cronPopup: CronPopup? = null,
     val pendingQuote: MessageQuote? = null,
     /** Server-owned /lucky collector for the visible session. */
     val luckyActive: Boolean = false,
@@ -1348,30 +1353,60 @@ class AppViewModel(
     private fun noteCronProgress(jobs: List<CronJob>) {
         val settings = container.settingsRepository.snapshot()
         val seen = jobs.map { it.id }.toSet()
+        var popup: CronPopup? = null
         jobs.forEach { job ->
+            // The run key is what the person has not seen yet; the popup is only
+            // how that same run is shown while a page is already open.
             val runKey = "${job.id}:${job.lastRun.orEmpty()}:${job.runCount}"
             val previous = cronFingerprints.put(job.id, runKey)
             if (!settings.notifyOnCron || !RuntimeNoticePolicy.cronRunWorthy(previous, runKey)) return@forEach
             val sessionId = job.metadata["session_id"].orEmpty()
-            val viewing = appInForeground && _ui.value.destination == AppDestination.Chat && sessionId.isNotBlank() && sessionId == currentSessionId()
-            if (viewing) return@forEach
+            if (cronPopupSuppressed(appInForeground, _ui.value.destination == AppDestination.Chat, currentSessionId(), sessionId)) return@forEach
             val failed = job.errorCount > 0 && !job.lastError.isNullOrBlank()
             val name = job.name.ifBlank { job.id }
-            container.notifications.notifyCron(
-                sessionId,
-                runKey,
-                RuntimeNoticePolicy.cronBody(name, failed, job.lastError.orEmpty()),
-                failed,
-            )
+            val body = RuntimeNoticePolicy.cronBody(name, failed, job.lastError.orEmpty())
+            container.notifications.notifyCron(sessionId, runKey, body, failed)
+            if (appInForeground) {
+                popup = CronPopup(
+                    jobId = job.id,
+                    sessionId = sessionId,
+                    title = RuntimeNoticePolicy.cronHeadline(name, failed),
+                    body = body,
+                    eventId = runKey,
+                )
+            }
         }
         cronFingerprints.keys.retainAll(seen)
+        if (popup != null) _ui.update { it.copy(cronPopup = popup) }
+    }
+
+    fun dismissCronPopup() {
+        _ui.update { it.copy(cronPopup = null) }
+    }
+
+    fun openCronPopup() {
+        val popup = _ui.value.cronPopup ?: return
+        _ui.update { it.copy(cronPopup = null) }
+        if (popup.sessionId.isNotBlank()) openSessionFromNotification(popup.sessionId)
+        else navigate(AppDestination.Cron)
     }
 
     private fun notifyCronMessage(sessionId: String, eventId: String?, content: String) {
         val settings = container.settingsRepository.snapshot()
         if (!settings.notifyOnCron) return
-        val viewing = appInForeground && sessionId == currentSessionId() && _ui.value.destination == AppDestination.Chat
-        if (!viewing) container.notifications.notifyCron(sessionId, eventId, content)
+        if (cronPopupSuppressed(appInForeground, _ui.value.destination == AppDestination.Chat, currentSessionId(), sessionId)) return
+        container.notifications.notifyCron(sessionId, eventId, content)
+        if (appInForeground) {
+            _ui.update {
+                it.copy(cronPopup = CronPopup(
+                    jobId = eventId.orEmpty(),
+                    sessionId = sessionId,
+                    title = "定时消息",
+                    body = content.ifBlank { "定时任务有新结果" },
+                    eventId = eventId.orEmpty(),
+                ))
+            }
+        }
     }
 
     private fun handleTaskEvent(data: kotlinx.serialization.json.JsonElement?) {
@@ -4779,6 +4814,9 @@ class AppViewModel(
         stopTaskPolling()
         stopBackgroundPolling()
         stopCronPolling()
+        if (container.settingsRepository.snapshot().notifyOnCron) {
+            CronWatchWork.enqueue(container.appContext, _ui.value.cronJobs)
+        }
     }
 
     private fun startTaskPolling() {
