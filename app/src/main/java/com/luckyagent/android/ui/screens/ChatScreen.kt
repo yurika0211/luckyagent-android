@@ -186,6 +186,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.cache.SessionCachePolicy
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.ui.isFixedRoleSession
+import com.luckyagent.android.ui.sessionGroups
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.isTerminalTaskStatus
@@ -4950,22 +4952,6 @@ private fun SessionDrawer(
     }
 }
 
-private data class SessionGroup(val name: String, val sessions: List<RuntimeSession>)
-
-private fun sessionGroups(sessions: List<RuntimeSession>): List<SessionGroup> {
-    val pinned = sessions.filter { it.pinned }
-    val rest = sessions.filterNot { it.pinned }
-    val groups = mutableListOf<SessionGroup>()
-    if (pinned.isNotEmpty()) groups += SessionGroup("置顶", pinned)
-    val named = rest
-        .groupBy { it.project?.trim().orEmpty() }
-        .toSortedMap(compareBy { if (it.isEmpty()) "\uFFFF" else it.lowercase() })
-    named.forEach { (project, rows) ->
-        groups += SessionGroup(project.ifBlank { "未分类" }, rows)
-    }
-    return groups
-}
-
 @Composable
 private fun SessionGroupHeader(
     name: String,
@@ -5100,14 +5086,16 @@ private fun SessionDrawerRow(
                     },
                     leadingIcon = { Icon(Icons.Outlined.PushPin, contentDescription = null) },
                 )
-                DropdownMenuItem(
-                    text = { Text("项目分类") },
-                    onClick = {
-                        menuOpen = false
-                        onProject()
-                    },
-                    leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-                )
+                if (!isFixedRoleSession(session)) {
+                    DropdownMenuItem(
+                        text = { Text("项目分类") },
+                        onClick = {
+                            menuOpen = false
+                            onProject()
+                        },
+                        leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
+                    )
+                }
                 DropdownMenuItem(
                     text = { Text("修改名称") },
                     onClick = {
