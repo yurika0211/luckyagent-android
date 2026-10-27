@@ -80,6 +80,8 @@ internal fun MermaidView(source: String) {
     } else {
         Modifier.heightIn(min = 48.dp, max = 480.dp)
     }
+    // The diagram lives in a WebView, which swallows the parent clickable.
+    // A page tap calls MermaidBridge.onTapped; pinch-zoom stays in the preview.
     Box(
         Modifier
             .fillMaxWidth()
@@ -87,8 +89,7 @@ internal fun MermaidView(source: String) {
             .then(heightModifier)
             .background(CloverBgSide, RoundedCornerShape(8.dp))
             .border(1.dp, CloverLine, RoundedCornerShape(8.dp))
-            .verticalScroll(rememberScrollState())
-            .clickable(onClick = { expanded = true }),
+            .verticalScroll(rememberScrollState()),
     ) {
         MermaidWebView(
             source = source,
@@ -167,10 +168,11 @@ private fun MermaidWebView(
                     settings.builtInZoomControls = true
                     settings.displayZoomControls = false
                 }
-                setOnClickListener { onClick() }
+                isClickable = false
                 val bridge = MermaidBridge(
                     onRendered = onRendered,
                     onFailed = onFailed,
+                    onClick = onClick,
                 )
                 addJavascriptInterface(bridge, "MermaidBridge")
                 setTag(BRIDGE_KEY, bridge)
@@ -223,6 +225,7 @@ private fun WebView.render(
 private class MermaidBridge(
     private val onRendered: (Int) -> Unit,
     private val onFailed: () -> Unit,
+    private val onClick: () -> Unit,
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var pending: Runnable? = null
@@ -253,6 +256,11 @@ private class MermaidBridge(
             pending = null
             onFailed()
         }
+    }
+
+    @JavascriptInterface
+    fun onTapped() {
+        handler.post { onClick() }
     }
 }
 

@@ -1148,6 +1148,7 @@ private fun ChatConversation(
             onNewSession = onNewSession,
             onOpenSettings = onOpenSettings,
             onOpenModel = { showModelSheet = true },
+            onOpenCanvas = { vm.navigate(AppDestination.Background) },
             onReconnect = { vm.connectSocket(force = true) },
         )
         val workCard = remember(
@@ -1811,6 +1812,7 @@ private fun ChatTopBar(
     onNewSession: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenModel: () -> Unit,
+    onOpenCanvas: () -> Unit,
     onReconnect: () -> Unit = {},
 ) {
     var moreExpanded by rememberSaveable { mutableStateOf(false) }
@@ -1878,6 +1880,13 @@ private fun ChatTopBar(
                         onClick = {
                             moreExpanded = false
                             onMenu()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("多 agent 画布") },
+                        onClick = {
+                            moreExpanded = false
+                            onOpenCanvas()
                         },
                     )
                 }

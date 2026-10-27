@@ -107,7 +107,7 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = if (detail == null) "后台黑板" else "后台任务详情",
+            title = if (detail == null) "多 agent 画布" else "后台任务详情",
             subtitle = if (detail == null) {
                 if (state.backgroundDashboard == null) "正在获取后台状态" else
                 "${state.backgroundDashboard.workers.size} Worker · ${state.backgroundTasks.size} 项任务" +
