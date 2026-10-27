@@ -231,6 +231,7 @@ data class AppUiState(
     val standaloneNotice: String? = null,
     val standaloneTokens: Int = 0,
     val sessions: List<RuntimeSession> = emptyList(),
+    val sessionRecap: SessionRecapPreview? = null,
     val sessionsLoading: Boolean = false,
     val sessionsError: String? = null,
     /** True when the visible sessions or history came from disk after a failed refresh. */
@@ -2988,11 +2989,23 @@ class AppViewModel(
                     it.copy(
                         sessionsLoading = false,
                         sessions = remote,
+                        sessionRecap = remote.firstOrNull { session -> session.id == it.settings.sessionId }
+                            ?.let { session -> SessionRecapPreview(session.id, apiBase, session.recap) }
+                            ?: it.sessionRecap,
                         sessionsError = null,
                         showingOfflineCache = false,
                     )
                 }
                 if (q.isBlank()) reconcileOpenHistory(apiBase, apiKey, remote)
+                // Search/pagination can omit the open conversation. Refresh its
+                // preview independently without scanning or replacing history.
+                val selected = currentSessionId()
+                if (remote.none { it.id == selected }) {
+                    val history = container.api.sessionHistory(selected, limit = 1).getOrNull()?.history
+                    if (history != null && currentCacheConnectionMatches(apiBase, apiKey) && currentSessionId() == selected) {
+                        _ui.update { it.copy(sessionRecap = SessionRecapPreview(selected, apiBase, history.recap)) }
+                    }
+                }
             } else if (cached.isNotEmpty() && q.isBlank()) {
                 if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
                 _ui.update {
@@ -3067,6 +3080,9 @@ class AppViewModel(
                 processNotice = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.processNotice else null,
                 pendingQuote = null,
                 contextInspect = null,
+
+                sessionRecap = it.sessions.firstOrNull { session -> session.id == target }
+                    ?.let { session -> SessionRecapPreview(target, connection.apiBase, session.recap) },
                 contextInspectError = null,
                 contextInspectLoading = true,
                 luckyActive = false,
@@ -3242,6 +3258,7 @@ class AppViewModel(
                 return@onSuccess
             }
             val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
+            _ui.update { it.copy(sessionRecap = SessionRecapPreview(sessionId, apiBase, history.recap)) }
             val remoteCount = history.messageCount ?: (historyMessages.size + history.messages.size)
             val cachedPage = currentHistoryPage().takeIf { historyMessages.isNotEmpty() }
             val stored = runCatching { container.sessionCache.loadPage(apiBase, sessionId, apiKey) }.getOrNull()
@@ -3290,6 +3307,7 @@ class AppViewModel(
                 return@onSuccess
             }
             val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
+            _ui.update { it.copy(sessionRecap = SessionRecapPreview(sessionId, apiBase, history.recap)) }
             val remoteCount = history.messageCount ?: history.messages.size
             val start = (remoteCount - history.messages.size).coerceAtLeast(0)
             val page = MessagePage(

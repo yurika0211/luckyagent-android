@@ -22,6 +22,8 @@ data class SessionsResponse(
 data class RuntimeSession(
     val id: String,
     val title: String? = null,
+    val recap: String? = null,
+    @SerialName("recap_updated_at") val recapUpdatedAt: String? = null,
     @SerialName("agent_role") val agentRole: String? = null,
     val pinned: Boolean = false,
     val project: String? = null,
@@ -56,6 +58,8 @@ internal fun sessionHistoryFetch(code: Int, body: String, decode: (String) -> Se
 data class SessionHistory(
     val id: String? = null,
     val title: String? = null,
+    val recap: String? = null,
+    @SerialName("recap_updated_at") val recapUpdatedAt: String? = null,
     @SerialName("agent_role") val agentRole: String? = null,
     @SerialName("agent_system_prompt") val agentSystemPrompt: String? = null,
     val pinned: Boolean = false,

@@ -186,6 +186,10 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.cache.SessionCachePolicy
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.ui.recapLabel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.luckyagent.android.ui.isFixedRoleSession
 import com.luckyagent.android.ui.sessionGroups
 import com.luckyagent.android.data.api.TaskSummary
@@ -1104,6 +1108,23 @@ private fun ChatConversation(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val recap = state.sessionRecap?.takeIf {
+        it.sessionId == state.settings.sessionId && it.endpoint == state.settings.apiBase
+    }?.text?.takeIf { it.isNotBlank() }
+    var recapCollapsed by remember(state.settings.apiBase, state.settings.sessionId, recap) { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, state.settings.apiBase, state.settings.sessionId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                recapCollapsed = false
+                vm.refreshSessions()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        // Also refresh when reopening this page while the Activity stays resumed.
+        vm.refreshSessions()
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var showThinkingSheet by rememberSaveable(state.settings.sessionId) { mutableStateOf(false) }
@@ -1472,6 +1493,30 @@ private fun ChatConversation(
             }
         }
 
+        if (recap != null && !state.isResponding) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+                color = CloverSurface,
+                border = BorderStroke(1.dp, CloverLine),
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { recapCollapsed = !recapCollapsed }
+                            .heightIn(min = 44.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("◇  ${recapLabel(recap)}", style = MaterialTheme.typography.labelMedium,
+                            color = CloverText2, modifier = Modifier.weight(1f))
+                        Icon(if (recapCollapsed) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
+                            contentDescription = recapLabel(recap), tint = CloverText3)
+                    }
+                    if (!recapCollapsed) {
+                        Text(recap, style = MaterialTheme.typography.bodySmall, color = CloverText2)
+                    }
+                }
+            }
+        }
         ComposerBar(
             state = state,
             vm = vm,
@@ -5065,6 +5110,10 @@ private fun SessionDrawerRow(
                     Spacer(Modifier.width(6.dp))
                     SessionWorkingBadge()
                 }
+            }
+            session.recap?.takeIf { it.isNotBlank() }?.let { recap ->
+                Text(recap, style = MaterialTheme.typography.bodySmall, color = CloverText2,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             if (metadata.isNotEmpty()) {
                 Text(
