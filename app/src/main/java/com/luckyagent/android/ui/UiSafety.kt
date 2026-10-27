@@ -81,6 +81,20 @@ internal fun fixedSessionRole(agentRole: String?): FixedSessionRole? {
 
 internal fun isFixedRoleSession(session: RuntimeSession): Boolean = fixedSessionRole(session.agentRole) != null
 
+/**
+ * Only user-owned groups can host a new session. Pinned, Delegated, and Worker are assigned
+ * by pin state or agent_role, so a create action there would not land in that group.
+ */
+internal fun canCreateSessionInGroup(name: String): Boolean =
+    name != SESSION_GROUP_PINNED && name != SESSION_GROUP_DELEGATED && name != SESSION_GROUP_WORKER
+
+/** Blank means unsorted. A fixed category name is never a project the user can assign. */
+internal fun projectForNewSession(groupName: String?): String? {
+    val name = groupName?.trim().orEmpty()
+    if (name.isEmpty() || name == SESSION_GROUP_UNSORTED || !canCreateSessionInGroup(name)) return null
+    return name
+}
+
 internal data class SessionGroup(val name: String, val sessions: List<RuntimeSession>)
 
 /**

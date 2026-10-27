@@ -60,6 +60,23 @@ class SessionGroupsTest {
     }
 
     @Test
+    fun newSessionsCanOnlyBeCreatedInUserGroups() {
+        assertTrue(canCreateSessionInGroup("notes"))
+        assertTrue(canCreateSessionInGroup(SESSION_GROUP_UNSORTED))
+        assertFalse(canCreateSessionInGroup(SESSION_GROUP_PINNED))
+        assertFalse(canCreateSessionInGroup(SESSION_GROUP_DELEGATED))
+        assertFalse(canCreateSessionInGroup(SESSION_GROUP_WORKER))
+
+        assertEquals("notes", projectForNewSession(" notes "))
+        assertNull(projectForNewSession(null))
+        assertNull(projectForNewSession(" "))
+        assertNull(projectForNewSession(SESSION_GROUP_UNSORTED))
+        assertNull(projectForNewSession(SESSION_GROUP_PINNED))
+        assertNull(projectForNewSession(SESSION_GROUP_DELEGATED))
+        assertNull(projectForNewSession(SESSION_GROUP_WORKER))
+    }
+
+    @Test
     fun fixedRoleSessionsCannotBeMovedByProject() {
         val delegated = session("d", agentRole = "subagent", project = "notes")
         val worker = session("w", agentRole = "worker-", project = "notes")

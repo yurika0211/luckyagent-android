@@ -5076,10 +5076,20 @@ class AppViewModel(
         }
     }
 
-    fun createSession(title: String = "Android session") {
+    fun createSession(title: String, project: String? = null) {
+        val trimmedTitle = title.trim()
+        if (trimmedTitle.isEmpty()) return
+        val trimmedProject = project?.trim()?.takeIf { it.isNotEmpty() }
         viewModelScope.launch {
-            val result = container.api.createSession(title)
+            val result = container.api.createSession(trimmedTitle)
             result.onSuccess { session ->
+                var projectFailed = false
+                if (trimmedProject != null) {
+                    projectFailed = container.api.patchSession(
+                        session.id,
+                        SessionPatchRequest(project = trimmedProject),
+                    ).isFailure
+                }
                 historyJob?.cancel()
                 contextInspectJob?.cancel()
                 historySessionId = session.id
@@ -5101,7 +5111,7 @@ class AppViewModel(
                         historyHasMore = false,
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
                         outboundQueue = outboundChatQueue.items(session.id),
-                        activityLine = "已新建会话",
+                        activityLine = if (projectFailed) "会话已新建，但没能归到这个分类。重试这一条。" else "已新建会话",
                         pendingQuote = null,
                         contextInspect = null,
                         contextInspectError = null,
