@@ -76,6 +76,7 @@ import androidx.compose.material.icons.automirrored.outlined.Assignment
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AttachFile
@@ -881,6 +882,10 @@ fun ChatScreen(
                         showAttachmentOptions = false
                         filePicker.launch(arrayOf("*/*"))
                     },
+                    onExpandDraft = {
+                        showAttachmentOptions = false
+                        vm.expandComposer()
+                    },
                     isRecordingVoice = isRecordingVoice,
                     recordingElapsedSec = recordingElapsedSec,
                     captureHint = captureHint,
@@ -957,6 +962,10 @@ fun ChatScreen(
                             onFilePick = {
                                 showAttachmentOptions = false
                                 filePicker.launch(arrayOf("*/*"))
+                            },
+                            onExpandDraft = {
+                                showAttachmentOptions = false
+                                vm.expandComposer()
                             },
                             isRecordingVoice = isRecordingVoice,
                             recordingElapsedSec = recordingElapsedSec,
@@ -1100,6 +1109,7 @@ private fun ChatConversation(
     onVoiceCapture: () -> Unit,
     onVisualPick: () -> Unit,
     onFilePick: () -> Unit,
+    onExpandDraft: () -> Unit,
     isRecordingVoice: Boolean,
     recordingElapsedSec: Int,
     captureHint: String?,
@@ -1528,6 +1538,9 @@ private fun ChatConversation(
             onVoiceCapture = onVoiceCapture,
             onVisualPick = onVisualPick,
             onFilePick = onFilePick,
+            onExpandDraft = onExpandDraft,
+            expandingDraft = state.composerExpanding,
+            expandError = state.composerExpandError,
             onRemoveMedia = vm::removePendingMedia,
             onRetryMedia = { id -> vm.retryPendingMedia(context.contentResolver, id) },
             onClearQuote = vm::clearQuote,
@@ -2902,6 +2915,9 @@ private fun ComposerBar(
     onVoiceCapture: () -> Unit,
     onVisualPick: () -> Unit,
     onFilePick: () -> Unit,
+    onExpandDraft: () -> Unit,
+    expandingDraft: Boolean,
+    expandError: String?,
     onRemoveMedia: (String) -> Unit,
     onRetryMedia: (String) -> Unit,
     onClearQuote: () -> Unit,
@@ -2981,6 +2997,9 @@ private fun ComposerBar(
                     onVoiceCapture = onVoiceCapture,
                     onVisualPick = onVisualPick,
                     onFilePick = onFilePick,
+                    onExpandDraft = onExpandDraft,
+                    expandingDraft = expandingDraft,
+                    expandEnabled = state.composer.isNotBlank() && !expandingDraft,
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -3005,6 +3024,13 @@ private fun ComposerBar(
                 TextButton(onClick = onStopVoice) { Text("完成") }
             }
             Spacer(Modifier.height(8.dp))
+        } else if (!expandError.isNullOrBlank()) {
+            Text(
+                text = expandError,
+                color = CloverError,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
+            )
         } else if (!captureHint.isNullOrBlank()) {
             Text(
                 text = captureHint,
@@ -4112,6 +4138,9 @@ private fun AttachmentActionRow(
     onVoiceCapture: () -> Unit,
     onVisualPick: () -> Unit,
     onFilePick: () -> Unit,
+    onExpandDraft: () -> Unit,
+    expandingDraft: Boolean,
+    expandEnabled: Boolean,
 ) {
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -4121,6 +4150,13 @@ private fun AttachmentActionRow(
         AttachmentAction(Icons.Outlined.Mic, "录音", onVoiceCapture)
         AttachmentAction(Icons.Outlined.PhotoLibrary, "相册", onVisualPick)
         AttachmentAction(Icons.Outlined.AttachFile, "文件", onFilePick)
+        AttachmentAction(
+            icon = Icons.Outlined.AutoAwesome,
+            label = "扩写",
+            onClick = onExpandDraft,
+            enabled = expandEnabled,
+            busy = expandingDraft,
+        )
     }
 }
 
@@ -4129,17 +4165,23 @@ private fun AttachmentAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     onClick: () -> Unit,
+    enabled: Boolean = true,
+    busy: Boolean = false,
 ) {
     Column(
         Modifier
             .width(76.dp)
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Icon(icon, contentDescription = label, tint = CloverText2, modifier = Modifier.size(20.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = CloverAccent)
+        } else {
+            Icon(icon, contentDescription = label, tint = if (enabled) CloverText2 else CloverText3, modifier = Modifier.size(20.dp))
+        }
+        Text(label, style = MaterialTheme.typography.labelSmall, color = if (enabled) CloverText3 else CloverText3.copy(alpha = .45f))
     }
 }
 

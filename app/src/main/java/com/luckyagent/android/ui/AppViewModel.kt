@@ -248,6 +248,8 @@ data class AppUiState(
     /** Server index whose full body is being fetched. -1 when idle. */
     val expandingHistoryIndex: Int = -1,
     val composer: String = "",
+    val composerExpanding: Boolean = false,
+    val composerExpandError: String? = null,
     val pendingMedia: List<PendingMedia> = emptyList(),
     /** Locally persisted outbound messages, including frames waiting for delivery or acknowledgement. */
     val outboundQueue: List<OutboundQueueItem> = emptyList(),
@@ -2630,6 +2632,33 @@ class AppViewModel(
 
     fun updateComposer(value: String) {
         _ui.update { it.copy(composer = value) }
+    }
+
+    /**
+     * Expands the current draft in place. Attachments, quotes, and the chat
+     * transcript stay untouched. A failure leaves the original draft.
+     */
+    fun expandComposer() {
+        val draft = _ui.value.composer
+        if (draft.isBlank() || _ui.value.composerExpanding) return
+        _ui.update { it.copy(composerExpanding = true, composerExpandError = null) }
+        viewModelScope.launch {
+            container.api.expandDraft(draft)
+                .onSuccess { expanded ->
+                    _ui.update { state ->
+                        if (state.composer != draft) state.copy(composerExpanding = false)
+                        else state.copy(composer = expanded, composerExpanding = false, composerExpandError = null)
+                    }
+                }
+                .onFailure { error ->
+                    _ui.update { state ->
+                        state.copy(
+                            composerExpanding = false,
+                            composerExpandError = error.message?.takeIf { it.isNotBlank() } ?: "扩写失败",
+                        )
+                    }
+                }
+        }
     }
 
     fun addPickedMedia(resolver: ContentResolver, uris: List<Uri>) {
