@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Cron reminders only. Android 14+ can still revoke this in system settings. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- AgentTaskWorker uses WorkManager's foreground service while polling a task. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

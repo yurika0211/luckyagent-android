@@ -7,7 +7,9 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.luckyagent.android.MainActivity
 
@@ -55,6 +57,7 @@ class ChatNotificationHelper(private val context: Context) {
             destination = "chat",
             ongoing = false,
             remember = true,
+            fullScreen = true,
         )
     }
 
@@ -99,6 +102,7 @@ class ChatNotificationHelper(private val context: Context) {
         remember: Boolean,
         taskId: String? = null,
         quiet: Boolean = false,
+        fullScreen: Boolean = false,
     ) {
         if (android.os.Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         if (remember && dedupeKey.isNotBlank() && delivered.getBoolean(dedupeKey, false)) return
@@ -118,7 +122,7 @@ class ChatNotificationHelper(private val context: Context) {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, channelKind.channelId)
+        val builder = NotificationCompat.Builder(context, channelKind.channelId)
             .setSmallIcon(com.luckyagent.android.R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
@@ -128,9 +132,29 @@ class ChatNotificationHelper(private val context: Context) {
             .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
             .setSilent(quiet)
-            .setCategory(if (!quiet && (kind == RuntimeNoticeKind.Chat || kind == RuntimeNoticeKind.Cron)) NotificationCompat.CATEGORY_MESSAGE else NotificationCompat.CATEGORY_STATUS)
-            .setPriority(if (quiet) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_DEFAULT)
-            .build()
+            .setCategory(
+                if (fullScreen) {
+                    NotificationCompat.CATEGORY_ALARM
+                } else if (!quiet && (kind == RuntimeNoticeKind.Chat || kind == RuntimeNoticeKind.Cron)) {
+                    NotificationCompat.CATEGORY_MESSAGE
+                } else {
+                    NotificationCompat.CATEGORY_STATUS
+                },
+            )
+            .setPriority(
+                if (fullScreen) {
+                    NotificationCompat.PRIORITY_HIGH
+                } else if (quiet) {
+                    NotificationCompat.PRIORITY_LOW
+                } else {
+                    NotificationCompat.PRIORITY_DEFAULT
+                },
+            )
+            .setVisibility(if (fullScreen) NotificationCompat.VISIBILITY_PUBLIC else NotificationCompat.VISIBILITY_PRIVATE)
+        if (fullScreen && canUseFullScreenIntent()) {
+            builder.setFullScreenIntent(pending, true)
+        }
+        val notification = builder.build()
         manager.notify(notificationId.hashCode(), notification)
         if (remember && dedupeKey.isNotBlank()) delivered.edit().putBoolean(dedupeKey, true).apply()
     }
@@ -140,14 +164,30 @@ class ChatNotificationHelper(private val context: Context) {
     }
 
     private fun ensureChannel(kind: RuntimeNoticeKind) {
-        if (android.os.Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(kind.channelId) == null) {
-            manager.createNotificationChannel(
-                NotificationChannel(kind.channelId, kind.channelName, kind.importance).apply {
-                    description = "LuckyAgent ${kind.channelName}"
-                    if (kind == RuntimeNoticeKind.Progress) setSound(null, null)
-                },
-            )
-        }
+        if (Build.VERSION.SDK_INT < 26) return
+        // Cron reminders must wake the screen, so that channel is raised to high
+        // importance on sight. Any other channel keeps the importance it declares.
+        val alarm = kind == RuntimeNoticeKind.Cron
+        val importance = if (alarm) NotificationManager.IMPORTANCE_HIGH else kind.importance
+        val existing = manager.getNotificationChannel(kind.channelId)
+        // Only the cron channel is ever recreated, because Android 13 ignores a
+        // full-screen intent below high importance. Recreating any other channel
+        // would wipe the sound and vibration the person chose for it.
+        if (existing != null && (!alarm || existing.importance >= importance)) return
+        if (existing != null) manager.deleteNotificationChannel(kind.channelId)
+        manager.createNotificationChannel(
+            NotificationChannel(kind.channelId, kind.channelName, importance).apply {
+                description = if (alarm) "定时任务到点时弹出，可在锁屏上看到" else "LuckyAgent ${kind.channelName}"
+                lockscreenVisibility = if (alarm) NotificationCompat.VISIBILITY_PUBLIC else NotificationCompat.VISIBILITY_PRIVATE
+                if (kind == RuntimeNoticeKind.Progress) setSound(null, null)
+            },
+        )
+    }
+
+    /** Android 14 can revoke this. A missing grant still posts the high-importance notice. */
+    fun canUseFullScreenIntent(): Boolean {
+        if (Build.VERSION.SDK_INT < 34) return true
+        return NotificationManagerCompat.from(context).canUseFullScreenIntent()
     }
 
     private fun summarize(value: String?): String {
