@@ -123,6 +123,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.JsonArray
@@ -146,6 +147,27 @@ enum class TrajectoryFilter { All, Success, Failure }
 enum class TaskFilter { All, Active, Completed, Failed, Cancelled }
 
 enum class BackgroundFilter { All, Ready, Running, Blocked, Done }
+
+/** Normalizes model output into the one-line commit-style title shown in the session list. */
+internal fun normalizeAutoSessionTitle(raw: String): String? {
+    val line = raw.lineSequence()
+        .map { it.trim().trim('`', '*', '#', '-', '•') }
+        .firstOrNull { it.isNotBlank() }
+        ?.removePrefix("标题：")
+        ?.removePrefix("标题:")
+        ?.trim()
+        ?: return null
+    if (line.isBlank()) return null
+    val prefixed = Regex("(?i)^(fix|feat|perf)\\s*(?:\\(\\s*android\\s*\\))?\\s*:\\s*(.+)$").matchEntire(line)
+    val type = prefixed?.groupValues?.getOrNull(1)?.lowercase() ?: "feat"
+    val summary = (prefixed?.groupValues?.getOrNull(2) ?: line)
+        .trim()
+        .trimEnd('.', '。', '!', '！')
+        .replace(Regex("\\s+"), " ")
+        .takeIf { it.isNotBlank() }
+        ?: return null
+    return "$type(android): $summary".take(80).trimEnd()
+}
 
 enum class ProgressStatus { Active, Complete, Failed }
 
@@ -456,6 +478,9 @@ class AppViewModel(
     /** One local dispatcher per session prevents connection retries from racing. */
     private val outboundDispatchJobs = mutableMapOf<String, Job>()
     private val luckyPending = LinkedHashMap<String, LuckyPendingSegment>()
+    /** New placeholder sessions get exactly one best-effort title attempt. */
+    private val autoTitleCandidates = mutableSetOf<String>()
+    private val autoTitleBlocked = mutableSetOf<String>()
     private data class ActiveRun(
         val handle: WsChatHandle,
     )
@@ -772,6 +797,7 @@ class AppViewModel(
                             val attachments = distinctMedia(
                                 extractAttachments(env.data) + extractArtifactAttachments(piece.orEmpty()),
                             )
+                            scheduleAutoSessionTitle(event.sessionId, requestId, piece)
                             if (foreground) {
                                 finishAssistant(
                                     full = piece,
@@ -903,6 +929,7 @@ class AppViewModel(
                                     val requestId = eventRequestId(event)
                                     if (!completeRun(event)) return@collect
                                     finishOutboundRequest(event.sessionId, requestId, success = true)
+                                    scheduleAutoSessionTitle(event.sessionId, requestId, null)
                                     if (foreground) {
                                         finishAssistant(null)
                                         notifyChatCompleted(event.sessionId, requestId, _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, true)
@@ -5256,7 +5283,56 @@ class AppViewModel(
         }
     }
 
-    fun createSession(title: String, project: String? = null) {
+
+    /** Starts one non-blocking, best-effort title request after a new session's first reply. */
+    private fun scheduleAutoSessionTitle(sessionId: String, requestId: String?, assistant: String?) {
+        if (sessionId in autoTitleBlocked) return
+        if (!autoTitleCandidates.remove(sessionId)) return
+        val user = outboundChatQueue.items(sessionId)
+            .firstOrNull { item -> item.id == requestId || item.requestId == requestId }
+            ?.message
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: _ui.value.bubbles
+                .asReversed()
+                .firstOrNull { bubble -> bubble.role == "user" && sessionId == currentSessionId() }
+                ?.content
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+        val reply = assistant?.trim()?.takeIf(String::isNotBlank)
+            ?: _ui.value.bubbles
+                .asReversed()
+                .firstOrNull { bubble -> bubble.role == "assistant" && !bubble.isIntermediate }
+                ?.content
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+        if (user.isNullOrBlank() || reply.isNullOrBlank()) return
+        val prompt = """
+            请根据下面这一轮 Android 客户端对话生成一个 git commit 标题。
+            只输出一行，格式必须是 type(android): 简体中文摘要。
+            type 只能用 fix、feat 或 perf；不要句号、正文或署名。
+
+            用户：${user.take(MAX_AUTO_TITLE_SOURCE_CHARS)}
+            助手：${reply.take(MAX_AUTO_TITLE_SOURCE_CHARS)}
+        """.trimIndent()
+        viewModelScope.launch {
+            val title = withTimeoutOrNull(AUTO_TITLE_TIMEOUT_MS) {
+                container.api.expandDraft(prompt, timeoutMs = AUTO_TITLE_TIMEOUT_MS)
+                    .getOrNull()
+                    ?.let(::normalizeAutoSessionTitle)
+            } ?: return@launch
+            if (title.isNullOrBlank()) return@launch
+            val current = _ui.value.sessions.firstOrNull { it.id == sessionId }?.title
+            if (!current.isNullOrBlank() && !isPlaceholderSessionTitle(current)) return@launch
+            container.api.renameSession(sessionId, title)
+                .onSuccess { refreshSessions() }
+        }
+    }
+
+    private fun isPlaceholderSessionTitle(title: String?): Boolean =
+        title.isNullOrBlank() || title.trim() == DEFAULT_SESSION_TITLE
+
+    fun createSession(title: String = DEFAULT_SESSION_TITLE, project: String? = null) {
         val trimmedTitle = title.trim()
         if (trimmedTitle.isEmpty()) return
         val trimmedProject = project?.trim()?.takeIf { it.isNotEmpty() }
@@ -5278,6 +5354,8 @@ class AppViewModel(
                 historyMessageCount = 0
                 // The server just created this session, so zero is a real count.
                 historyCountConfirmed = true
+                autoTitleBlocked.remove(session.id)
+                if (isPlaceholderSessionTitle(session.title ?: title)) autoTitleCandidates += session.id
                 container.settingsRepository.update { it.copy(sessionId = session.id) }
                 foregroundRequestIds.remove(session.id)
                 resetAssistantStream()
@@ -5313,6 +5391,8 @@ class AppViewModel(
     fun renameSession(id: String, title: String) {
         val trimmed = title.trim()
         if (id.isBlank() || trimmed.isEmpty()) return
+        autoTitleCandidates.remove(id)
+        autoTitleBlocked += id
         viewModelScope.launch {
             val result = container.api.renameSession(id, trimmed)
             result.onSuccess {
@@ -5647,6 +5727,9 @@ class AppViewModel(
     }
 
     private companion object {
+        const val DEFAULT_SESSION_TITLE = "Android session"
+        const val AUTO_TITLE_TIMEOUT_MS = 30_000L
+        const val MAX_AUTO_TITLE_SOURCE_CHARS = 2_000
         fun personaNameFromPrompt(prompt: String): String {
             val identity = Regex("(?m)^-\\s*Name:\\s*([^\\n（(]+)").find(prompt)?.groupValues?.getOrNull(1)?.trim()
             if (!identity.isNullOrBlank()) return identity
