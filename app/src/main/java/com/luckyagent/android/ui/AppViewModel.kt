@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.luckyagent.android.data.AppContainer
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
+import com.luckyagent.android.data.notification.RuntimeNoticePolicy
 import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.cache.CachedOutboundMessage
 import com.luckyagent.android.data.cache.HistorySync
@@ -1304,15 +1305,16 @@ class AppViewModel(
                 (subagent && _ui.value.destination == AppDestination.Tasks && _ui.value.selectedTaskId == task.id) ||
                     (!subagent && _ui.value.destination == AppDestination.Background)
                 )
-            if (!enabled || viewing) return@forEach
             val terminal = task.status.isTerminalTaskStatus()
-            val title = "LuckyAgent · ${if (subagent) "子代理" else "任务"} · ${task.description.ifBlank { task.id }}"
-            val body = buildString {
-                append(task.status)
-                if (task.progress > 0) append(" · ${(task.progress * 100).toInt().coerceIn(0, 100)}%")
-                if (task.childCount > 0) append(" · ${task.completedChildren}/${task.childCount}")
-                task.error?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it.take(80)) }
+            val worthy = RuntimeNoticePolicy.taskWorthy(task.status, includeProgress = settings.notifyOnProgress)
+            if (!enabled || viewing || !worthy) {
+                if (terminal) container.notifications.cancelTask(kind, task.id)
+                return@forEach
             }
+            val name = task.description.ifBlank { task.id }
+            val title = RuntimeNoticePolicy.taskHeadline(if (subagent) "子代理" else "任务", name, task.status)
+            val children = if (task.childCount > 0) "${task.completedChildren}/${task.childCount}" else null
+            val body = RuntimeNoticePolicy.taskBody(task.status, task.error.orEmpty(), task.progress, children)
             container.notifications.notifyTask(kind, task.id, title, body, task.executionSession().orEmpty(), terminal, background = false)
         }
         taskFingerprints.keys.retainAll(seen)
@@ -1328,8 +1330,14 @@ class AppViewModel(
             val previous = backgroundFingerprints.put(task.id, fingerprint)
             if (!progressWatchReady || previous == null || previous == fingerprint || !settings.notifyOnBackground || viewing) return@forEach
             val terminal = task.state.isTerminalTaskStatus() || task.state.equals("done", true) || task.state.equals("succeeded", true)
-            val title = "LuckyAgent · 后台任务 · ${task.title.ifBlank { task.id }}"
-            val body = listOfNotNull(task.state.ifBlank { null }, task.resultPreview?.take(80), task.error?.take(80)).joinToString(" · ")
+            if (!RuntimeNoticePolicy.backgroundWorthy(task.state, settings.notifyOnProgress)) {
+                if (terminal) container.notifications.cancelTask(RuntimeNoticeKind.Background, task.id)
+                return@forEach
+            }
+            val name = task.title.ifBlank { task.id }
+            val title = RuntimeNoticePolicy.taskHeadline("后台任务", name, task.state)
+            val detail = task.error?.takeIf { it.isNotBlank() } ?: task.resultPreview.orEmpty()
+            val body = RuntimeNoticePolicy.taskBody(task.state, detail)
             container.notifications.notifyTask(RuntimeNoticeKind.Background, task.id, title, body, task.autonomyExecutionSession().orEmpty(), terminal)
         }
         backgroundFingerprints.keys.retainAll(seen)
@@ -1339,14 +1347,20 @@ class AppViewModel(
         val settings = container.settingsRepository.snapshot()
         val seen = jobs.map { it.id }.toSet()
         jobs.forEach { job ->
-            val fingerprint = listOf(job.lastRun, job.runCount, job.errorCount, job.status, job.lastError).joinToString("|")
-            val previous = cronFingerprints.put(job.id, fingerprint)
-            if (!progressWatchReady || previous == null || previous == fingerprint || !settings.notifyOnCron) return@forEach
+            val runKey = "${job.id}:${job.lastRun.orEmpty()}:${job.runCount}"
+            val previous = cronFingerprints.put(job.id, runKey)
+            if (!settings.notifyOnCron || !RuntimeNoticePolicy.cronRunWorthy(previous, runKey)) return@forEach
             val sessionId = job.metadata["session_id"].orEmpty()
             val viewing = appInForeground && _ui.value.destination == AppDestination.Chat && sessionId.isNotBlank() && sessionId == currentSessionId()
             if (viewing) return@forEach
-            val body = job.lastError?.takeIf { it.isNotBlank() } ?: "已运行 ${job.runCount} 次"
-            container.notifications.notifyCron(sessionId, "${job.id}:${job.lastRun}:${job.runCount}", "${job.name.ifBlank { job.id }} · $body")
+            val failed = job.errorCount > 0 && !job.lastError.isNullOrBlank()
+            val name = job.name.ifBlank { job.id }
+            container.notifications.notifyCron(
+                sessionId,
+                runKey,
+                RuntimeNoticePolicy.cronBody(name, failed, job.lastError.orEmpty()),
+                failed,
+            )
         }
         cronFingerprints.keys.retainAll(seen)
     }
@@ -1383,17 +1397,15 @@ class AppViewModel(
             (subagent && _ui.value.destination == AppDestination.Tasks) ||
                 (!subagent && _ui.value.destination == AppDestination.Background)
             )
-        if (!enabled || viewing) {
+        val worthy = RuntimeNoticePolicy.eventWorthy(status, type, settings.notifyOnProgress)
+        if (!enabled || viewing || !worthy) {
             if (terminal) container.notifications.cancelTask(kind, taskId)
             return
         }
         val titleName = description.ifBlank { taskId }
-        val title = "LuckyAgent · ${if (subagent) "子代理" else "后台任务"} · $titleName"
-        val body = buildString {
-            append(status.ifBlank { type.ifBlank { "progress" } })
-            progress?.let { append(" · ${(it * 100).toInt().coerceIn(0, 100)}%") }
-            if (message.isNotBlank()) append(" · ").append(message.take(80))
-        }
+        val outcome = status.ifBlank { if (terminal) type.substringAfterLast('.') else "running" }
+        val title = RuntimeNoticePolicy.taskHeadline(if (subagent) "子代理" else "后台任务", titleName, outcome)
+        val body = RuntimeNoticePolicy.taskBody(outcome, message, progress)
         container.notifications.notifyTask(kind, taskId, title, body, sessionId, terminal, background = false)
     }
 

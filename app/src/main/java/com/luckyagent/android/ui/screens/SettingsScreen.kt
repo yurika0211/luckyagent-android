@@ -383,7 +383,7 @@ private fun SettingsNotificationsCard(state: AppUiState, vm: AppViewModel) {
         )
         NotificationToggle(
             title = "定时消息",
-            body = "定时任务写进会话，或上次运行状态变化时通知。",
+            body = "定时任务这次跑完或失败时通知一次。同一次运行不会反复响。",
             checked = state.settings.notifyOnCron,
             onChecked = { enabled ->
                 vm.updateSettings { it.copy(notifyOnCron = enabled) }
@@ -391,8 +391,8 @@ private fun SettingsNotificationsCard(state: AppUiState, vm: AppViewModel) {
             },
         )
         NotificationToggle(
-            title = "子代理进度",
-            body = "子任务状态、进度或子任务数量变化时通知。正在看该任务时不发。",
+            title = "子代理",
+            body = "子任务完成、失败或卡住时通知。正在看该任务时不发。",
             checked = state.settings.notifyOnSubagent,
             onChecked = { enabled ->
                 vm.updateSettings { it.copy(notifyOnSubagent = enabled) }
@@ -401,11 +401,19 @@ private fun SettingsNotificationsCard(state: AppUiState, vm: AppViewModel) {
         )
         NotificationToggle(
             title = "后台任务",
-            body = "后台任务和自主任务有进度变化时通知。正在看后台页时不发。",
+            body = "后台任务和自主任务完成、失败或卡住时通知。正在看后台页时不发。",
             checked = state.settings.notifyOnBackground,
             onChecked = { enabled ->
                 vm.updateSettings { it.copy(notifyOnBackground = enabled) }
                 requestNoticePermission(context, enabled)
+            },
+        )
+        NotificationToggle(
+            title = "连进度一起通知",
+            body = "默认关。打开后，进行中的变化只更新一条不响的通知。完成、失败和卡住仍会响。",
+            checked = state.settings.notifyOnProgress,
+            onChecked = { enabled ->
+                vm.updateSettings { it.copy(notifyOnProgress = enabled) }
             },
         )
         if (permissionMissing) {

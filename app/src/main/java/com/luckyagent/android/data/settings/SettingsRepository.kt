@@ -36,6 +36,8 @@ data class ClientSettings(
     val notifyOnCron: Boolean = true,
     val notifyOnSubagent: Boolean = true,
     val notifyOnBackground: Boolean = true,
+    /** Off: only finished, failed, or blocked work alerts. On: progress updates a quiet notice. */
+    val notifyOnProgress: Boolean = false,
     val chatBackgroundFile: String = "",
     val chatBackgroundDim: Int = 12,
     val avatarFile: String = "",
@@ -104,6 +106,7 @@ class SettingsRepository(context: Context) {
             notifyOnCron = prefs.getBoolean(KEY_NOTIFY_ON_CRON, true),
             notifyOnSubagent = prefs.getBoolean(KEY_NOTIFY_ON_SUBAGENT, true),
             notifyOnBackground = prefs.getBoolean(KEY_NOTIFY_ON_BACKGROUND, true),
+            notifyOnProgress = prefs.getBoolean(KEY_NOTIFY_ON_PROGRESS, false),
             chatBackgroundFile = prefs.getString(KEY_CHAT_BACKGROUND, "") ?: "",
             chatBackgroundDim = prefs.getInt(KEY_CHAT_BACKGROUND_DIM, 12).coerceIn(0, 70),
             avatarFile = prefs.getString(KEY_AVATAR, "") ?: "",
@@ -182,6 +185,7 @@ class SettingsRepository(context: Context) {
             if (next.notifyOnCron != previous.notifyOnCron) putBoolean(KEY_NOTIFY_ON_CRON, next.notifyOnCron)
             if (next.notifyOnSubagent != previous.notifyOnSubagent) putBoolean(KEY_NOTIFY_ON_SUBAGENT, next.notifyOnSubagent)
             if (next.notifyOnBackground != previous.notifyOnBackground) putBoolean(KEY_NOTIFY_ON_BACKGROUND, next.notifyOnBackground)
+            if (next.notifyOnProgress != previous.notifyOnProgress) putBoolean(KEY_NOTIFY_ON_PROGRESS, next.notifyOnProgress)
             if (next.chatBackgroundFile != previous.chatBackgroundFile) putString(KEY_CHAT_BACKGROUND, next.chatBackgroundFile)
             if (next.chatBackgroundDim != previous.chatBackgroundDim) putInt(KEY_CHAT_BACKGROUND_DIM, next.chatBackgroundDim.coerceIn(0, 70))
             if (next.avatarFile != previous.avatarFile) putString(KEY_AVATAR, next.avatarFile)
@@ -291,6 +295,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_NOTIFY_ON_CRON = "notify_on_cron"
         private const val KEY_NOTIFY_ON_SUBAGENT = "notify_on_subagent"
         private const val KEY_NOTIFY_ON_BACKGROUND = "notify_on_background"
+        private const val KEY_NOTIFY_ON_PROGRESS = "notify_on_progress"
         private const val KEY_CHAT_BACKGROUND = "chat_background_file"
         private const val KEY_CHAT_BACKGROUND_DIM = "chat_background_dim"
         private const val KEY_AVATAR = "avatar_file"
