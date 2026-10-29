@@ -6,7 +6,7 @@ Source of truth for UX: `lucky-agent/UI/GUI`.
 |-----|---------|
 | `App.tsx` shell / sidebar nav | `LuckyAgentAppRoot`。导航只放「这台电脑」（含服务器配置）；任务、轨迹、记忆和后台黑板从聊天顶部的当前会话卡进入 |
 | Chat view + composer + bubbles | `ChatScreen` |
-| Session groups / new session | `SessionDrawerContent`。分组按 agent role、置顶和 project 聚合；组 key 与展示名分离，避免用户 project 与固定组同名时撞 Compose key；新建先填写标题，项目归类失败后从会话菜单重试 |
+| Runtime chat affordances | `ChatScreen`。未连接时顶栏让出连接入口；上下文环和 Lucky 控件只在 runtime WebSocket 已连接时显示；待审批固定在输入框上方并提示折叠数量；独立聊天不显示 runtime 控件 |
 | Sessions list / search | `SessionDrawerContent` |
 | WebSocket `/api/v1/ws` | `LuckyAgentWsClient` |
 | `fetchRuntime('/v1/sessions')` | `LuckyAgentApi.listSessions` |

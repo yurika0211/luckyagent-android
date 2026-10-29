@@ -319,8 +319,8 @@ internal fun approvalsStillHidden(total: Int, visible: Int): Int =
  * Lucky talks to the runtime collector. Standalone chat has no such collector,
  * so the composer must not offer commands that would be sent to the model.
  */
-internal fun showsLuckyComposer(connectionMode: String): Boolean =
-    connectionMode != "standalone"
+internal fun showsLuckyComposer(connectionMode: String, socketState: SocketState): Boolean =
+    connectionMode != "standalone" && socketStateLive(socketState)
 
 /**
  * A Lucky button must not replace an unsent draft. The command goes out on its
@@ -3286,7 +3286,7 @@ private fun ComposerBar(
                 )
             }
         }
-        if (showsLuckyComposer(state.settings.connectionMode)) {
+        if (showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
             LuckyComposerControl(
                 state = state,
                 onCommand = { command -> vm.runLuckyCommand(command) },
@@ -3366,7 +3366,7 @@ private fun ComposerBar(
                 .size(44.dp),
             contentAlignment = Alignment.Center,
         ) {
-            if (showLuckyCommands && showsLuckyComposer(state.settings.connectionMode)) {
+            if (showLuckyCommands && showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
                 LuckyClover(
                     modifier = Modifier.wrapContentSize(unbounded = true),
                     onCommand = { action ->
@@ -3388,10 +3388,14 @@ private fun ComposerBar(
             } else {
                 SendButton(
                     enabled = hasInput || chatWorking && isStopCommand,
-                    contentDescription = if (isStopCommand) "发送 /stop" else "发送，长按打开 Lucky",
+                    contentDescription = when {
+                        isStopCommand -> "发送 /stop"
+                        showsLuckyComposer(state.settings.connectionMode, state.socketState) -> "发送，长按打开 Lucky"
+                        else -> "发送"
+                    },
                     onClick = onSend,
                     onLongClick = {
-                        if (showsLuckyComposer(state.settings.connectionMode)) {
+                        if (showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
                             showLuckyCommands = !showLuckyCommands
                         }
                     },

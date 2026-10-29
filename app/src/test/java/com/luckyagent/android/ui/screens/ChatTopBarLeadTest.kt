@@ -47,9 +47,11 @@ class ChatTopBarLeadTest {
 
     @Test
     fun standaloneDoesNotOfferLuckyCommands() {
-        assertEquals(false, showsLuckyComposer("standalone"))
-        assertEquals(true, showsLuckyComposer("runtime"))
-        assertEquals(true, showsLuckyComposer(""))
+        assertEquals(false, showsLuckyComposer("standalone", SocketState.Connected))
+        assertEquals(false, showsLuckyComposer("runtime", SocketState.Idle))
+        assertEquals(false, showsLuckyComposer("runtime", SocketState.Error))
+        assertEquals(true, showsLuckyComposer("runtime", SocketState.Connected))
+        assertEquals(true, showsLuckyComposer("runtime", SocketState.Running))
     }
 
     @Test

@@ -4878,6 +4878,7 @@ class AppViewModel(
     private fun handleLuckyCommand(rawText: String, command: LuckyCommand) {
         val now = System.currentTimeMillis()
         val sessionId = currentSessionId()
+        val previousLuckyActive = _ui.value.luckyActive
         pushBubble(ChatBubble(id = "u-$now", role = "user", content = rawText, createdAt = nowIsoTimestamp()))
         _ui.update { it.copy(composer = "", pendingMedia = emptyList(), pendingQuote = null) }
         val action = luckyWireAction(command.action)
@@ -4907,7 +4908,16 @@ class AppViewModel(
                     val notice = "Lucky 命令没有发出，请检查连接"
                     if (currentSessionId() == sessionId) {
                         pushBubble(ChatBubble(id = "lucky-err-$now", role = "assistant", content = notice, createdAt = nowIsoTimestamp()))
-                        _ui.update { it.copy(activityLine = notice) }
+                        // The local "on" state is optimistic. If neither the
+                        // immediate send nor the reconnect retry accepts it,
+                        // ordinary messages must not be trapped in a collector
+                        // that the runtime never received.
+                        _ui.update {
+                            it.copy(
+                                luckyActive = if (action == "on") previousLuckyActive else it.luckyActive,
+                                activityLine = notice,
+                            )
+                        }
                     }
                 }
             }
