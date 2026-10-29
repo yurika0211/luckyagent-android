@@ -90,6 +90,26 @@ class SessionGroupsTest {
         )
     }
 
+    @Test
+    fun displayNameCollisionsStillHaveDistinctGroupKeys() {
+        val fixed = session("worker", agentRole = "worker")
+        val userProject = session("project", project = SESSION_GROUP_WORKER)
+        val unsorted = session("unsorted")
+        val reservedProject = session("reserved", project = SESSION_GROUP_UNSORTED)
+
+        val groups = sessionGroups(listOf(fixed, userProject, unsorted, reservedProject))
+
+        assertEquals(
+            listOf(SESSION_GROUP_WORKER, SESSION_GROUP_WORKER, SESSION_GROUP_UNSORTED, SESSION_GROUP_UNSORTED),
+            groups.map { it.name },
+        )
+        assertEquals(groups.map { it.key }.distinct().size, groups.size)
+        assertEquals(listOf("worker"), groups[0].sessions.map { it.id })
+        assertEquals(listOf("project"), groups[1].sessions.map { it.id })
+        assertEquals(listOf("unsorted"), groups.first { it.key == "project:<unsorted>" }.sessions.map { it.id })
+        assertEquals(listOf("reserved"), groups.first { it.key == "project:${SESSION_GROUP_UNSORTED}" }.sessions.map { it.id })
+    }
+
     private fun session(
         id: String,
         agentRole: String? = null,

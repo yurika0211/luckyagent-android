@@ -5055,14 +5055,14 @@ private fun SessionDrawer(
                         }
                     }
                     sessionGroups(sessions).forEach { group ->
-                        val collapsed = group.name in collapsedGroups
-                        item(key = "group-${group.name}") {
+                        val collapsed = group.key in collapsedGroups
+                        item(key = "group-${group.key}") {
                             SessionGroupHeader(
                                 name = group.name,
                                 count = group.sessions.size,
                                 expanded = !collapsed,
                                 onToggle = {
-                                    collapsedGroups = if (collapsed) collapsedGroups - group.name else collapsedGroups + group.name
+                                    collapsedGroups = if (collapsed) collapsedGroups - group.key else collapsedGroups + group.key
                                 },
                                 onCreate = if (canCreateSessionInGroup(group.name)) {
                                     { onCreateInGroup(group.name) }

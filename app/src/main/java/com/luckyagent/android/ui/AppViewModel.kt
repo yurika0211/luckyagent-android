@@ -5111,7 +5111,11 @@ class AppViewModel(
                         historyHasMore = false,
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
                         outboundQueue = outboundChatQueue.items(session.id),
-                        activityLine = if (projectFailed) "会话已新建，但没能归到这个分类。重试这一条。" else "已新建会话",
+                        activityLine = if (projectFailed) {
+                            "会话已新建，但没能归到「$trimmedProject」分类。请在会话菜单里重试分类。"
+                        } else {
+                            "已新建会话"
+                        },
                         pendingQuote = null,
                         contextInspect = null,
                         contextInspectError = null,
