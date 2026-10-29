@@ -191,7 +191,9 @@ import com.luckyagent.android.ui.recapLabel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.luckyagent.android.ui.canCreateSessionInGroup
 import com.luckyagent.android.ui.isFixedRoleSession
+import com.luckyagent.android.ui.projectForNewSession
 import com.luckyagent.android.ui.sessionGroups
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
@@ -981,40 +983,40 @@ fun ChatScreen(
                 }
             }
         }
-    }
 
-    if (createSessionOpen) {
-        val projectLabel = createSessionProject?.takeIf { it.isNotBlank() }
-        AlertDialog(
-            onDismissRequest = { createSessionOpen = false },
-            title = { Text(if (projectLabel == null) "新建会话" else "在「$projectLabel」新建") },
-            text = {
-                OutlinedTextField(
-                    value = createSessionTitle,
-                    onValueChange = { createSessionTitle = it },
-                    singleLine = true,
-                    label = { Text("会话标题") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = createSessionTitle.trim().isNotEmpty(),
-                    onClick = {
-                        val title = createSessionTitle.trim()
-                        if (title.isEmpty()) return@TextButton
-                        vm.createSession(title, createSessionProject)
-                        createSessionOpen = false
-                        if (!usePermanentSessionPane) {
-                            compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
-                        }
-                    },
-                ) { Text("创建") }
-            },
-            dismissButton = {
-                TextButton(onClick = { createSessionOpen = false }) { Text("取消") }
-            },
-        )
+        if (createSessionOpen) {
+            val projectLabel = createSessionProject?.takeIf { it.isNotBlank() }
+            AlertDialog(
+                onDismissRequest = { createSessionOpen = false },
+                title = { Text(if (projectLabel == null) "新建会话" else "在「$projectLabel」新建") },
+                text = {
+                    OutlinedTextField(
+                        value = createSessionTitle,
+                        onValueChange = { createSessionTitle = it },
+                        singleLine = true,
+                        label = { Text("会话标题") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = createSessionTitle.trim().isNotEmpty(),
+                        onClick = {
+                            val title = createSessionTitle.trim()
+                            if (title.isEmpty()) return@TextButton
+                            vm.createSession(title, createSessionProject)
+                            createSessionOpen = false
+                            if (!usePermanentSessionPane) {
+                                compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
+                            }
+                        },
+                    ) { Text("创建") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { createSessionOpen = false }) { Text("取消") }
+                },
+            )
+        }
     }
 
     renameTarget?.let { session ->
