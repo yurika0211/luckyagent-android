@@ -164,6 +164,10 @@ private fun SvgPage(
     onCrashed: () -> Unit,
 ) {
     val document = remember(svg, fit) { svgPreviewDocument(svg, fit) }
+    // A declared viewBox/width/height already gives the Compose card its exact
+    // aspect ratio. Do not start a JavaScript runtime or run getBBox for every
+    // ordinary SVG; the probe is only needed for the legacy no-frame case.
+    val measureSize = svg.frame == null
     val reportSize by rememberUpdatedState(onSize)
     val reportCrash by rememberUpdatedState(onCrashed)
     val bridge = remember { SvgSizeBridge { w, h -> reportSize(w, h) } }
@@ -181,7 +185,7 @@ private fun SvgPage(
                 setBackgroundColor(0)
                 // The injected size probe is the only script this page needs; the
                 // document policy in svgPreviewDocument allows none from the source.
-                settings.javaScriptEnabled = true
+                settings.javaScriptEnabled = measureSize
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.blockNetworkLoads = true
@@ -189,7 +193,7 @@ private fun SvgPage(
                 // Nested scrolling fights the chat list. The touch listener, installed in
                 // update so it follows `fit`, decides which one owns each drag.
                 isNestedScrollingEnabled = false
-                addJavascriptInterface(bridge, "LuckySvgBridge")
+                if (measureSize) addJavascriptInterface(bridge, "LuckySvgBridge")
                 if (zoomable) {
                     settings.setSupportZoom(true)
                     settings.builtInZoomControls = true
@@ -206,7 +210,9 @@ private fun SvgPage(
                     }
 
                     override fun onPageFinished(view: WebView, url: String) {
-                        view.evaluateJavascript("LuckySvgBridge.report(String($SVG_SIZE_JS))", null)
+                        if (measureSize) {
+                            view.evaluateJavascript("LuckySvgBridge.report(String($SVG_SIZE_JS))", null)
+                        }
                     }
 
                     override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
