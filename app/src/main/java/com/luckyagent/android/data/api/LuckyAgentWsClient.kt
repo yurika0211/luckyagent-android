@@ -374,7 +374,7 @@ class LuckyAgentWsClient internal constructor(
             )
             if (isCurrent(connection)) {
                 when (env.type) {
-                    "stream_chunk", "assistant_delta", "delta", "chunk",
+                    "stream_chunk", "assistant_delta", "delta", "chunk", "ui_delta",
                     "tool_call", "tool", "running", "status", "reasoning", "approval",
                     -> {
                         val stateHint = (env.data as? kotlinx.serialization.json.JsonObject)

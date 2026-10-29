@@ -15,6 +15,8 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.luckyagent.android.data.AppContainer
+import com.luckyagent.android.data.openui.OpenUiDelta
+import com.luckyagent.android.data.openui.asOpenUiDelta
 import com.luckyagent.android.data.notification.CronPopup
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.notification.RuntimeNoticePolicy
@@ -184,6 +186,7 @@ data class ChatBubble(
      * reconciles against; a page offset moves, this does not.
      */
     val serverOrdinal: Int? = null,
+    val openUi: com.luckyagent.android.data.openui.OpenUiDelta? = null,
 )
 
 data class ChatMedia(
@@ -730,6 +733,12 @@ class AppViewModel(
                     markOutboundAccepted(event)
                     val foreground = isForegroundEvent(event)
                     when (env.type) {
+                        "ui_delta" -> {
+                            if (!foreground) return@collect
+                            val tree = env.data.asOpenUiDelta() ?: return@collect
+                            if (tree.nodes.isEmpty()) return@collect
+                            attachOpenUi(tree)
+                        }
                         "stream_chunk", "assistant_delta", "delta", "chunk" -> {
                             if (!foreground) return@collect
                             val piece = extractText(env.data) ?: return@collect
@@ -2023,6 +2032,18 @@ class AppViewModel(
             is JsonObject, is JsonArray -> params.toString()
             else -> params.toString()
         }
+    }
+
+
+    private fun attachOpenUi(tree: OpenUiDelta) {
+        val bubbles = _ui.value.bubbles.toMutableList()
+        val idx = bubbles.indexOfLast { it.role.equals("assistant", true) && (it.streaming || it.openUi != null) }
+        if (idx >= 0) {
+            bubbles[idx] = bubbles[idx].copy(openUi = tree)
+        } else {
+            bubbles += ChatBubble(id = "ui-${tree.treeId}", role = "assistant", content = "", streaming = tree.state == "streaming", openUi = tree)
+        }
+        _ui.value = _ui.value.copy(bubbles = bubbles)
     }
 
     private fun appendAssistant(piece: String) {
