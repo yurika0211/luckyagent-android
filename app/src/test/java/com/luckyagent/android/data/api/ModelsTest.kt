@@ -23,6 +23,21 @@ class ModelsTest {
     }
 
     @Test
+    fun expandDraftSendsOnlyTheDraftAndIntent() {
+        val json = Json { encodeDefaults = true; explicitNulls = false }
+        val encoded = json.encodeToString(
+            DraftExpandRequest.serializer(),
+            DraftExpandRequest(message = "修一下启动"),
+        )
+        assertTrue(encoded.contains("\"message\":\"修一下启动\""))
+        assertTrue(encoded.contains("\"intent\":\"expand\""))
+        assertTrue(!encoded.contains("session_id"))
+
+        val decoded = json.decodeFromString<DraftExpandResponse>("{\"response\":\"补全后的请求\"}")
+        assertEquals("补全后的请求", decoded.response)
+    }
+
+    @Test
     fun gatewayStartRequestCarriesOptionalToken() {
         val json = Json { explicitNulls = false }
         val request = json.decodeFromString<GatewayStartRequest>("{\"token\":\"tg-token\"}")

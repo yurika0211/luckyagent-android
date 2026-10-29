@@ -7,6 +7,18 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
+data class DraftExpandRequest(
+    val message: String,
+    val intent: String = "expand",
+)
+
+@Serializable
+data class DraftExpandResponse(
+    val response: String = "",
+    val error: String? = null,
+)
+
+@Serializable
 data class SoulInfo(
     val name: String = "",
     @SerialName("system_prompt") val systemPrompt: String = "",
