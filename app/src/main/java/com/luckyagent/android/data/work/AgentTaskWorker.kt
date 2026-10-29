@@ -94,7 +94,13 @@ class AgentTaskWorker(
                 // WorkManager removes its foreground notification on completion.
                 // Post the durable result through the normal task channel first.
                 app.container.notifications.notifyTask(
-                    task.noticeKind, taskId, title, body, task.executionSessionId, terminal = true,
+                    task.noticeKind,
+                    taskId,
+                    title,
+                    body,
+                    task.executionSessionId,
+                    terminal = true,
+                    background = autonomy,
                 )
                 return if (task.successful) Result.success() else Result.failure()
             }
@@ -147,13 +153,9 @@ class AgentTaskWorker(
 
     private fun openTaskIntent(taskId: String, sessionId: String, autonomy: Boolean): PendingIntent {
         val intent = Intent(applicationContext, MainActivity::class.java).apply {
-            if (sessionId.isNotBlank()) {
-                putExtra(MainActivity.EXTRA_DESTINATION, "chat")
-                putExtra(MainActivity.EXTRA_SESSION_ID, sessionId)
-            } else {
-                putExtra(MainActivity.EXTRA_DESTINATION, if (autonomy) "background" else "tasks")
-                putExtra(MainActivity.EXTRA_TASK_ID, taskId)
-            }
+            putExtra(MainActivity.EXTRA_DESTINATION, if (autonomy) "background" else "tasks")
+            putExtra(MainActivity.EXTRA_TASK_ID, taskId)
+            if (sessionId.isNotBlank()) putExtra(MainActivity.EXTRA_SESSION_ID, sessionId)
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         return PendingIntent.getActivity(

@@ -59,6 +59,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -75,6 +76,7 @@ import androidx.compose.material.icons.automirrored.outlined.Assignment
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AttachFile
@@ -127,6 +129,12 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.luckyagent.android.ui.components.CloverCard
+import com.luckyagent.android.ui.components.CloverMark
+import com.luckyagent.android.ui.components.StartupPhase
+import com.luckyagent.android.ui.components.StartupReconcileBar
+import com.luckyagent.android.ui.components.StartupWait
+import com.luckyagent.android.ui.components.StatusChip
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -143,9 +151,12 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
@@ -176,6 +187,12 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.luckyagent.android.data.cache.SessionCachePolicy
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.ui.recapLabel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.luckyagent.android.ui.isFixedRoleSession
+import com.luckyagent.android.ui.sessionGroups
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
 import com.luckyagent.android.data.api.isTerminalTaskStatus
@@ -192,7 +209,6 @@ import com.luckyagent.android.data.api.ContextBucketUsage
 import com.luckyagent.android.data.api.ContextInspectResponse
 import com.luckyagent.android.data.api.ContextSection
 import com.luckyagent.android.data.api.TokenUsage
-import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.AppViewModel
@@ -262,18 +278,55 @@ internal sealed interface ChatTimelineItem {
 
 /**
  * One line for the latest chat fold.
- * A running turn shows only the newest summary. A finished turn yields to the answer,
- * except cancel and failure, which replace the summary with an end state.
+ * A running turn shows only the newest summary, and only on the fold that
+ * belongs to that turn. A finished turn yields to the answer, except cancel
+ * and failure, which replace the summary with an end state.
  */
 internal fun outerProcessLabel(
     liveSummary: String?,
     processNotice: String?,
     isResponding: Boolean,
     isLatestProcess: Boolean,
+    ownsCurrentTurn: Boolean = true,
 ): String? {
-    if (!isLatestProcess) return null
+    if (!isLatestProcess || !ownsCurrentTurn) return null
     if (!isResponding) return processNotice?.trim()?.ifBlank { null }
     return liveSummary?.trim()?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+}
+
+/** A status box opened for a new turn before any reasoning or tool text arrives. */
+internal fun isTurnStatusPlaceholder(bubble: ChatBubble): Boolean =
+    bubble.role == "reasoning" && !bubble.reasoningHasContent && bubble.content.isBlank()
+
+/** A placeholder is hidden while the same fold already has a real step. */
+internal fun visibleProcessSteps(steps: List<ChatBubble>): List<ChatBubble> =
+    if (steps.any { !isTurnStatusPlaceholder(it) }) steps.filterNot(::isTurnStatusPlaceholder) else steps
+
+/**
+ * The fold that owns the open turn: it is the last fold, and a user message
+ * opened it after the fold before it. A stored fold — even the only one on
+ * screen — does not own a new turn, so the previous turn's box cannot show the
+ * new turn's status.
+ */
+internal fun processOwnsTurn(steps: List<ChatBubble>, timeline: List<ChatTimelineItem>): Boolean {
+    val index = timeline.indexOfFirst { item ->
+        item is ChatTimelineItem.Process && item.steps === steps
+    }.takeIf { it >= 0 } ?: timeline.indexOfFirst { item ->
+        item is ChatTimelineItem.Process && item.steps.map { it.id } == steps.map { it.id }
+    }
+    if (index < 0) return false
+    val after = timeline.subList(index + 1, timeline.size)
+    if (after.any { it is ChatTimelineItem.Process }) return false
+    if (after.any { item ->
+            item is ChatTimelineItem.Message &&
+                item.bubble.role.equals("assistant", ignoreCase = true) &&
+                !item.bubble.isIntermediate
+        }
+    ) return false
+    val previous = timeline.subList(0, index).indexOfLast { it is ChatTimelineItem.Process }
+    return timeline.subList(previous + 1, index).any { item ->
+        item is ChatTimelineItem.Message && item.bubble.role.equals("user", ignoreCase = true)
+    }
 }
 
 /**
@@ -290,8 +343,7 @@ internal fun liveTurnBubbles(bubbles: List<ChatBubble>, turnId: String, bufferId
 /**
  * Index of the in-memory turn that history has not stored yet.
  * The user bubble that opened the turn is included, so a refresh can put the
- * whole turn back after the server page. A later server copy of the same user
- * text drops that local bubble instead of showing it twice.
+ * whole turn back after the server page.
  */
 internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: String?): Int {
     if (turnId.isBlank() && bufferId.isNullOrBlank()) return -1
@@ -308,27 +360,107 @@ internal fun liveTurnStart(bubbles: List<ChatBubble>, turnId: String, bufferId: 
 }
 
 /**
- * Drop the in-memory turn once the server page already ends with the same rows.
- * A stored user message alone is not enough: the live reasoning and answer stay
- * until the page carries those rows too. An older copy of the same text, with
- * a different reply after it, does not count as this turn.
+ * Session ordinals a live turn will get once the runtime stores it.
+ *
+ * History stamps every bubble of one server message with that message's index.
+ * A live tool bubble holds both the call and its output, while history stores
+ * the call on the assistant message and the output as the next tool message.
+ * The combined bubble keeps the call's ordinal and reserves the following
+ * result ordinal. Commentary before the result stays on the call. The answer
+ * uses the ordinal past the result. A status placeholder shares the next
+ * ordinal without consuming it, because history never stores that box.
  */
-internal fun dedupeLiveTurn(history: List<ChatBubble>, live: List<ChatBubble>): List<ChatBubble> {
-    if (live.isEmpty()) return emptyList()
-    val start = live.indexOfFirst { it.role.equals("user", ignoreCase = true) }.let { index ->
-        if (index >= 0) index else 0
+internal fun liveTurnOrdinals(turn: List<ChatBubble>, userOrdinal: Int): List<Int> {
+    val ordinals = MutableList(turn.size) { userOrdinal }
+    var next = userOrdinal
+    var groupOpen = false
+    var reservedResult: Int? = null
+    turn.forEachIndexed { index, bubble ->
+        val role = bubble.role.lowercase()
+        when {
+            role == "user" -> {
+                ordinals[index] = userOrdinal
+                next = userOrdinal + 1
+                groupOpen = false
+                reservedResult = null
+            }
+            isTurnStatusPlaceholder(bubble) -> ordinals[index] = next
+            role == "tool" && bubble.toolArgs != null && bubble.toolOutput != null -> {
+                if (!groupOpen) groupOpen = true
+                ordinals[index] = next
+                reservedResult = next + 1
+            }
+            role == "tool" && bubble.toolOutput != null && bubble.toolArgs == null -> {
+                val result = reservedResult
+                if (result != null) {
+                    ordinals[index] = result
+                    next = result + 1
+                    reservedResult = null
+                } else {
+                    if (groupOpen) next += 1
+                    ordinals[index] = next
+                    next += 1
+                }
+                groupOpen = false
+            }
+            role == "reasoning" || role == "tool" || (role == "assistant" && bubble.isIntermediate) -> {
+                if (!groupOpen) groupOpen = true
+                ordinals[index] = next
+            }
+            else -> {
+                val result = reservedResult
+                next = when {
+                    result != null -> result + 1
+                    groupOpen -> next + 1
+                    else -> next
+                }
+                ordinals[index] = next
+                next += 1
+                groupOpen = false
+                reservedResult = null
+            }
+        }
     }
-    val comparable = live.drop(start)
-    if (history.size >= comparable.size &&
-        history.takeLast(comparable.size).map(::liveTurnSignature) == comparable.map(::liveTurnSignature)
-    ) {
-        return emptyList()
-    }
-    return comparable
+    return ordinals
 }
 
-private fun liveTurnSignature(bubble: ChatBubble): String =
-    listOf(bubble.role, bubble.content, bubble.toolName.orEmpty(), bubble.stepId.orEmpty()).joinToString("\u0000")
+/**
+ * Replace live rows the server already stored.
+ *
+ * Identity is the session-wide oldest-first index, not a page offset and not
+ * full-text equality. [turnOrdinal] is the index of the stored user message that
+ * opened this turn; without it nothing can be proven, so the whole live turn
+ * stays. A row is dropped only when history holds a bubble of the same role at
+ * that index, so a grouping mismatch keeps a row instead of deleting content.
+ * Rows past the stored tail stay, including a second send with the same text.
+ */
+internal fun dedupeLiveTurn(
+    history: List<ChatBubble>,
+    live: List<ChatBubble>,
+    turnOrdinal: Int? = null,
+): List<ChatBubble> {
+    if (live.isEmpty()) return emptyList()
+    if (turnOrdinal == null) return live
+    val storedThrough = history.mapNotNull { it.serverOrdinal }.maxOrNull() ?: return live
+    val storedByOrdinal = history.filter { it.serverOrdinal != null }.groupBy { it.serverOrdinal!! }
+    val ordinals = liveTurnOrdinals(live, turnOrdinal)
+    return live.filterIndexed { index, bubble ->
+        val ordinal = ordinals[index]
+        if (ordinal > storedThrough) return@filterIndexed true
+        // The status box is the turn's own marker, not a stored row.
+        if (isTurnStatusPlaceholder(bubble)) return@filterIndexed true
+        val stored = storedByOrdinal[ordinal].orEmpty()
+        if (bubble.role.equals("user", ignoreCase = true)) {
+            return@filterIndexed stored.none { it.role.equals("user", ignoreCase = true) }
+        }
+        // A finished live tool spans the call ordinal and the following result.
+        if (bubble.role.equals("tool", ignoreCase = true) && bubble.toolArgs != null && bubble.toolOutput != null) {
+            val resultStored = storedByOrdinal[ordinal + 1].orEmpty().any { it.role.equals("tool", ignoreCase = true) }
+            if (!resultStored) return@filterIndexed true
+        }
+        stored.none { it.role.equals(bubble.role, ignoreCase = true) }
+    }
+}
 
 /**
  * Where to land when a session opens.
@@ -342,6 +474,33 @@ internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<I
 }
 
 /** Follow the newest row when the viewport was already on it, even if only its content changed. */
+/**
+ * Whether a row that was live should stay live after the list settles.
+ *
+ * A row absent from [visibleKeys] has been composed by prefetch but is not on
+ * screen, so its WebView should come down. An empty set means layout has not
+ * run yet; tearing the surface down then would flash a placeholder on open.
+ */
+internal fun surfaceStaysLive(visibleKeys: List<Any>, key: Any, wasLive: Boolean): Boolean = when {
+    visibleKeys.isEmpty() -> wasLive
+    key in visibleKeys -> true
+    else -> false
+}
+
+/**
+ * Keeps a heavy surface up while its row is on screen, and takes it down once
+ * the row has settled off screen. A fling does not mount or destroy anything:
+ * the decision waits for [LazyListState.isScrollInProgress] to clear.
+ */
+@Composable
+private fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
+    var live by remember(key) { mutableStateOf(true) }
+    if (!listState.isScrollInProgress) {
+        live = surfaceStaysLive(listState.layoutInfo.visibleItemsInfo.map { it.key }, key, live)
+    }
+    return live
+}
+
 internal fun shouldFollowLatest(atBottom: Boolean, stuckToLastAutoScroll: Boolean): Boolean =
     atBottom || stuckToLastAutoScroll
 
@@ -395,8 +554,9 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
         return candidate
     }
     fun flushSteps() {
-        if (steps.isNotEmpty()) {
-            result += ChatTimelineItem.Process(steps.toList(), uniqueKey(steps.first().id))
+        val visible = visibleProcessSteps(steps)
+        if (visible.isNotEmpty()) {
+            result += ChatTimelineItem.Process(visible, uniqueKey(visible.first().id))
             steps.clear()
         }
     }
@@ -722,6 +882,10 @@ fun ChatScreen(
                         showAttachmentOptions = false
                         filePicker.launch(arrayOf("*/*"))
                     },
+                    onExpandDraft = {
+                        showAttachmentOptions = false
+                        vm.expandComposer()
+                    },
                     isRecordingVoice = isRecordingVoice,
                     recordingElapsedSec = recordingElapsedSec,
                     captureHint = captureHint,
@@ -798,6 +962,10 @@ fun ChatScreen(
                             onFilePick = {
                                 showAttachmentOptions = false
                                 filePicker.launch(arrayOf("*/*"))
+                            },
+                            onExpandDraft = {
+                                showAttachmentOptions = false
+                                vm.expandComposer()
                             },
                             isRecordingVoice = isRecordingVoice,
                             recordingElapsedSec = recordingElapsedSec,
@@ -941,6 +1109,7 @@ private fun ChatConversation(
     onVoiceCapture: () -> Unit,
     onVisualPick: () -> Unit,
     onFilePick: () -> Unit,
+    onExpandDraft: () -> Unit,
     isRecordingVoice: Boolean,
     recordingElapsedSec: Int,
     captureHint: String?,
@@ -949,6 +1118,23 @@ private fun ChatConversation(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val recap = state.sessionRecap?.takeIf {
+        it.sessionId == state.settings.sessionId && it.endpoint == state.settings.apiBase
+    }?.text?.takeIf { it.isNotBlank() }
+    var recapCollapsed by remember(state.settings.apiBase, state.settings.sessionId, recap) { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, state.settings.apiBase, state.settings.sessionId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                recapCollapsed = false
+                vm.refreshSessions()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        // Also refresh when reopening this page while the Activity stays resumed.
+        vm.refreshSessions()
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var showThinkingSheet by rememberSaveable(state.settings.sessionId) { mutableStateOf(false) }
@@ -993,15 +1179,60 @@ private fun ChatConversation(
             onNewSession = onNewSession,
             onOpenSettings = onOpenSettings,
             onOpenModel = { showModelSheet = true },
+            onOpenCanvas = { vm.navigate(AppDestination.Background) },
             onReconnect = { vm.connectSocket(force = true) },
         )
+        val workCard = remember(
+            state.focusedWorkCardId,
+            state.focusedWorkCardBackground,
+            state.tasks,
+            state.backgroundTasks,
+            state.settings.sessionId,
+            state.dismissedWorkCardIds,
+        ) {
+            visibleWorkCard(
+                focusedId = state.focusedWorkCardId,
+                focusedBackground = state.focusedWorkCardBackground,
+                tasks = state.tasks,
+                background = state.backgroundTasks,
+                sessionId = state.settings.sessionId,
+                dismissedIds = state.dismissedWorkCardIds,
+            )
+        }
+        if (workCard != null) {
+            WorkReturnCard(
+                card = workCard,
+                onClose = { vm.dismissWorkCard(workCard.id) },
+                onCancel = { vm.cancelWorkCard(workCard.id) },
+                onOpenResult = {
+                    val session = workCard.sessionId
+                    if (!session.isNullOrBlank()) vm.openSession(session)
+                    if (workCard.terminal) vm.dismissWorkCard(workCard.id)
+                },
+                onOpenDetail = {
+                    if (workCard.kind == WorkCardKind.Background) {
+                        vm.selectBackgroundTask(workCard.id)
+                        vm.navigate(AppDestination.Background)
+                    } else {
+                        vm.selectTask(workCard.id)
+                        vm.navigate(AppDestination.Tasks)
+                    }
+                },
+            )
+        }
+        if (!hiddenSessionCard(state.hiddenSessionCards, state.settings.sessionId, SessionCardKind.Panel, SESSION_PANEL_CARD_ID)) {
         SessionNavigationCard(
             sessionId = state.settings.sessionId,
             tasks = state.tasks,
             background = state.backgroundTasks,
+            hiddenCards = state.hiddenSessionCards,
             tasksError = state.tasksError,
             backgroundError = state.backgroundError,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            onHideCard = { kind, id -> vm.hideSessionCard(state.settings.sessionId, kind, id) },
+            onHidePanel = {
+                vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Panel, SESSION_PANEL_CARD_ID)
+            },
             onOpenTask = { taskId ->
                 if (taskId != null) vm.selectTask(taskId)
                 vm.navigate(AppDestination.Tasks)
@@ -1013,6 +1244,7 @@ private fun ChatConversation(
             onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
             onOpenMemory = { vm.navigate(AppDestination.Memory) },
         )
+        }
 
         val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
@@ -1061,10 +1293,18 @@ private fun ChatConversation(
                 }
         }
         LaunchedEffect(state.settings.sessionId) {
-            snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
-                .collect { (index, offset) ->
-                    if (restoredSession == state.settings.sessionId) {
-                        vm.saveScrollAnchor(state.settings.sessionId, index, offset)
+            @OptIn(FlowPreview::class)
+            snapshotFlow { listState.isScrollInProgress }
+                .debounce(400)
+                .collect { scrolling ->
+                    // Writing the anchor on every pixel used to wake the VM during
+                    // a fling. One write after the finger stops is enough to restore.
+                    if (!scrolling && restoredSession == state.settings.sessionId) {
+                        vm.saveScrollAnchor(
+                            state.settings.sessionId,
+                            listState.firstVisibleItemIndex,
+                            listState.firstVisibleItemScrollOffset,
+                        )
                     }
                 }
         }
@@ -1127,6 +1367,7 @@ private fun ChatConversation(
                                 bubbleOpacity = state.settings.bubbleOpacity,
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
+                                surfaceActive = bubbleSurfaceActive(listState, item.key),
                                 onDownload = { media -> vm.downloadAttachment(context, media) },
                                 onQuote = { vm.quoteMessage(it) },
                                 onCopy = { bubble ->
@@ -1140,15 +1381,19 @@ private fun ChatConversation(
                                 onRetry = vm::retryLastResponse,
                                 onRetryOutbound = vm::retryOutboundMessage,
                                 onSpeak = { bubble -> speakText(context, bubble.content) },
+                                onExpand = vm::expandTruncatedMessage,
+                                expanding = state.expandingHistoryIndex >= 0 &&
+                                    state.expandingHistoryIndex == item.bubble.historyIndex,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
-                                isResponding = state.isResponding,
+                                isResponding = state.isResponding && processOwnsTurn(item.steps, timeline),
                                 liveSummary = outerProcessLabel(
                                     liveSummary = state.liveSummary,
                                     processNotice = state.processNotice,
                                     isResponding = state.isResponding,
                                     isLatestProcess = item.key == timeline.lastOrNull { it is ChatTimelineItem.Process }?.key,
+                                    ownsCurrentTurn = processOwnsTurn(item.steps, timeline),
                                 ),
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
@@ -1160,8 +1405,10 @@ private fun ChatConversation(
                                     cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
                                     vm.notifyCopied()
                                 },
+                                onExpand = vm::expandTruncatedMessage,
+                                expandingHistoryIndex = state.expandingHistoryIndex,
                                 onOpenThinking = {
-                                    selectedThinkingSteps = item.steps
+                                    selectedThinkingSteps = item.steps.filterNot(::isTurnStatusPlaceholder)
                                     showThinkingSheet = true
                                 },
                                 collabLabel = collabFoldLabel(
@@ -1200,13 +1447,23 @@ private fun ChatConversation(
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
-            if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
-                CircularProgressIndicator(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(10.dp)
-                        .size(18.dp),
-                    strokeWidth = 2.dp,
+            if (state.historyLoading && timeline.isEmpty()) {
+                StartupWait(
+                    phase = StartupPhase.History,
+                    next = StartupPhase.HistoryNext,
+                    modifier = Modifier.align(Alignment.Center),
+                    onTimedOut = {
+                        TextButton(onClick = { vm.loadHistory(forceSync = true) }) { Text("重试") }
+                    },
+                )
+            } else if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
+                StartupReconcileBar(
+                    phase = when {
+                        state.historyLoadingMore -> "正在读取更早的对话"
+                        state.historyRefreshing -> "正在刷新"
+                        else -> StartupPhase.History
+                    },
+                    modifier = Modifier.align(Alignment.TopCenter),
                 )
             }
             if (!atBottom && timeline.size > 1) {
@@ -1246,6 +1503,30 @@ private fun ChatConversation(
             }
         }
 
+        if (recap != null && !state.isResponding) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+                color = CloverSurface,
+                border = BorderStroke(1.dp, CloverLine),
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { recapCollapsed = !recapCollapsed }
+                            .heightIn(min = 44.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("◇  ${recapLabel(recap)}", style = MaterialTheme.typography.labelMedium,
+                            color = CloverText2, modifier = Modifier.weight(1f))
+                        Icon(if (recapCollapsed) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
+                            contentDescription = recapLabel(recap), tint = CloverText3)
+                    }
+                    if (!recapCollapsed) {
+                        Text(recap, style = MaterialTheme.typography.bodySmall, color = CloverText2)
+                    }
+                }
+            }
+        }
         ComposerBar(
             state = state,
             vm = vm,
@@ -1257,6 +1538,9 @@ private fun ChatConversation(
             onVoiceCapture = onVoiceCapture,
             onVisualPick = onVisualPick,
             onFilePick = onFilePick,
+            onExpandDraft = onExpandDraft,
+            expandingDraft = state.composerExpanding,
+            expandError = state.composerExpandError,
             onRemoveMedia = vm::removePendingMedia,
             onRetryMedia = { id -> vm.retryPendingMedia(context.contentResolver, id) },
             onClearQuote = vm::clearQuote,
@@ -1295,7 +1579,11 @@ private fun ChatConversation(
                     state.isResponding,
                 ),
                 collabTasks = turnTasks,
-                onOpenTask = { vm.selectTask(it); vm.navigate(com.luckyagent.android.ui.AppDestination.Tasks) },
+                onOpenTask = {
+                    vm.focusWorkCard(it, background = false)
+                    vm.selectTask(it)
+                    vm.navigate(AppDestination.Tasks)
+                },
                 imageHeaders = imageHeaders,
                 imageBaseUrl = state.settings.apiBase,
                 onDismiss = { showThinkingSheet = false },
@@ -1307,6 +1595,8 @@ private fun ChatConversation(
                     cm.setPrimaryClip(ClipData.newPlainText("luckyagent-message", copied))
                     vm.notifyCopied()
                 },
+                onExpand = vm::expandTruncatedMessage,
+                expandingHistoryIndex = state.expandingHistoryIndex,
             )
         }
     }
@@ -1320,13 +1610,62 @@ private fun ChatConversation(
 }
 
 @Composable
+private fun WorkReturnCard(
+    card: WorkCard,
+    onClose: () -> Unit,
+    onCancel: () -> Unit,
+    onOpenResult: () -> Unit,
+    onOpenDetail: () -> Unit,
+) {
+    CloverCard(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    card.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (card.loading) {
+                    Text(
+                        "列表还没回来。可以打开详情，或先关掉这张卡。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CloverText2,
+                    )
+                }
+            }
+            if (!card.loading) StatusChip(card.status, workCardStatusLabel(card.status))
+            IconButton(onClick = onClose) {
+                Icon(Icons.Outlined.Close, contentDescription = "关闭卡片", tint = CloverText3)
+            }
+        }
+        if (card.terminal && card.sessionId.isNullOrBlank()) {
+            Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!card.loading && workCardCanCancel(card)) {
+                OutlinedButton(onClick = onCancel) { Text("取消") }
+            }
+            if (!card.loading && card.terminal && !card.sessionId.isNullOrBlank()) {
+                Button(onClick = onOpenResult) { Text("打开结果") }
+            }
+            TextButton(onClick = onOpenDetail) { Text("打开详情") }
+        }
+    }
+}
+
+@Composable
 private fun SessionNavigationCard(
     sessionId: String,
     tasks: List<TaskSummary>,
     background: List<AutonomyTaskSummary>,
+    hiddenCards: Set<String> = emptySet(),
     tasksError: String? = null,
     backgroundError: String? = null,
     modifier: Modifier = Modifier,
+    onHideCard: (SessionCardKind, String) -> Unit = { _, _ -> },
+    onHidePanel: () -> Unit = {},
     onOpenTask: (String?) -> Unit,
     onOpenBackground: (String?) -> Unit,
     onOpenTrace: () -> Unit,
@@ -1346,8 +1685,34 @@ private fun SessionNavigationCard(
         backgroundError != null -> "后台列表读取失败"
         else -> null
     }
+    var confirmHidePanel by remember { mutableStateOf(false) }
+    if (confirmHidePanel) {
+        SessionCardHideDialog(
+            name = "这张卡片",
+            onDismiss = { confirmHidePanel = false },
+            onConfirm = {
+                confirmHidePanel = false
+                onHidePanel()
+            },
+        )
+    }
     CloverCard(modifier = modifier) {
-        Text("当前会话", style = MaterialTheme.typography.labelMedium, color = CloverText3)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "当前会话",
+                style = MaterialTheme.typography.labelMedium,
+                color = CloverText3,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = { confirmHidePanel = true }, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Outlined.DeleteOutline,
+                    contentDescription = "删除当前会话卡片",
+                    modifier = Modifier.size(16.dp),
+                    tint = CloverText3,
+                )
+            }
+        }
         when {
             featured != null -> Text(
                 featured.description.ifBlank { "正在处理的任务" },
@@ -1379,29 +1744,113 @@ private fun SessionNavigationCard(
                 style = MaterialTheme.typography.labelMedium,
             )
         }
+        var pendingHide by remember { mutableStateOf<Pair<SessionCardKind, String>?>(null) }
+        pendingHide?.let { (kind, id) ->
+            SessionCardHideDialog(
+                kind = kind,
+                onDismiss = { pendingHide = null },
+                onConfirm = {
+                    pendingHide = null
+                    onHideCard(kind, id)
+                },
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { onOpenTask(featured?.id) }) {
-                Icon(Icons.AutoMirrored.Outlined.Assignment, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("任务")
-            }
-            TextButton(onClick = { onOpenBackground(featuredBoard?.id) }) {
-                Icon(Icons.Outlined.Autorenew, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("后台")
-            }
-            TextButton(onClick = onOpenTrace) {
-                Icon(Icons.Outlined.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("轨迹")
-            }
-            TextButton(onClick = onOpenMemory) {
-                Icon(Icons.Outlined.AccountTree, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("记忆")
+            SessionCardLink(
+                label = "任务",
+                icon = Icons.AutoMirrored.Outlined.Assignment,
+                hidden = featured?.id?.let { hiddenSessionCard(hiddenCards, sessionId, SessionCardKind.Task, it) } == true,
+                onOpen = { onOpenTask(featured?.id) },
+                onHide = featured?.id?.let { id -> { pendingHide = SessionCardKind.Task to id } },
+            )
+            SessionCardLink(
+                label = "后台",
+                icon = Icons.Outlined.Autorenew,
+                hidden = featuredBoard?.id?.let { hiddenSessionCard(hiddenCards, sessionId, SessionCardKind.Background, it) } == true,
+                onOpen = { onOpenBackground(featuredBoard?.id) },
+                onHide = featuredBoard?.id?.let { id -> { pendingHide = SessionCardKind.Background to id } },
+            )
+            SessionCardLink(
+                label = "轨迹",
+                icon = Icons.Outlined.Timeline,
+                hidden = hiddenSessionCard(hiddenCards, sessionId, SessionCardKind.Trace, "page"),
+                onOpen = onOpenTrace,
+                onHide = { pendingHide = SessionCardKind.Trace to "page" },
+            )
+            SessionCardLink(
+                label = "记忆",
+                icon = Icons.Outlined.AccountTree,
+                hidden = hiddenSessionCard(hiddenCards, sessionId, SessionCardKind.Memory, "page"),
+                onOpen = onOpenMemory,
+                onHide = { pendingHide = SessionCardKind.Memory to "page" },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SessionCardLink(
+    label: String,
+    icon: ImageVector,
+    hidden: Boolean,
+    onOpen: () -> Unit,
+    onHide: (() -> Unit)?,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        TextButton(
+            onClick = onOpen,
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(label)
+        }
+        if (!hidden && onHide != null) {
+            IconButton(onClick = onHide, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Outlined.DeleteOutline,
+                    contentDescription = "删除$label",
+                    modifier = Modifier.size(15.dp),
+                    tint = CloverText3,
+                )
             }
         }
     }
+}
+
+@Composable
+private fun SessionCardHideDialog(
+    kind: SessionCardKind,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val name = when (kind) {
+        SessionCardKind.Task -> "任务"
+        SessionCardKind.Background -> "后台"
+        SessionCardKind.Trace -> "轨迹"
+        SessionCardKind.Memory -> "记忆"
+        SessionCardKind.Panel -> "这张卡片"
+    }
+    SessionCardHideDialog(name = name, onDismiss = onDismiss, onConfirm = onConfirm)
+}
+
+@Composable
+private fun SessionCardHideDialog(
+    name: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("从当前会话拿掉$name") },
+        text = { Text("只从这台手机的当前会话拿掉。电脑上的记录还在。") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("删除") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 private fun sessionProgressLabel(task: TaskSummary?, background: AutonomyTaskSummary?): String {
@@ -1421,6 +1870,7 @@ private fun ChatTopBar(
     onNewSession: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenModel: () -> Unit,
+    onOpenCanvas: () -> Unit,
     onReconnect: () -> Unit = {},
 ) {
     var moreExpanded by rememberSaveable { mutableStateOf(false) }
@@ -1444,12 +1894,11 @@ private fun ChatTopBar(
                     Icon(Icons.Outlined.Menu, contentDescription = "打开会话", tint = CloverText2)
                 }
             }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                ModelSwitchButton(
-                    state = state,
-                    onClick = onOpenModel,
-                )
-            }
+            ModelSwitchButton(
+                state = state,
+                onClick = onOpenModel,
+                modifier = Modifier.weight(1f),
+            )
             IconButton(onClick = onNewSession) {
                 Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = CloverText2)
             }
@@ -1489,6 +1938,13 @@ private fun ChatTopBar(
                         onClick = {
                             moreExpanded = false
                             onMenu()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("多 agent 画布") },
+                        onClick = {
+                            moreExpanded = false
+                            onOpenCanvas()
                         },
                     )
                 }
@@ -1544,6 +2000,25 @@ private fun ProfileAvatar(fileName: String, onClick: (() -> Unit)? = null, size:
     )
 }
 
+
+@Composable
+private fun FullTextButton(
+    bubble: ChatBubble,
+    expanding: Boolean,
+    onExpand: (ChatBubble) -> Unit,
+) {
+    TextButton(
+        onClick = { onExpand(bubble) },
+        enabled = !expanding,
+    ) {
+        Text(
+            if (expanding) "加载中" else "查看全文",
+            color = CloverText3,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
+}
+
 @Composable
 private fun BubbleRow(
     bubble: ChatBubble,
@@ -1551,6 +2026,7 @@ private fun BubbleRow(
     bubbleOpacity: Int,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
+    surfaceActive: Boolean = true,
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
@@ -1559,6 +2035,8 @@ private fun BubbleRow(
     onRetry: () -> Unit = {},
     onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
+    onExpand: (ChatBubble) -> Unit = {},
+    expanding: Boolean = false,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -1574,7 +2052,12 @@ private fun BubbleRow(
             bubble.role.equals("search", ignoreCase = true) -> {
                 Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     Text("搜索结果", style = MaterialTheme.typography.labelSmall, color = CloverText3)
-                    MarkdownText(markdown = bubble.content, imageHeaders = imageHeaders, imageBaseUrl = imageBaseUrl)
+                    MarkdownText(
+                        markdown = bubble.content,
+                        imageHeaders = imageHeaders,
+                        imageBaseUrl = imageBaseUrl,
+                        active = surfaceActive,
+                    )
                 }
             }
             isSystem -> {
@@ -1628,7 +2111,11 @@ private fun BubbleRow(
                                     imageHeaders = imageHeaders,
                                     imageBaseUrl = imageBaseUrl,
                                     streaming = bubble.streaming,
+                                    active = surfaceActive,
                                 )
+                            }
+                            if (bubble.contentTruncated) {
+                                FullTextButton(bubble, expanding, onExpand)
                             }
                         }
                         if (bubble.attachments.isNotEmpty()) {
@@ -2145,6 +2632,8 @@ private fun ProcessTimeline(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expandingHistoryIndex: Int = -1,
     onOpenThinking: (List<ChatBubble>) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(start = 14.dp)) {
@@ -2166,9 +2655,9 @@ private fun ProcessTimeline(
                     collabLabel != null -> collabLabel
                     steps.all { it.role == "compact" } && steps.any { it.streaming } -> "压缩中"
                     steps.all { it.role == "compact" } -> "上下文压缩"
+                    steps.all(::isTurnStatusPlaceholder) -> "正在思考"
                     isResponding && steps.any { !it.toolDone && it.role == "tool" } -> "执行中"
-                    steps.size == 1 -> "思考了 1 步"
-                    else -> "思考了 ${steps.size} 步"
+                    else -> "思考了 ${steps.count { !isTurnStatusPlaceholder(it) }} 步"
                 },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -2198,6 +2687,8 @@ private fun ThinkingSheet(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expandingHistoryIndex: Int = -1,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CloverBg) {
         LazyColumn(
@@ -2258,7 +2749,16 @@ private fun ThinkingSheet(
                 when {
                     step.role == "compact" -> CompactProgressRow(step.content)
                     step.role == "reasoning" || step.isIntermediate -> ReasoningPart(step, imageHeaders, imageBaseUrl)
-                    else -> ToolPart(step, imageHeaders, imageBaseUrl, onDownload, onQuote, onCopy)
+                    else -> ToolPart(
+                        step,
+                        imageHeaders,
+                        imageBaseUrl,
+                        onDownload,
+                        onQuote,
+                        onCopy,
+                        onExpand,
+                        expanding = expandingHistoryIndex >= 0 && expandingHistoryIndex == step.historyIndex,
+                    )
                 }
             }
         }
@@ -2301,6 +2801,8 @@ private fun ToolPart(
     onDownload: (ChatMedia) -> Unit,
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
+    onExpand: (ChatBubble) -> Unit = {},
+    expanding: Boolean = false,
 ) {
     var expanded by remember(bubble.id) { mutableStateOf(false) }
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2370,6 +2872,9 @@ private fun ToolPart(
                     imageHeaders = imageHeaders,
                     imageBaseUrl = imageBaseUrl,
                 )
+                if (bubble.contentTruncated) {
+                    FullTextButton(bubble, expanding, onExpand)
+                }
             }
             bubble.attachments.forEach { media ->
                 ChatMediaPreview(media, imageHeaders, imageBaseUrl, onDownload)
@@ -2410,6 +2915,9 @@ private fun ComposerBar(
     onVoiceCapture: () -> Unit,
     onVisualPick: () -> Unit,
     onFilePick: () -> Unit,
+    onExpandDraft: () -> Unit,
+    expandingDraft: Boolean,
+    expandError: String?,
     onRemoveMedia: (String) -> Unit,
     onRetryMedia: (String) -> Unit,
     onClearQuote: () -> Unit,
@@ -2429,9 +2937,7 @@ private fun ComposerBar(
     val activityWorking = activityLabel != ComposerActivityLabel.Hidden
     val hasInput = state.composer.isNotBlank() || state.pendingMedia.isNotEmpty() || state.pendingQuote != null
     val isStopCommand = state.composer.trim().equals("/stop", ignoreCase = true)
-    val attachmentActivity = state.activityLine?.takeIf {
-        it.contains("下载") || it.contains("附件")
-    }
+    val shownActivity = activityStatusLine(state.activityLine)
     LaunchedEffect(showContextSheet) {
         if (showContextSheet) vm.refreshContextInspect()
     }
@@ -2448,10 +2954,10 @@ private fun ComposerBar(
             )
             Spacer(Modifier.height(8.dp))
         }
-        if (!isRecordingVoice && !activityWorking && !attachmentActivity.isNullOrBlank()) {
+        if (!isRecordingVoice && !activityWorking && !shownActivity.isNullOrBlank()) {
             Text(
-                attachmentActivity,
-                color = if (attachmentActivity.contains("失败")) CloverError else CloverText3,
+                shownActivity,
+                color = if (activityStatusFailed(state.activityLine, shownActivity)) CloverError else CloverText3,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(start = 4.dp, bottom = 7.dp),
                 maxLines = 1,
@@ -2491,6 +2997,9 @@ private fun ComposerBar(
                     onVoiceCapture = onVoiceCapture,
                     onVisualPick = onVisualPick,
                     onFilePick = onFilePick,
+                    onExpandDraft = onExpandDraft,
+                    expandingDraft = expandingDraft,
+                    expandEnabled = state.composer.isNotBlank() && !expandingDraft,
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -2515,6 +3024,13 @@ private fun ComposerBar(
                 TextButton(onClick = onStopVoice) { Text("完成") }
             }
             Spacer(Modifier.height(8.dp))
+        } else if (!expandError.isNullOrBlank()) {
+            Text(
+                text = expandError,
+                color = CloverError,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
+            )
         } else if (!captureHint.isNullOrBlank()) {
             Text(
                 text = captureHint,
@@ -3206,13 +3722,14 @@ private fun contextSectionLabel(label: String): String = when (label) {
 private fun ModelSwitchButton(
     state: AppUiState,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val activeChat = state.activeModels["chat"]
         ?: state.models.firstOrNull { it.kind.equals("chat", ignoreCase = true) && it.current }
     val label = activeChat?.displayName?.takeIf { it.isNotBlank() } ?: activeChat?.id ?: "模型"
     val switching = state.modelSwitchingKey?.startsWith("chat|") == true
     Row(
-        modifier = Modifier
+        modifier = modifier
             .widthIn(max = 180.dp)
             .heightIn(min = 48.dp)
             .clickable(enabled = !switching, role = Role.Button, onClick = onClick)
@@ -3621,6 +4138,9 @@ private fun AttachmentActionRow(
     onVoiceCapture: () -> Unit,
     onVisualPick: () -> Unit,
     onFilePick: () -> Unit,
+    onExpandDraft: () -> Unit,
+    expandingDraft: Boolean,
+    expandEnabled: Boolean,
 ) {
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -3630,6 +4150,13 @@ private fun AttachmentActionRow(
         AttachmentAction(Icons.Outlined.Mic, "录音", onVoiceCapture)
         AttachmentAction(Icons.Outlined.PhotoLibrary, "相册", onVisualPick)
         AttachmentAction(Icons.Outlined.AttachFile, "文件", onFilePick)
+        AttachmentAction(
+            icon = Icons.Outlined.AutoAwesome,
+            label = "扩写",
+            onClick = onExpandDraft,
+            enabled = expandEnabled,
+            busy = expandingDraft,
+        )
     }
 }
 
@@ -3638,17 +4165,23 @@ private fun AttachmentAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     onClick: () -> Unit,
+    enabled: Boolean = true,
+    busy: Boolean = false,
 ) {
     Column(
         Modifier
             .width(76.dp)
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Icon(icon, contentDescription = label, tint = CloverText2, modifier = Modifier.size(20.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = CloverAccent)
+        } else {
+            Icon(icon, contentDescription = label, tint = if (enabled) CloverText2 else CloverText3, modifier = Modifier.size(20.dp))
+        }
+        Text(label, style = MaterialTheme.typography.labelSmall, color = if (enabled) CloverText3 else CloverText3.copy(alpha = .45f))
     }
 }
 
@@ -4357,8 +4890,8 @@ private fun SessionDrawer(
                         innerTextField()
                     }
                     Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                        if (state.sessionsLoading) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        if (state.sessionsLoading && sessions.isNotEmpty()) {
+                            CloverMark(size = 18.dp, contentDescription = StartupPhase.Sessions)
                         } else {
                             IconButton(onClick = onRefresh) {
                                 Icon(Icons.Outlined.Refresh, contentDescription = "Refresh sessions")
@@ -4410,15 +4943,13 @@ private fun SessionDrawer(
         when {
             showInitialLoading -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = CloverAccent, strokeWidth = 3.dp)
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            "Loading sessions…",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = CloverText3,
-                        )
-                    }
+                    StartupWait(
+                        phase = StartupPhase.Sessions,
+                        next = StartupPhase.SessionsNext,
+                        onTimedOut = {
+                            TextButton(onClick = onRefresh) { Text("重试") }
+                        },
+                    )
                 }
             }
 
@@ -4432,9 +4963,9 @@ private fun SessionDrawer(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             if (query.isNotEmpty()) {
-                                "No sessions match \"$query\""
+                                "没有匹配的会话"
                             } else {
-                                "No sessions yet"
+                                "还没有会话"
                             },
                             style = MaterialTheme.typography.bodyLarge,
                             color = CloverText2,
@@ -4442,9 +4973,9 @@ private fun SessionDrawer(
                         Spacer(Modifier.height(8.dp))
                         Text(
                             if (query.isNotEmpty()) {
-                                "Try another keyword, or clear the search."
+                                "换个词，或清空搜索。"
                             } else {
-                                "Create a session to start chatting."
+                                "新建一个会话后再开始聊天。"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = CloverText3,
@@ -4515,22 +5046,6 @@ private fun SessionDrawer(
             }
         }
     }
-}
-
-private data class SessionGroup(val name: String, val sessions: List<RuntimeSession>)
-
-private fun sessionGroups(sessions: List<RuntimeSession>): List<SessionGroup> {
-    val pinned = sessions.filter { it.pinned }
-    val rest = sessions.filterNot { it.pinned }
-    val groups = mutableListOf<SessionGroup>()
-    if (pinned.isNotEmpty()) groups += SessionGroup("置顶", pinned)
-    val named = rest
-        .groupBy { it.project?.trim().orEmpty() }
-        .toSortedMap(compareBy { if (it.isEmpty()) "\uFFFF" else it.lowercase() })
-    named.forEach { (project, rows) ->
-        groups += SessionGroup(project.ifBlank { "未分类" }, rows)
-    }
-    return groups
 }
 
 @Composable
@@ -4638,6 +5153,10 @@ private fun SessionDrawerRow(
                     SessionWorkingBadge()
                 }
             }
+            session.recap?.takeIf { it.isNotBlank() }?.let { recap ->
+                Text(recap, style = MaterialTheme.typography.bodySmall, color = CloverText2,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
             if (metadata.isNotEmpty()) {
                 Text(
                     metadata,
@@ -4667,14 +5186,16 @@ private fun SessionDrawerRow(
                     },
                     leadingIcon = { Icon(Icons.Outlined.PushPin, contentDescription = null) },
                 )
-                DropdownMenuItem(
-                    text = { Text("项目分类") },
-                    onClick = {
-                        menuOpen = false
-                        onProject()
-                    },
-                    leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-                )
+                if (!isFixedRoleSession(session)) {
+                    DropdownMenuItem(
+                        text = { Text("项目分类") },
+                        onClick = {
+                            menuOpen = false
+                            onProject()
+                        },
+                        leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
+                    )
+                }
                 DropdownMenuItem(
                     text = { Text("修改名称") },
                     onClick = {

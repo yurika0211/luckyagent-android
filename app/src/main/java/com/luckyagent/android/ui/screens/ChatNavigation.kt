@@ -51,6 +51,35 @@ internal fun sessionNavigationBackground(tasks: List<AutonomyTaskSummary>): Auto
         ?: tasks.firstOrNull { it.state.taskIsActive() }
         ?: tasks.maxByOrNull { it.lastActivityAt ?: it.completedAt ?: it.updatedAt ?: it.createdAt ?: "" }
 
+/** Local hide keys. Deleting a card here does not delete the computer's record. */
+enum class SessionCardKind(val key: String) {
+    Task("task"),
+    Background("background"),
+    Trace("trace"),
+    Memory("memory"),
+    Panel("panel"),
+}
+
+/** Stable id for the whole current-session card. Hiding it does not hide the pages. */
+internal const val SESSION_PANEL_CARD_ID = "panel"
+
+internal fun sessionCardKey(sessionId: String, kind: SessionCardKind, id: String): String {
+    val owner = sessionId.trim()
+    val item = id.trim()
+    if (owner.isEmpty() || item.isEmpty()) return ""
+    return "$owner|${kind.key}|$item"
+}
+
+internal fun hiddenSessionCard(
+    hidden: Set<String>,
+    sessionId: String,
+    kind: SessionCardKind,
+    id: String?,
+): Boolean {
+    val key = sessionCardKey(sessionId, kind, id.orEmpty())
+    return key.isNotEmpty() && key in hidden
+}
+
 /**
  * Phone drawer and wide rail share this list. Session progress is a card on
  * chat, so tasks, traces, memory, and the background board are not peers here.

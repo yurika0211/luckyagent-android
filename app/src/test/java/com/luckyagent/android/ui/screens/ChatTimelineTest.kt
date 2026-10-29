@@ -96,6 +96,30 @@ class ChatTimelineTest {
     }
 
     @Test
+    fun truncatedToolResultKeepsTheExpandHandleOnItsOwnBubble() {
+        val messages = listOf(
+            ProviderMessage(
+                role = "assistant",
+                content = "Reading",
+                toolCalls = listOf(HistoryToolCall(id = "call-1", name = "file_read", arguments = "{}")),
+            ),
+            ProviderMessage(
+                role = "tool",
+                name = "file_read",
+                content = "preview\n...[truncated]",
+                toolCallId = "call-1",
+                contentTruncated = true,
+            ),
+        )
+
+        val tool = messages.flatMapIndexed { index, message -> message.toHistoryBubbles(index) }
+            .single { it.role == "tool" && it.toolOutput != null }
+
+        assertTrue(tool.contentTruncated)
+        assertEquals(1, tool.historyIndex)
+    }
+
+    @Test
     fun loadingAHistoryPageInTheMiddleOfAToolQueryStillProducesOneFold() {
         val items = timeline(round(3) + round(4) + ProviderMessage(role = "assistant", content = "Done"), startIndex = 200)
 
@@ -120,6 +144,17 @@ class ChatTimelineTest {
         assertEquals(3, items.size)
         assertEquals("Read the entrypoint first", (items[1] as ChatTimelineItem.Process).steps.single { it.isIntermediate }.content)
         assertEquals("Implemented", (items[2] as ChatTimelineItem.Message).bubble.content)
+    }
+
+    @Test
+    fun truncatedHistoryRowKeepsTheServerIndexAndThePreviewFlag() {
+        val bubble = ProviderMessage(role = "assistant", content = "preview", contentTruncated = true)
+            .toHistoryBubbles(idx = 17)
+            .single { it.role == "assistant" }
+
+        assertEquals(true, bubble.contentTruncated)
+        assertEquals(17, bubble.historyIndex)
+        assertEquals("preview", bubble.content)
     }
 
     @Test
@@ -216,31 +251,213 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun historyRefreshDropsTheLocalUserOnceTheServerStoredIt() {
-        val turn = "turn-7"
+    fun historyRefreshReplacesTheLiveTurnByServerOrdinal() {
         val live = listOf(
             ChatBubble("u-live", "user", "what is in the file"),
-            ChatBubble("reasoning-$turn-1", "reasoning", "reading the file"),
+            ChatBubble("reasoning-live", "reasoning", "reading the file"),
             ChatBubble("a-live", "assistant", "partial", streaming = true),
         )
-        val history = listOf(
-            ChatBubble("h-0-user", "user", "old"),
-            ChatBubble("h-1-user", "user", "what is in the file"),
+        val userOnly = listOf(
+            ChatBubble("h-0", "user", "old", serverOrdinal = 0),
+            ChatBubble("h-1", "user", "what is in the file", serverOrdinal = 1),
         )
-        assertEquals(live.map { it.id }, dedupeLiveTurn(history, live).map { it.id })
-        val stillRunning = listOf(ChatBubble("h-0-user", "user", "old"))
-        assertEquals(live.map { it.id }, dedupeLiveTurn(stillRunning, live).map { it.id })
+
+        // Only the stored user row is confirmed; the running rows stay.
+        assertEquals(
+            listOf("reasoning-live", "a-live"),
+            dedupeLiveTurn(userOnly, live, turnOrdinal = 1).map { it.id },
+        )
+        // Nothing stored past this turn yet.
+        val notStoredYet = listOf(ChatBubble("h-0", "user", "old", serverOrdinal = 0))
+        assertEquals(
+            live.map { it.id },
+            dedupeLiveTurn(notStoredYet, live, turnOrdinal = 1).map { it.id },
+        )
+        // Once the answer is stored, the whole live turn is history's.
+        val complete = userOnly + listOf(
+            ChatBubble("h-2", "reasoning", "reading the file", serverOrdinal = 2),
+            ChatBubble("h-3", "assistant", "the stored answer", serverOrdinal = 3),
+        )
+        assertEquals(emptyList<String>(), dedupeLiveTurn(complete, live, turnOrdinal = 1).map { it.id })
+    }
+
+    @Test
+    fun anEarlierIdenticalUserMessageCannotRetireTheLiveTurn() {
+        // Turn ordinal 5 is not stored yet, even though an identical text sits at 0
+        // with its own answer after it.
         val olderCopy = listOf(
-            ChatBubble("h-0-user", "user", "what is in the file"),
-            ChatBubble("h-1-assistant", "assistant", "an earlier answer"),
+            ChatBubble("h-0", "user", "what is in the file", serverOrdinal = 0),
+            ChatBubble("h-1", "assistant", "an earlier answer", serverOrdinal = 1),
         )
-        assertEquals(live.map { it.id }, dedupeLiveTurn(olderCopy, live).map { it.id })
-        val stored = olderCopy + listOf(
-            ChatBubble("h-2-user", "user", "what is in the file"),
-            ChatBubble("h-3-reasoning", "reasoning", "reading the file"),
-            ChatBubble("h-4-assistant", "assistant", "partial"),
+        val live = listOf(
+            ChatBubble("u-live", "user", "what is in the file"),
+            ChatBubble("a-live", "assistant", "partial", streaming = true),
         )
-        assertEquals(emptyList<String>(), dedupeLiveTurn(stored, live).map { it.id })
+
+        assertEquals(live.map { it.id }, dedupeLiveTurn(olderCopy, live, turnOrdinal = 5).map { it.id })
+    }
+
+    @Test
+    fun withoutAProvenOrdinalNothingIsDropped() {
+        val live = listOf(
+            ChatBubble("u-live", "user", "hello"),
+            ChatBubble("a-live", "assistant", "hi"),
+        )
+        val stored = listOf(ChatBubble("h-0", "user", "hello", serverOrdinal = 0))
+
+        assertEquals(live.map { it.id }, dedupeLiveTurn(stored, live, turnOrdinal = null).map { it.id })
+    }
+
+    @Test
+    fun aGroupingMismatchKeepsTheRowInsteadOfDeletingContent() {
+        // Live row maps to ordinal 2, but history stored a tool result there, not
+        // an assistant answer. Keep the live row rather than lose the answer.
+        val live = listOf(
+            ChatBubble("u-live", "user", "question"),
+            ChatBubble("a-live", "assistant", "streaming answer", streaming = true),
+        )
+        val stored = listOf(
+            ChatBubble("h-0", "user", "question", serverOrdinal = 0),
+            ChatBubble("h-1", "tool", "file_read", serverOrdinal = 1, toolName = "file_read"),
+        )
+
+        assertEquals(listOf("a-live"), dedupeLiveTurn(stored, live, turnOrdinal = 0).map { it.id })
+    }
+
+    @Test
+    fun theStatusBoxIsNotASourceRow() {
+        val live = listOf(
+            ChatBubble("u-live", "user", "question"),
+            ChatBubble("reasoning-turn-3-0", "reasoning", "", reasoningHasContent = false),
+        )
+        val stored = listOf(ChatBubble("h-0", "user", "question", serverOrdinal = 0))
+
+        // The user row moves to history, the live status box stays with the turn.
+        assertEquals(
+            listOf("reasoning-turn-3-0"),
+            dedupeLiveTurn(stored, live, turnOrdinal = 0).map { it.id },
+        )
+    }
+
+    @Test
+    fun liveTurnOrdinalsShareOneIndexPerServerMessage() {
+        val turn = "turn-9"
+        val live = listOf(
+            ChatBubble("u-live", "user", "what is in the file"),
+            ChatBubble("reasoning-$turn-0", "reasoning", "reading", reasoningHasContent = true),
+            ChatBubble(
+                "tool-$turn:1",
+                "tool",
+                "file_read",
+                toolName = "file_read",
+                toolArgs = "{}",
+                toolOutput = "file contents",
+                toolDone = true,
+                stepId = "$turn:1",
+            ),
+            ChatBubble("a-round", "assistant", "looking", isIntermediate = true),
+            ChatBubble("a-live", "assistant", "still streaming", streaming = true),
+        )
+
+        // user | assistant call | commentary still on the call | result reserved | answer
+        assertEquals(listOf(40, 41, 41, 41, 43), liveTurnOrdinals(live, 40))
+    }
+
+    @Test
+    fun aMergedToolBubbleDropsTheFinalAnswerOnceHistoryStoresTheResult() {
+        val live = listOf(
+            ChatBubble("u-live", "user", "read it"),
+            ChatBubble("reasoning-turn-1", "reasoning", "reading", reasoningHasContent = true),
+            ChatBubble(
+                "tool-turn-1",
+                "tool",
+                "file_read",
+                toolName = "file_read",
+                toolArgs = "{}",
+                toolOutput = "contents",
+                toolDone = true,
+            ),
+            ChatBubble("a-live", "assistant", "the file says hello", streaming = true),
+        )
+        val stored = listOf(
+            ChatBubble("h-0", "user", "read it", serverOrdinal = 0),
+            ChatBubble("h-1-reasoning", "reasoning", "reading", serverOrdinal = 1),
+            ChatBubble("h-1-tool", "tool", "file_read", serverOrdinal = 1, toolName = "file_read", toolArgs = "{}"),
+            ChatBubble("h-2-result", "tool", "contents", serverOrdinal = 2, toolName = "file_read", toolOutput = "contents"),
+            ChatBubble("h-3", "assistant", "the file says hello", serverOrdinal = 3),
+        )
+
+        assertEquals(emptyList<String>(), dedupeLiveTurn(stored, live, turnOrdinal = 0).map { it.id })
+    }
+
+    @Test
+    fun aUserRowStaysWhenThatOrdinalIsNotAUserMessage() {
+        val live = listOf(
+            ChatBubble("u-live", "user", "again"),
+            ChatBubble("a-live", "assistant", "new answer", streaming = true),
+        )
+        val stored = listOf(
+            ChatBubble("h-0", "user", "again", serverOrdinal = 0),
+            ChatBubble("h-1", "assistant", "old answer", serverOrdinal = 1),
+        )
+
+        assertEquals(listOf("u-live", "a-live"), dedupeLiveTurn(stored, live, turnOrdinal = 1).map { it.id })
+    }
+
+    @Test
+    fun twoSendsOfTheSameTextStayTwoRows() {
+        val live = listOf(
+            ChatBubble("u-second", "user", "again"),
+            ChatBubble("a-second", "assistant", "second answer", streaming = true),
+        )
+        // The first send and its answer are already stored at 0 and 1.
+        val stored = listOf(
+            ChatBubble("h-0", "user", "again", serverOrdinal = 0),
+            ChatBubble("h-1", "assistant", "first answer", serverOrdinal = 1),
+        )
+
+        assertEquals(live.map { it.id }, dedupeLiveTurn(stored, live, turnOrdinal = 2).map { it.id })
+    }
+
+    @Test
+    fun aStoredFoldDoesNotOwnTheNewTurn() {
+        val history = listOf(
+            ChatBubble("u-old", "user", "earlier"),
+            ChatBubble("reasoning-old", "reasoning", "old thought", reasoningHasContent = true),
+            ChatBubble("a-old", "assistant", "earlier answer"),
+        )
+        val items = buildTimeline(history)
+        assertFalse(processOwnsTurn(items.filterIsInstance<ChatTimelineItem.Process>().single().steps, items))
+
+        val opened = history + listOf(
+            ChatBubble("u-new", "user", "next"),
+            ChatBubble("reasoning-turn-2-0", "reasoning", "", reasoningHasContent = false),
+        )
+        val next = buildTimeline(opened)
+        val folds = next.filterIsInstance<ChatTimelineItem.Process>()
+        assertEquals(2, folds.size)
+        assertFalse(processOwnsTurn(folds[0].steps, next))
+        assertTrue(processOwnsTurn(folds[1].steps, next))
+        assertTrue(folds[1].steps.all(::isTurnStatusPlaceholder))
+        assertEquals(null, outerProcessLabel("thinking", null, isResponding = true, isLatestProcess = true, ownsCurrentTurn = false))
+    }
+
+    @Test
+    fun aRealStepReplacesTheStatusBoxInsteadOfAddingASecondOne() {
+        val opened = listOf(
+            ChatBubble("u-new", "user", "next"),
+            ChatBubble("reasoning-turn-2-0", "reasoning", "", reasoningHasContent = false),
+        )
+        assertEquals(1, buildTimeline(opened).count { it is ChatTimelineItem.Process })
+
+        val replaced = listOf(
+            opened[0],
+            opened[1].copy(content = "reading the file", reasoningHasContent = true),
+        )
+        val items = buildTimeline(replaced)
+        val fold = items.single { it is ChatTimelineItem.Process } as ChatTimelineItem.Process
+        assertEquals(listOf("reading the file"), fold.steps.map { it.content })
+        assertFalse(fold.steps.any(::isTurnStatusPlaceholder))
     }
 
     @Test
@@ -274,5 +491,26 @@ class ChatTimelineTest {
         assertEquals("请求失败", outerProcessLabel(null, "请求失败", isResponding = false, isLatestProcess = true))
         assertEquals(null, outerProcessLabel("reading the file", "已取消", isResponding = false, isLatestProcess = false))
         assertEquals("reading the file", outerProcessLabel("reading the file", "已取消", isResponding = true, isLatestProcess = true))
+    }
+
+    @Test
+    fun surfaceStaysLiveForTheRowsOnScreen() {
+        val visible = listOf<Any>("a", "b", "c")
+
+        assertTrue(surfaceStaysLive(visible, "b", wasLive = true))
+        assertTrue(surfaceStaysLive(visible, "b", wasLive = false))
+    }
+
+    @Test
+    fun surfaceComesDownOnceARowSettlesOffScreen() {
+        val visible = listOf<Any>("a", "b", "c")
+
+        assertFalse(surfaceStaysLive(visible, "z", wasLive = true))
+    }
+
+    @Test
+    fun surfaceWaitsForTheFirstLayout() {
+        assertTrue(surfaceStaysLive(emptyList(), "a", wasLive = true))
+        assertFalse(surfaceStaysLive(emptyList(), "a", wasLive = false))
     }
 }

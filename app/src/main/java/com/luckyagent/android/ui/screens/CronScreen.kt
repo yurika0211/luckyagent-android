@@ -46,10 +46,10 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
             eyebrow = "Runtime",
             title = "定时",
             subtitle = when {
-                state.cronLoading -> "Querying scheduled tasks…"
-                state.cronError != null && state.cronJobs.isEmpty() -> "Unable to query scheduler"
-                state.cronRunning -> "Scheduler running · ${state.cronCount} task(s)"
-                else -> "Scheduler stopped · ${state.cronCount} task(s)"
+                state.cronLoading -> "正在读取定时任务"
+                state.cronError != null && state.cronJobs.isEmpty() -> "没能读到定时任务。重试这一条。"
+                state.cronRunning -> "定时已开启 · ${state.cronCount} 项"
+                else -> "定时已停止 · ${state.cronCount} 项"
             },
             actions = {
                 IconButton(onClick = vm::refreshCron, enabled = !state.cronLoading) {
@@ -62,13 +62,15 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
 
         when {
             state.cronLoading && state.cronJobs.isEmpty() -> {
-                Text("Loading cron tasks…", color = CloverText2, modifier = Modifier.padding(16.dp))
+                Text("正在读取定时任务", color = CloverText2, modifier = Modifier.padding(16.dp))
             }
             !state.cronLoading && state.cronJobs.isEmpty() -> {
                 EmptyState(
-                    title = "No cron tasks",
-                    body = "Scheduled tasks created by /cron add will appear here.",
+                    title = "还没有定时任务",
+                    body = "在聊天里用 /cron add 创建之后，会出现在这里。",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                     icon = {
                         Icon(
                             Icons.Outlined.EventBusy,
@@ -97,7 +99,7 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
 private fun CronJobCard(job: CronJob) {
     CloverCard {
         CardTitleRow(
-            title = job.id.ifBlank { job.name.ifBlank { "Cron task" } },
+            title = job.name.ifBlank { job.id.ifBlank { "定时任务" } },
             subtitle = job.schedule.ifBlank { null },
             trailing = { StatusChip(job.status.ifBlank { "unknown" }) },
         )

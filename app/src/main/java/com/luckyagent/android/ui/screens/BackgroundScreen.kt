@@ -19,10 +19,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,8 +76,10 @@ import java.util.Locale
 @Composable
 fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
     val query = state.backgroundQuery.trim().lowercase()
-    val tasks = remember(state.backgroundTasks, state.backgroundFilter, state.backgroundQuery) {
+    val sessionId = state.settings.sessionId
+    val tasks = remember(state.backgroundTasks, state.backgroundFilter, state.backgroundQuery, state.hiddenSessionCards, sessionId) {
         state.backgroundTasks.filter { task ->
+            if (hiddenSessionCard(state.hiddenSessionCards, sessionId, SessionCardKind.Background, task.id)) return@filter false
             val matchesFilter = when (state.backgroundFilter) {
                 BackgroundFilter.All -> true
                 BackgroundFilter.Ready -> task.state.equals("ready", ignoreCase = true)
@@ -103,7 +107,7 @@ fun BackgroundScreen(state: AppUiState, vm: AppViewModel) {
     ) {
         ScreenHeader(
             eyebrow = "Runtime",
-            title = if (detail == null) "后台黑板" else "后台任务详情",
+            title = if (detail == null) "多 agent 画布" else "后台任务详情",
             subtitle = if (detail == null) {
                 if (state.backgroundDashboard == null) "正在获取后台状态" else
                 "${state.backgroundDashboard.workers.size} Worker · ${state.backgroundTasks.size} 项任务" +
@@ -206,17 +210,19 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
 
     when {
         state.backgroundLoading && state.backgroundDashboard == null -> {
-            Text("Loading background tasks…", color = CloverText2, modifier = Modifier.padding(16.dp))
+            Text("正在读取后台任务", color = CloverText2, modifier = Modifier.padding(16.dp))
         }
         !state.backgroundLoading && tasks.isEmpty() && state.backgroundDashboard == null -> {
             EmptyState(
-                title = "No background tasks",
+                title = if (state.backgroundTasks.isEmpty()) "还没有后台任务" else "没有匹配的后台任务",
                 body = if (state.backgroundTasks.isEmpty()) {
-                    "Autonomy queue tasks will appear here."
+                    "聊天里交给后台继续的工作会出现在这里。"
                 } else {
-                    "No background tasks match the current filters."
+                    "换个筛选，或回到聊天继续这一轮。"
                 },
                 modifier = Modifier.padding(16.dp),
+                actionLabel = "回到聊天",
+                onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 icon = {
                     Icon(
                         Icons.Outlined.HourglassEmpty,
@@ -247,6 +253,7 @@ private fun BackgroundListContent(state: AppUiState, tasks: List<AutonomyTaskSum
                         task,
                         onClick = { vm.selectBackgroundTask(task.id) },
                         onOpenSession = task.executionSession()?.let { { vm.openBackgroundSession(it) } },
+                        onHide = { vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Background, task.id) },
                     )
                 }
             }
@@ -361,12 +368,33 @@ private fun BackgroundTaskCard(
     task: AutonomyTaskSummary,
     onClick: () -> Unit,
     onOpenSession: (() -> Unit)? = null,
+    onHide: (() -> Unit)? = null,
 ) {
+    var confirmHide by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (confirmHide && onHide != null) {
+        HideSessionCardDialog(
+            name = "后台",
+            onDismiss = { confirmHide = false },
+            onConfirm = {
+                confirmHide = false
+                onHide()
+            },
+        )
+    }
     CloverCard(onClick = onClick) {
         CardTitleRow(
             title = task.title.ifBlank { task.id },
             subtitle = task.id.takeIf { task.title.isNotBlank() },
-            trailing = { StatusChip(task.state.ifBlank { "unknown" }) },
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onHide != null) {
+                        IconButton(onClick = { confirmHide = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除后台", modifier = Modifier.size(16.dp), tint = CloverText3)
+                        }
+                    }
+                    StatusChip(task.state.ifBlank { "unknown" })
+                }
+            },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MetaChip(task.priority.ifBlank { "normal" })
@@ -385,7 +413,7 @@ private fun BackgroundTaskCard(
             TextButton(onClick = open, contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Open agent chat")
+                Text("打开结果")
             }
         }
     }
@@ -465,9 +493,9 @@ private fun BackgroundDetailContent(state: AppUiState, task: AutonomyTaskDetail,
                     ) {
                         Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Open agent chat")
+                        Text("打开结果")
                     }
-                }
+                } ?: Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 BackgroundDetailPayload("Last activity", formatBackgroundTime(task.lastActivityAt))
                 BackgroundDetailPayload("Checkpoint", if (task.checkpointPresent) "Saved · ${formatBackgroundTime(task.checkpointAt)}" else "No checkpoint")
                 task.verification?.takeIf { it.isNotBlank() }?.let { BackgroundDetailPayload("Verification", it) }

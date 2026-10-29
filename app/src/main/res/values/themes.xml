@@ -9,4 +9,9 @@
         <item name="android:windowBackground">@color/clover_bg</item>
         <item name="android:colorPrimary">@color/clover_accent</item>
     </style>
+
+    <!-- Covers only the gap before the first Compose frame. It does not wait for the session API. -->
+    <style name="Theme.LuckyAgent.Starting" parent="Theme.LuckyAgent">
+        <item name="android:windowBackground">@drawable/splash_window</item>
+    </style>
 </resources>

@@ -36,6 +36,8 @@ data class ClientSettings(
     val notifyOnCron: Boolean = true,
     val notifyOnSubagent: Boolean = true,
     val notifyOnBackground: Boolean = true,
+    /** Off: only finished, failed, or blocked work alerts. On: progress updates a quiet notice. */
+    val notifyOnProgress: Boolean = false,
     val chatBackgroundFile: String = "",
     val chatBackgroundDim: Int = 12,
     val avatarFile: String = "",
@@ -104,6 +106,7 @@ class SettingsRepository(context: Context) {
             notifyOnCron = prefs.getBoolean(KEY_NOTIFY_ON_CRON, true),
             notifyOnSubagent = prefs.getBoolean(KEY_NOTIFY_ON_SUBAGENT, true),
             notifyOnBackground = prefs.getBoolean(KEY_NOTIFY_ON_BACKGROUND, true),
+            notifyOnProgress = prefs.getBoolean(KEY_NOTIFY_ON_PROGRESS, false),
             chatBackgroundFile = prefs.getString(KEY_CHAT_BACKGROUND, "") ?: "",
             chatBackgroundDim = prefs.getInt(KEY_CHAT_BACKGROUND_DIM, 12).coerceIn(0, 70),
             avatarFile = prefs.getString(KEY_AVATAR, "") ?: "",
@@ -182,6 +185,7 @@ class SettingsRepository(context: Context) {
             if (next.notifyOnCron != previous.notifyOnCron) putBoolean(KEY_NOTIFY_ON_CRON, next.notifyOnCron)
             if (next.notifyOnSubagent != previous.notifyOnSubagent) putBoolean(KEY_NOTIFY_ON_SUBAGENT, next.notifyOnSubagent)
             if (next.notifyOnBackground != previous.notifyOnBackground) putBoolean(KEY_NOTIFY_ON_BACKGROUND, next.notifyOnBackground)
+            if (next.notifyOnProgress != previous.notifyOnProgress) putBoolean(KEY_NOTIFY_ON_PROGRESS, next.notifyOnProgress)
             if (next.chatBackgroundFile != previous.chatBackgroundFile) putString(KEY_CHAT_BACKGROUND, next.chatBackgroundFile)
             if (next.chatBackgroundDim != previous.chatBackgroundDim) putInt(KEY_CHAT_BACKGROUND_DIM, next.chatBackgroundDim.coerceIn(0, 70))
             if (next.avatarFile != previous.avatarFile) putString(KEY_AVATAR, next.avatarFile)
@@ -202,6 +206,43 @@ class SettingsRepository(context: Context) {
     }
 
     fun snapshot(): ClientSettings = _settings.value
+
+    /** Cards the user closed from chat. The task itself stays on the computer. */
+    fun dismissedWorkCardIds(): Set<String> = synchronized(prefs) {
+        prefs.getStringSet(KEY_DISMISSED_WORK_CARDS, emptySet()).orEmpty()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
+
+    fun dismissWorkCard(id: String) {
+        val cardId = id.trim()
+        if (cardId.isEmpty()) return
+        synchronized(prefs) {
+            val next = dismissedWorkCardIds() + cardId
+            prefs.edit().putStringSet(KEY_DISMISSED_WORK_CARDS, next).apply()
+        }
+    }
+
+    /**
+     * Cards hidden from the current session only. The computer still has the
+     * task, background item, trace, and memory.
+     */
+    fun hiddenSessionCards(): Set<String> = synchronized(prefs) {
+        prefs.getStringSet(KEY_HIDDEN_SESSION_CARDS, emptySet()).orEmpty()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
+
+    fun hideSessionCard(key: String) {
+        val cardKey = key.trim()
+        if (cardKey.isEmpty()) return
+        synchronized(prefs) {
+            val next = hiddenSessionCards() + cardKey
+            prefs.edit().putStringSet(KEY_HIDDEN_SESSION_CARDS, next).apply()
+        }
+    }
 
     /** Last visible chat position, keyed by session so switching chats keeps context. */
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = synchronized(prefs) {
@@ -254,6 +295,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_NOTIFY_ON_CRON = "notify_on_cron"
         private const val KEY_NOTIFY_ON_SUBAGENT = "notify_on_subagent"
         private const val KEY_NOTIFY_ON_BACKGROUND = "notify_on_background"
+        private const val KEY_NOTIFY_ON_PROGRESS = "notify_on_progress"
         private const val KEY_CHAT_BACKGROUND = "chat_background_file"
         private const val KEY_CHAT_BACKGROUND_DIM = "chat_background_dim"
         private const val KEY_AVATAR = "avatar_file"
@@ -269,6 +311,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_STANDALONE_KEY = "standalone_api_key"
         private const val KEY_STANDALONE_MODEL = "standalone_model"
         private const val KEY_STANDALONE_SESSION = "standalone_session_id"
+        private const val KEY_DISMISSED_WORK_CARDS = "dismissed_work_cards"
+        private const val KEY_HIDDEN_SESSION_CARDS = "hidden_session_cards"
     }
 }
 

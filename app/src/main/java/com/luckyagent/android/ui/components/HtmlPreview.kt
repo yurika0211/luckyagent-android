@@ -244,7 +244,7 @@ internal fun HtmlPreviewDialog(
                             Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                                 Text(renderFailed.orEmpty(), color = MaterialTheme.colorScheme.error)
                                 Spacer(Modifier.height(8.dp))
-                                CodeText(content.orEmpty().take(32_000))
+                                HtmlSourceText(content.orEmpty(), source != null)
                             }
                         } else {
                             HtmlPageView(
@@ -261,8 +261,7 @@ internal fun HtmlPreviewDialog(
                         }
                         if (showSource) Surface(Modifier.fillMaxSize()) {
                             Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp)) {
-                                if (content.orEmpty().length > 32_000) Text("源码较长，此处显示前 32,000 字符；下载可保存完整文件")
-                                CodeText(content.orEmpty().take(32_000))
+                                HtmlSourceText(content.orEmpty(), source != null)
                             }
                         }
                     }
@@ -378,4 +377,15 @@ private fun HtmlPageView(
     }, onRelease = { it.stopLoading(); it.destroy() })
 }
 
-private fun blockedHtmlResource() = WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+internal fun blockedHtmlResource() = WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+
+/** Source shown in the viewer. A fenced message is already bounded; an attachment is not. */
+internal const val HTML_SOURCE_PREVIEW_LIMIT = 32_000
+
+@Composable
+internal fun HtmlSourceText(content: String, complete: Boolean) {
+    if (!complete && content.length > HTML_SOURCE_PREVIEW_LIMIT) {
+        Text("源码较长，此处显示前 ${HTML_SOURCE_PREVIEW_LIMIT} 字符；下载可保存完整文件")
+    }
+    CodeText(if (complete) content else content.take(HTML_SOURCE_PREVIEW_LIMIT))
+}

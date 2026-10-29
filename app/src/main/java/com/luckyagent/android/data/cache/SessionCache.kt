@@ -32,6 +32,9 @@ data class CachedSessionEntity(
     val reachedOldest: Boolean,
     /** Server index of the oldest stored message. -1 when the body was never stored. */
     val startIndex: Int,
+    /** Snapshot that produced cached_messages, not the newer session listing. */
+    val historyMessageCount: Int? = null,
+    val historyUpdatedAt: String? = null,
 )
 
 @Entity(
@@ -48,6 +51,11 @@ data class CachedMessageEntity(
     val content: String?,
     val createdAt: String?,
     val toolCallId: String?,
+    /**
+     * Message JSON without the capped body when the row is a preview.
+     * Empty on rows written before that split. [content] is the preview either way
+     * and must not be treated as the stored body when it ends with the truncation marker.
+     */
     val rawJson: String,
 )
 
@@ -82,6 +90,17 @@ data class CachedSessionRow(
     val lastOpenedAt: Long,
     val reachedOldest: Boolean,
     val startIndex: Int,
+)
+
+/** Listing metadata can advance without fetching any history bodies. */
+data class CachedSessionListing(
+    val sessionId: String,
+    val title: String?,
+    val pinned: Boolean,
+    val project: String?,
+    val messageCount: Int?,
+    val createdAt: String?,
+    val updatedAt: String?,
 )
 
 @Dao
@@ -125,6 +144,9 @@ interface SessionCacheDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSession(entity: CachedSessionEntity)
+
+    @Query("UPDATE cached_sessions SET lastOpenedAt = :openedAt WHERE endpoint = :endpoint AND sessionId = :sessionId")
+    suspend fun touchOpened(endpoint: String, sessionId: String, openedAt: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMessages(entities: List<CachedMessageEntity>)
@@ -176,6 +198,42 @@ interface SessionCacheDao {
     )
     suspend fun sessionIdsByRecentOpen(endpoint: String): List<String>
 
+    /**
+     * Keep the listing refresh atomic with history writes. Reading a session
+     * before a concurrent savePage and replacing that old copy would roll back
+     * its history snapshot, even if the listing itself never changes those fields.
+     */
+    @Transaction
+    suspend fun saveSessionList(endpoint: String, listings: List<CachedSessionListing>, now: Long) {
+        listings.forEach { listing ->
+            val existing = session(endpoint, listing.sessionId)
+            upsertSession(
+                CachedSessionEntity(
+                    endpoint = endpoint,
+                    sessionId = listing.sessionId,
+                    title = listing.title ?: existing?.title,
+                    pinned = listing.pinned,
+                    project = listing.project,
+                    messageCount = listing.messageCount ?: existing?.messageCount ?: 0,
+                    createdAt = listing.createdAt ?: existing?.createdAt,
+                    updatedAt = listing.updatedAt ?: existing?.updatedAt,
+                    cachedAt = now,
+                    lastOpenedAt = existing?.lastOpenedAt ?: 0L,
+                    reachedOldest = existing?.reachedOldest ?: false,
+                    startIndex = existing?.startIndex ?: -1,
+                    historyMessageCount = existing?.historyMessageCount,
+                    historyUpdatedAt = existing?.historyUpdatedAt,
+                ),
+            )
+        }
+        val remoteIds = listings.mapTo(HashSet()) { it.sessionId }
+        sessionIdsByRecentOpen(endpoint).filter { it !in remoteIds }.forEach { stale ->
+            deleteMessages(endpoint, stale)
+            deleteSession(endpoint, stale)
+            deleteOutboundSession(endpoint, stale)
+        }
+    }
+
     @Transaction
     suspend fun replaceMessages(
         session: CachedSessionEntity,
@@ -208,7 +266,7 @@ interface SessionCacheDao {
 
 @Database(
     entities = [CachedSessionEntity::class, CachedMessageEntity::class, CachedOutboundEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class SessionCacheDatabase : RoomDatabase() {
@@ -241,6 +299,16 @@ abstract class SessionCacheDatabase : RoomDatabase() {
                     ON cached_outbox(endpoint, sessionId, createdAt)
                     """.trimIndent(),
                 )
+            }
+        }
+
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Old listing metadata may already describe unfetched history.
+                // Leave the new snapshot unverified; keep all bodies and outbox
+                // rows available offline until the next successful history fetch.
+                db.execSQL("ALTER TABLE cached_sessions ADD COLUMN historyMessageCount INTEGER")
+                db.execSQL("ALTER TABLE cached_sessions ADD COLUMN historyUpdatedAt TEXT")
             }
         }
     }

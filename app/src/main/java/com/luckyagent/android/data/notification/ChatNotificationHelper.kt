@@ -11,11 +11,17 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.luckyagent.android.MainActivity
 
-enum class RuntimeNoticeKind(val channelId: String, val channelName: String, val titlePrefix: String) {
-    Chat("chat_completed", "对话完成", "对话完成"),
-    Cron("cron_message", "定时消息", "定时消息"),
-    Subagent("subagent_progress", "子代理进度", "子代理"),
-    Background("background_progress", "后台任务", "后台任务"),
+enum class RuntimeNoticeKind(
+    val channelId: String,
+    val channelName: String,
+    val titlePrefix: String,
+    val importance: Int,
+) {
+    Chat("chat_completed", "对话完成", "对话完成", NotificationManager.IMPORTANCE_DEFAULT),
+    Cron("cron_message", "定时结果", "定时结果", NotificationManager.IMPORTANCE_DEFAULT),
+    Subagent("subagent_progress", "子代理结果", "子代理", NotificationManager.IMPORTANCE_DEFAULT),
+    Background("background_progress", "后台任务结果", "后台任务", NotificationManager.IMPORTANCE_DEFAULT),
+    Progress("runtime_progress", "任务进度", "进度", NotificationManager.IMPORTANCE_LOW),
 }
 
 class ChatNotificationHelper(private val context: Context) {
@@ -38,12 +44,12 @@ class ChatNotificationHelper(private val context: Context) {
     }
 
     @Synchronized
-    fun notifyCron(sessionId: String, eventId: String?, content: String?) {
+    fun notifyCron(sessionId: String, eventId: String?, content: String?, failed: Boolean = false) {
         post(
             kind = RuntimeNoticeKind.Cron,
-            dedupeKey = "cron:${sessionId}:${eventId.orEmpty()}:${content.orEmpty().hashCode()}",
+            dedupeKey = "cron:${sessionId}:${eventId.orEmpty()}",
             notificationId = "cron:$sessionId:${eventId.orEmpty()}",
-            title = "LuckyAgent · 定时消息",
+            title = if (failed) "LuckyAgent · 定时失败" else "LuckyAgent · 定时完成",
             body = summarize(content),
             sessionId = sessionId,
             destination = "chat",
@@ -60,6 +66,7 @@ class ChatNotificationHelper(private val context: Context) {
         body: String,
         sessionId: String = "",
         terminal: Boolean = false,
+        background: Boolean = kind == RuntimeNoticeKind.Background,
     ) {
         post(
             kind = kind,
@@ -68,10 +75,11 @@ class ChatNotificationHelper(private val context: Context) {
             title = title.ifBlank { "LuckyAgent · ${kind.titlePrefix}" },
             body = body.ifBlank { kind.titlePrefix },
             sessionId = sessionId,
-            destination = if (kind == RuntimeNoticeKind.Background) "background" else "tasks",
+            destination = if (background) "background" else "tasks",
             ongoing = !terminal,
             remember = false,
             taskId = taskId,
+            quiet = !terminal,
         )
     }
 
@@ -90,16 +98,18 @@ class ChatNotificationHelper(private val context: Context) {
         ongoing: Boolean,
         remember: Boolean,
         taskId: String? = null,
+        quiet: Boolean = false,
     ) {
         if (android.os.Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         if (remember && dedupeKey.isNotBlank() && delivered.getBoolean(dedupeKey, false)) return
-        ensureChannel(kind)
+        val channelKind = if (quiet) RuntimeNoticeKind.Progress else kind
+        ensureChannel(channelKind)
         val intent = Intent(context, MainActivity::class.java).apply {
             if (sessionId.isNotBlank()) putExtra(MainActivity.EXTRA_SESSION_ID, sessionId)
             putExtra(MainActivity.EXTRA_DESTINATION, destination)
-            // Keep task notifications actionable even when the runtime has not
-            // exposed an execution session link yet.
-            taskId?.takeIf { it.isNotBlank() && sessionId.isBlank() }?.let { putExtra(MainActivity.EXTRA_TASK_ID, it) }
+            // Always carry the task so a missing execution session still opens
+            // that card instead of the module list.
+            taskId?.takeIf { it.isNotBlank() }?.let { putExtra(MainActivity.EXTRA_TASK_ID, it) }
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         val pending = PendingIntent.getActivity(
@@ -108,7 +118,7 @@ class ChatNotificationHelper(private val context: Context) {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, kind.channelId)
+        val notification = NotificationCompat.Builder(context, channelKind.channelId)
             .setSmallIcon(com.luckyagent.android.R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
@@ -116,9 +126,10 @@ class ChatNotificationHelper(private val context: Context) {
             .setContentIntent(pending)
             .setAutoCancel(!ongoing)
             .setOngoing(ongoing)
-            .setOnlyAlertOnce(ongoing)
-            .setCategory(if (kind == RuntimeNoticeKind.Chat || kind == RuntimeNoticeKind.Cron) NotificationCompat.CATEGORY_MESSAGE else NotificationCompat.CATEGORY_PROGRESS)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setOnlyAlertOnce(true)
+            .setSilent(quiet)
+            .setCategory(if (!quiet && (kind == RuntimeNoticeKind.Chat || kind == RuntimeNoticeKind.Cron)) NotificationCompat.CATEGORY_MESSAGE else NotificationCompat.CATEGORY_STATUS)
+            .setPriority(if (quiet) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_DEFAULT)
             .build()
         manager.notify(notificationId.hashCode(), notification)
         if (remember && dedupeKey.isNotBlank()) delivered.edit().putBoolean(dedupeKey, true).apply()
@@ -131,8 +142,9 @@ class ChatNotificationHelper(private val context: Context) {
     private fun ensureChannel(kind: RuntimeNoticeKind) {
         if (android.os.Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(kind.channelId) == null) {
             manager.createNotificationChannel(
-                NotificationChannel(kind.channelId, kind.channelName, NotificationManager.IMPORTANCE_DEFAULT).apply {
+                NotificationChannel(kind.channelId, kind.channelName, kind.importance).apply {
                     description = "LuckyAgent ${kind.channelName}"
+                    if (kind == RuntimeNoticeKind.Progress) setSound(null, null)
                 },
             )
         }

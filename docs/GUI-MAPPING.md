@@ -9,7 +9,8 @@ Source of truth for UX: `lucky-agent/UI/GUI`.
 | Sessions list / search | `SessionDrawerContent` |
 | WebSocket `/api/v1/ws` | `LuckyAgentWsClient` |
 | `fetchRuntime('/v1/sessions')` | `LuckyAgentApi.listSessions` |
-| Settings (server addr, models…) | `SettingsScreen` overview by default; hosts/tokens/session open via **Open connection details** |
+| Settings (server addr, models…) | `SettingsScreen` overview by default; hosts/tokens/session open via **打开详细设置**。连接状态与导航、聊天共用「未连接 / 连接中 / 已连接 / 正在回复」 |
+| Task card status | 状态芯片走中文。模式、来源、角色、事件类型仍用英文短标签，不在这次文案范围内 |
 | Memory graph | `MemoryScreen`，导航和页标题为「记忆」 |
 | Skills / Gateways / Trajectory | 同名 Screen，JSON 只读骨架 |
 | clover CSS tokens | `ui/theme/Color.kt` + `res/values/colors.xml` |

@@ -34,7 +34,7 @@ class SessionCacheRepository internal constructor(
             context.applicationContext,
             SessionCacheDatabase::class.java,
             "luckyagent_session_cache.db",
-        ).addMigrations(SessionCacheDatabase.MIGRATION_2_3)
+        ).addMigrations(SessionCacheDatabase.MIGRATION_2_3, SessionCacheDatabase.MIGRATION_3_4)
             .fallbackToDestructiveMigration()
             .build(),
         json: Json = Json {
@@ -73,9 +73,10 @@ class SessionCacheRepository internal constructor(
     suspend fun sessionMeta(apiBase: String, sessionId: String, apiKey: String = ""): CachedSessionMeta? {
         val row = dao.session(cacheKey(apiBase, apiKey), sessionId) ?: return null
         if (row.startIndex < 0) return null
+        val historyCount = row.historyMessageCount ?: return null
         return CachedSessionMeta(
-            messageCount = row.messageCount,
-            updatedAt = row.updatedAt,
+            messageCount = historyCount,
+            updatedAt = row.historyUpdatedAt,
             reachedOldest = row.reachedOldest,
         )
     }
@@ -145,54 +146,41 @@ class SessionCacheRepository internal constructor(
         val stored = dao.messages(endpoint, session.sessionId)
         if (stored.isEmpty() && session.messageCount > 0) return null
         val messages = withContext(Dispatchers.Default) {
-            stored.map { entity -> decodeMessage(entity.rawJson) ?: return@withContext null }
+            stored.map { entity -> messageFromCache(entity) ?: return@withContext null }
         } ?: return null
         if (stored.withIndex().any { (index, entity) -> entity.ordinal != session.startIndex + index }) return null
         return MessagePage(
             messages = messages,
             startIndex = session.startIndex,
-            messageCount = session.messageCount,
+            // Before v4 the listing may have advanced this count without saving
+            // bodies. These rows are still a useful offline page, not proof that
+            // the remote tail was fetched.
+            messageCount = session.historyMessageCount ?: (session.startIndex + stored.size),
             reachedOldest = session.reachedOldest,
         )
     }
 
     suspend fun touchOpened(apiBase: String, sessionId: String, openedAt: Long = System.currentTimeMillis(), apiKey: String = "") {
-        val endpoint = cacheKey(apiBase, apiKey)
-        val existing = dao.session(endpoint, sessionId) ?: return
-        dao.upsertSession(existing.copy(lastOpenedAt = openedAt))
+        dao.touchOpened(cacheKey(apiBase, apiKey), sessionId, openedAt)
     }
 
     suspend fun saveSessionList(apiBase: String, sessions: List<RuntimeSession>, now: Long = System.currentTimeMillis(), apiKey: String = "") {
         val endpoint = cacheKey(apiBase, apiKey)
-        val remoteIds = sessions.map { it.id }.toSet()
-        sessions.forEach { remote ->
-            val existing = dao.session(endpoint, remote.id)
-            dao.upsertSession(
-                CachedSessionEntity(
-                    endpoint = endpoint,
+        dao.saveSessionList(
+            endpoint,
+            sessions.map { remote ->
+                CachedSessionListing(
                     sessionId = remote.id,
-                    title = remote.title ?: existing?.title,
+                    title = remote.title,
                     pinned = remote.pinned,
                     project = remote.project,
-                    messageCount = remote.messageCount ?: existing?.messageCount ?: 0,
-                    createdAt = remote.createdAt ?: existing?.createdAt,
-                    updatedAt = remote.updatedAt ?: existing?.updatedAt,
-                    cachedAt = now,
-                    lastOpenedAt = existing?.lastOpenedAt ?: 0L,
-                    reachedOldest = existing?.reachedOldest ?: false,
-                    startIndex = existing?.startIndex ?: -1,
-                ),
-            )
-        }
-        dao.sessionIdsByRecentOpen(endpoint)
-            .filter { it !in remoteIds }
-            .forEach { stale ->
-                // Same cleanup as removeSession. A leftover outbox row is restored
-                // on the next launch and resent to a session the computer already dropped.
-                dao.deleteMessages(endpoint, stale)
-                dao.deleteSession(endpoint, stale)
-                dao.deleteOutboundSession(endpoint, stale)
-            }
+                    messageCount = remote.messageCount,
+                    createdAt = remote.createdAt,
+                    updatedAt = remote.updatedAt,
+                )
+            },
+            now,
+        )
     }
 
     suspend fun savePage(
@@ -253,7 +241,9 @@ class SessionCacheRepository internal constructor(
             existing.updatedAt != next.updatedAt ||
             existing.lastOpenedAt != next.lastOpenedAt ||
             existing.reachedOldest != next.reachedOldest ||
-            existing.startIndex != next.startIndex
+            existing.startIndex != next.startIndex ||
+            existing.historyMessageCount != next.historyMessageCount ||
+            existing.historyUpdatedAt != next.historyUpdatedAt
 
     private fun sessionEntity(
         endpoint: String,
@@ -278,6 +268,9 @@ class SessionCacheRepository internal constructor(
         lastOpenedAt = if (opened) now else existing?.lastOpenedAt ?: 0L,
         reachedOldest = page.reachedOldest,
         startIndex = page.startIndex,
+        historyMessageCount = page.messageCount,
+        // A listing timestamp is not a validator for the body just fetched.
+        historyUpdatedAt = updatedAt,
     )
 
     private fun messageEntity(
@@ -293,7 +286,14 @@ class SessionCacheRepository internal constructor(
         content = message.content,
         createdAt = message.createdAt,
         toolCallId = message.toolCallId,
-        rawJson = json.encodeToString(message),
+        // A preview is not the stored body. Strip the capped text, but keep
+        // attachments and tool calls. blob_hash marks the row even when the
+        // server marker is absent. An empty rawJson is the older preview form.
+        rawJson = if (message.contentTruncated) {
+            json.encodeToString(message.copy(content = null, blobHash = PREVIEW_BLOB))
+        } else {
+            json.encodeToString(message)
+        },
     )
 
     suspend fun removeSession(apiBase: String, sessionId: String, apiKey: String = "") {
@@ -311,11 +311,65 @@ class SessionCacheRepository internal constructor(
             existing.copy(
                 startIndex = -1,
                 reachedOldest = false,
+                historyMessageCount = null,
+                historyUpdatedAt = null,
                 cachedAt = System.currentTimeMillis(),
             ),
         )
     }
 
+    /**
+     * Plain rows rebuild from the structured columns. rawJson is decoded only
+     * when the row carries fields those columns cannot hold, such as attachments
+     * or tool calls. An empty rawJson, or a body that still ends with the server
+     * truncation marker, is a preview, not a full body.
+     */
+    private fun messageFromCache(entity: CachedMessageEntity): ProviderMessage? {
+        val preview = entity.rawJson.isEmpty() ||
+            rawJsonHasBlobHash(entity.rawJson, PREVIEW_BLOB) ||
+            entity.content?.endsWith(HISTORY_TRUNCATION_MARKER) == true
+        if (entity.rawJson.isEmpty() || !rawJsonNeeded(entity.rawJson)) {
+            return ProviderMessage(
+                role = entity.role,
+                content = entity.content,
+                createdAt = entity.createdAt,
+                toolCallId = entity.toolCallId,
+                contentTruncated = preview,
+            )
+        }
+        val decoded = decodeMessage(entity.rawJson) ?: return null
+        val message = if (decoded.blobHash == PREVIEW_BLOB) decoded.copy(blobHash = null) else decoded
+        if (!preview) return message
+        // Older builds stored the capped text as the complete JSON. The content
+        // column is that same preview; do not treat the decoded copy as full.
+        return message.copy(content = entity.content, contentTruncated = true)
+    }
+
+    /** Match the encoded field, not the word anywhere in tool arguments or URLs. */
+    private fun rawJsonHasBlobHash(raw: String, value: String): Boolean {
+        return raw.contains("\"blob_hash\":\"$value\"")
+    }
+
+    private fun rawJsonNeeded(raw: String): Boolean {
+        // Empty lists and nulls are omitted (explicitNulls = false), so a hit
+        // means the row actually carries that field.
+        if (raw.contains("\"attachments\"")) return true
+        if (raw.contains("\"tool_calls\"")) return true
+        if (raw.contains("\"content_parts\"")) return true
+        if (raw.contains("\"reasoning_content\"")) return true
+        if (raw.contains("\"usage\"")) return true
+        if (raw.contains("\"blob_hash\"")) return true
+        if (raw.contains("\"blob_bytes\"")) return true
+        if (raw.contains("\"client_message_id\"")) return true
+        if (raw.contains("\"name\"")) return true
+        return false
+    }
+
     private fun decodeMessage(raw: String): ProviderMessage? =
         runCatching { json.decodeFromString(ProviderMessage.serializer(), raw) }.getOrNull()
+
+    private companion object {
+        /** Not a server hash. Marks a preview row whose capped body was not stored. */
+        const val PREVIEW_BLOB = "preview"
+    }
 }

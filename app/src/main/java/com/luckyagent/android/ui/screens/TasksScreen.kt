@@ -22,10 +22,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -38,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import com.luckyagent.android.ui.components.statusChipLabel
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,8 +89,10 @@ import java.util.Locale
 @Composable
 fun TasksScreen(state: AppUiState, vm: AppViewModel) {
     val query = state.taskQuery.trim().lowercase()
-    val tasks = remember(state.tasks, state.taskFilter, state.taskQuery) {
+    val sessionId = state.settings.sessionId
+    val tasks = remember(state.tasks, state.taskFilter, state.taskQuery, state.hiddenSessionCards, sessionId) {
         state.tasks.filter { task ->
+            if (hiddenSessionCard(state.hiddenSessionCards, sessionId, SessionCardKind.Task, task.id)) return@filter false
             val status = task.status.lowercase()
             val matchesFilter = when (state.taskFilter) {
                 TaskFilter.All -> true
@@ -141,11 +146,11 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
     state.tasksError?.let { ErrorLine(it) }
 
     val filters = listOf(
-        TaskFilter.All to "All",
-        TaskFilter.Active to "Active",
-        TaskFilter.Completed to "Done",
-        TaskFilter.Failed to "Failed",
-        TaskFilter.Cancelled to "Cancelled",
+        TaskFilter.All to "全部",
+        TaskFilter.Active to "进行中",
+        TaskFilter.Completed to "已完成",
+        TaskFilter.Failed to "失败",
+        TaskFilter.Cancelled to "已取消",
     )
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
@@ -174,7 +179,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
             .background(CloverSurface2)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         decorationBox = { inner ->
-            if (state.taskQuery.isEmpty()) Text("Filter by task, agent, mode or status", color = CloverText3)
+            if (state.taskQuery.isEmpty()) Text("搜索任务、代理或状态", color = CloverText3)
             inner()
         },
     )
@@ -185,17 +190,19 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
 
     when {
         state.tasksLoading && state.tasks.isEmpty() -> {
-            Text("Loading tasks…", color = CloverText2, modifier = Modifier.padding(16.dp))
+            Text("正在读取任务", color = CloverText2, modifier = Modifier.padding(16.dp))
         }
         !state.tasksLoading && tasks.isEmpty() -> {
             EmptyState(
-                title = "No tasks",
+                title = if (state.tasks.isEmpty()) "还没有任务" else "没有匹配的任务",
                 body = if (state.tasks.isEmpty()) {
-                    "Multi-agent and background tasks will appear here."
+                    "从聊天发出的协作任务会出现在这里。"
                 } else {
-                    "No tasks match the current filters."
+                    "换个筛选，或回到聊天继续这一轮。"
                 },
                 modifier = Modifier.padding(16.dp),
+                actionLabel = "回到聊天",
+                onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 icon = {
                     Icon(
                         Icons.Outlined.AssignmentLate,
@@ -223,6 +230,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
                             task,
                             onClick = { vm.selectTask(task.id) },
                             onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                            onHide = { vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Task, task.id) },
                         )
                     }
                 }
@@ -233,6 +241,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
                             task,
                             onClick = { vm.selectTask(task.id) },
                             onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                            onHide = { vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Task, task.id) },
                         )
                     }
                 }
@@ -243,6 +252,7 @@ private fun TaskListContent(state: AppUiState, tasks: List<TaskSummary>, vm: App
                             task,
                             onClick = { vm.selectTask(task.id) },
                             onOpenSession = task.executionSession()?.let { { vm.openSession(it) } },
+                            onHide = { vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Task, task.id) },
                         )
                     }
                 }
@@ -257,14 +267,14 @@ private fun TaskOverviewCard(tasks: List<TaskSummary>) {
     val active = tasks.count { it.status.taskIsActive() }
     val finished = tasks.count { it.status.equals("completed", ignoreCase = true) }
     CloverCard(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Text("Your run at a glance", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text("这一轮", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            OverviewMetric("Needs you", attention.toString(), if (attention > 0) CloverError else CloverText2)
-            OverviewMetric("Running", active.toString(), CloverAccent)
-            OverviewMetric("Completed", finished.toString(), CloverLeaf)
+            OverviewMetric("需要处理", attention.toString(), if (attention > 0) CloverError else CloverText2)
+            OverviewMetric("进行中", active.toString(), CloverAccent)
+            OverviewMetric("已完成", finished.toString(), CloverLeaf)
         }
     }
 }
@@ -290,12 +300,33 @@ private fun TaskSummaryCard(
     task: TaskSummary,
     onClick: () -> Unit,
     onOpenSession: (() -> Unit)? = null,
+    onHide: (() -> Unit)? = null,
 ) {
+    var confirmHide by remember { mutableStateOf(false) }
+    if (confirmHide && onHide != null) {
+        HideSessionCardDialog(
+            name = "任务",
+            onDismiss = { confirmHide = false },
+            onConfirm = {
+                confirmHide = false
+                onHide()
+            },
+        )
+    }
     CloverCard(onClick = onClick) {
         CardTitleRow(
             title = task.description,
             subtitle = task.id,
-            trailing = { StatusChip(friendlyTaskStatus(task.status)) },
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onHide != null) {
+                        IconButton(onClick = { confirmHide = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除任务", modifier = Modifier.size(16.dp), tint = CloverText3)
+                        }
+                    }
+                    StatusChip(friendlyTaskStatus(task.status))
+                }
+            },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MetaChip(friendlyTaskMode(task.mode))
@@ -314,11 +345,11 @@ private fun TaskSummaryCard(
             TextButton(onClick = open, contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Open agent chat")
+                Text("打开结果")
             }
         }
         if (onOpenSession == null) {
-            Text("Execution chat is not linked yet", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+            Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
         }
         LinearProgressIndicator(
             progress = { task.progress.coerceIn(0.0, 1.0).toFloat() },
@@ -372,11 +403,11 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                     ) {
                         Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Open agent chat")
+                        Text("打开结果")
                     }
                 }
                 if (summary.executionSession() == null) {
-                    Text("Execution chat is not linked yet", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                    Text("还没有关联的对话", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 }
                 Text(
                     summary.status.taskReadableAction(summary),
@@ -399,7 +430,7 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
                     Button(onClick = { vm.cancelTask(summary) }) {
                         Icon(Icons.Outlined.Close, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
-                        Text("Request cancel")
+                        Text("取消")
                     }
                 }
             }
@@ -441,8 +472,10 @@ private fun TaskDetailContent(state: AppUiState, detail: TaskDetail, vm: AppView
         } else if (detail.origin == TaskOrigin.Legacy) {
             item {
                 EmptyState(
-                    title = "No event stream",
-                    body = "This legacy task exposes child state and output, but not persisted task events.",
+                    title = "没有事件记录",
+                    body = "这条旧任务只有步骤和结果，没有保存过程。",
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 )
             }
         }
@@ -709,7 +742,7 @@ private fun TaskNodeCard(node: TaskNode, onOpenSession: (TaskSummary) -> Unit) {
             ) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Open agent chat")
+                Text("打开结果")
             }
         }
         node.summary.result?.takeIf { it.isNotBlank() }?.let { DetailPayload("Output", it) }
@@ -784,16 +817,22 @@ internal fun String.taskIsActive(): Boolean = when (lowercase()) {
     else -> false
 }
 
-internal fun friendlyTaskStatus(status: String): String = when (status.lowercase()) {
-    "pending", "queued" -> "Queued"
-    "running", "in_progress", "in-progress" -> "In progress"
-    "blocked", "waiting" -> "Needs attention"
-    "completed", "done" -> "Completed"
-    "failed", "error" -> "Failed"
-    "timeout" -> "Timed out"
-    "cancelled", "canceled" -> "Cancelled"
-    else -> status.ifBlank { "Unknown" }.replace('_', ' ').replaceFirstChar { it.uppercase() }
+@Composable
+internal fun HideSessionCardDialog(
+    name: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("从当前会话拿掉$name") },
+        text = { Text("只从这台手机的当前会话拿掉。电脑上的记录还在。") },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("删除") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
+
+internal fun friendlyTaskStatus(status: String): String = statusChipLabel(status)
 
 internal fun friendlyTaskMode(mode: String): String = when (mode.lowercase()) {
     "single" -> "Single step"

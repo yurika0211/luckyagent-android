@@ -2,6 +2,8 @@ package com.luckyagent.android.ui.screens
 
 import com.luckyagent.android.data.api.AutonomyTaskSummary
 import com.luckyagent.android.data.api.TaskSummary
+import com.luckyagent.android.data.api.MemoryEntry
+import com.luckyagent.android.data.api.ToolTraceRecord
 import com.luckyagent.android.ui.AppDestination
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -52,6 +54,28 @@ class ChatNavigationTest {
         assertNull(sessionNavigationBackground(emptyList()))
     }
 
+    @Test fun hidingACardStaysInsideTheOpenSession() {
+        val task = sessionCardKey("chat", SessionCardKind.Task, "task-1")
+        val trace = sessionCardKey("chat", SessionCardKind.Trace, "call-1")
+        val hidden = setOf(task, trace)
+
+        assertTrue(hiddenSessionCard(hidden, "chat", SessionCardKind.Task, "task-1"))
+        assertTrue(hiddenSessionCard(hidden, "chat", SessionCardKind.Trace, "call-1"))
+        assertFalse(hiddenSessionCard(hidden, "other", SessionCardKind.Task, "task-1"))
+        assertFalse(hiddenSessionCard(hidden, "chat", SessionCardKind.Memory, "call-1"))
+        assertEquals("", sessionCardKey(" ", SessionCardKind.Task, "task-1"))
+        assertFalse(hiddenSessionCard(hidden, "chat", SessionCardKind.Task, " "))
+    }
+
+    @Test fun hidingTheSessionPanelDoesNotHideAnotherChat() {
+        val panel = sessionCardKey("chat", SessionCardKind.Panel, SESSION_PANEL_CARD_ID)
+        val hidden = setOf(panel)
+
+        assertTrue(hiddenSessionCard(hidden, "chat", SessionCardKind.Panel, SESSION_PANEL_CARD_ID))
+        assertFalse(hiddenSessionCard(hidden, "other", SessionCardKind.Panel, SESSION_PANEL_CARD_ID))
+        assertFalse(hiddenSessionCard(hidden, "chat", SessionCardKind.Task, SESSION_PANEL_CARD_ID))
+    }
+
     @Test fun navigationKeepsSessionProgressOffTheModuleList() {
         assertEquals(
             listOf(
@@ -68,6 +92,18 @@ class ChatNavigationTest {
         assertFalse(computerNavDestinations.contains(AppDestination.Memory))
         assertFalse(computerNavDestinations.contains(AppDestination.Background))
         assertFalse(computerNavDestinations.contains(AppDestination.Chat))
+    }
+
+    @Test fun traceAndMemoryCardsPreferStableIds() {
+        val traced = ToolTraceRecord(id = "call-9", name = "file_read")
+        val nameless = ToolTraceRecord(name = "terminal", arguments = "ls")
+        assertEquals("call-9", traceRecordKey(traced, 3, 20))
+        assertEquals("page-23-terminal-${"ls".hashCode()}", traceRecordKey(nameless, 3, 20))
+
+        val remembered = MemoryEntry(id = "note-1", content = "keep")
+        val blank = MemoryEntry(content = "keep")
+        assertEquals("note-1", memoryCardKey(remembered, 4))
+        assertEquals("index-4-${"keep".hashCode()}", memoryCardKey(blank, 4))
     }
 
     private fun task(

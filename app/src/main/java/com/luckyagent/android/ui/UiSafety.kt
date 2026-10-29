@@ -52,3 +52,62 @@ internal fun dedupeSessions(sessions: List<RuntimeSession>): List<RuntimeSession
         id.isNotEmpty() && seen.add(id)
     }
 }
+
+/** Fixed drawer categories. Membership comes only from agent_role, never from project or title. */
+internal const val SESSION_GROUP_PINNED = "置顶"
+internal const val SESSION_GROUP_DELEGATED = "Delegated"
+internal const val SESSION_GROUP_WORKER = "Worker"
+internal const val SESSION_GROUP_UNSORTED = "未分类"
+
+internal enum class FixedSessionRole {
+    Delegated,
+    Worker,
+}
+
+/**
+ * Runtime sessions the desktop opens for itself.
+ * Delegated is `subagent` or `subagent:<id>`. Worker is `worker`, `worker-task`, or `worker-…`.
+ * A role that only shares a prefix with neither stays in the user's project groups.
+ */
+internal fun fixedSessionRole(agentRole: String?): FixedSessionRole? {
+    val role = agentRole?.trim().orEmpty()
+    if (role.isEmpty()) return null
+    return when {
+        role == "subagent" || role.startsWith("subagent:") -> FixedSessionRole.Delegated
+        role == "worker" || role == "worker-task" || role.startsWith("worker-") -> FixedSessionRole.Worker
+        else -> null
+    }
+}
+
+internal fun isFixedRoleSession(session: RuntimeSession): Boolean = fixedSessionRole(session.agentRole) != null
+
+internal data class SessionGroup(val name: String, val sessions: List<RuntimeSession>)
+
+/**
+ * One session, one group. Order: pinned ordinary sessions, Delegated, Worker, then project names.
+ * Pinning does not pull a delegated or worker session out of its fixed group. Empty groups are omitted.
+ * Project is ignored for fixed roles, so renaming a project cannot move them.
+ */
+internal fun sessionGroups(sessions: List<RuntimeSession>): List<SessionGroup> {
+    val pinned = ArrayList<RuntimeSession>()
+    val delegated = ArrayList<RuntimeSession>()
+    val worker = ArrayList<RuntimeSession>()
+    val rest = ArrayList<RuntimeSession>()
+    for (session in sessions) {
+        when (fixedSessionRole(session.agentRole)) {
+            FixedSessionRole.Delegated -> delegated += session
+            FixedSessionRole.Worker -> worker += session
+            null -> if (session.pinned) pinned += session else rest += session
+        }
+    }
+    val groups = mutableListOf<SessionGroup>()
+    if (pinned.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_PINNED, pinned)
+    if (delegated.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_DELEGATED, delegated)
+    if (worker.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_WORKER, worker)
+    rest.groupBy { it.project?.trim().orEmpty() }
+        .toSortedMap(compareBy { if (it.isEmpty()) "\uFFFF" else it.lowercase() })
+        .forEach { (project, rows) ->
+            groups += SessionGroup(project.ifBlank { SESSION_GROUP_UNSORTED }, rows)
+        }
+    return groups
+}

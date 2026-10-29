@@ -70,7 +70,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.screens.ChatScreen
+import com.luckyagent.android.ui.screens.ComputerLink
+import com.luckyagent.android.ui.screens.FirstConnectionScreen
 import com.luckyagent.android.ui.screens.computerNavDestinations
+import com.luckyagent.android.ui.screens.needsConnectionSetup
 import com.luckyagent.android.ui.screens.BackgroundScreen
 import com.luckyagent.android.ui.screens.CronScreen
 import com.luckyagent.android.ui.screens.GatewaysScreen
@@ -156,12 +159,13 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
     val openNavigation: () -> Unit = remember(navigationPager, scope) {
         { scope.launch { navigationPager.animateScrollToPage(0) }; Unit }
     }
-    val navigationOpen = state.destination != AppDestination.Chat && navigationPager.currentPage == 0
+    val setupRequired = needsConnectionSetup(state.settings, state.computerLink)
+    val navigationOpen = !setupRequired && state.destination != AppDestination.Chat && navigationPager.currentPage == 0
     BackHandler(enabled = navigationOpen) {
         scope.launch { navigationPager.animateScrollToPage(1) }
     }
     BackHandler(
-        enabled = !navigationOpen && (
+        enabled = !setupRequired && !navigationOpen && (
             state.destination != AppDestination.Chat ||
                 state.selectedTaskId != null ||
                 state.selectedBackgroundTaskId != null
@@ -176,14 +180,14 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
         val useRail = maxWidth >= 700.dp && maxWidth >= (AppNavRailWidth + MinMainContentWidth)
 
         if (useRail) {
-            // NavigationRail is always visible on large layouts.
+            // The first connection replaces every page, including the wide rail.
             AppScaffold(
                 state = state,
                 vm = vm,
                 useRail = true,
                 openNavigation = null,
             )
-        } else if (state.destination == AppDestination.Chat) {
+        } else if (setupRequired || state.destination == AppDestination.Chat) {
             AppScaffold(
                 state = state,
                 vm = vm,
@@ -282,7 +286,7 @@ private fun AppScaffold(
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.safeDrawing),
             ) {
-                if (useRail) {
+                if (useRail && !needsConnectionSetup(state.settings, state.computerLink)) {
                     NavigationRail(
                         modifier = Modifier
                             .width(AppNavRailWidth)
@@ -309,7 +313,22 @@ private fun AppScaffold(
                 }
                 Box(Modifier.weight(1f).fillMaxSize()) {
                     Box(Modifier.widthIn(max = 1440.dp).fillMaxSize()) {
-                        when (state.destination) {
+                        if (needsConnectionSetup(state.settings, state.computerLink)) {
+                            FirstConnectionScreen(
+                                state = state,
+                                onScan = startPairingScan,
+                                onPickQrImage = {
+                                    qrImagePicker.launch(
+                                        androidx.activity.result.PickVisualMediaRequest(
+                                            androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                        ),
+                                    )
+                                },
+                                onSubmit = vm::submitFirstConnection,
+                                onRetry = { vm.verifyComputerConnection() },
+                                onUseStandalone = vm::useStandaloneConnection,
+                            )
+                        } else when (state.destination) {
                             AppDestination.Chat -> ChatScreen(
                                 state = state,
                                 vm = vm,
@@ -458,8 +477,11 @@ private fun NavigationPage(
                 )
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (state.settings.apiBase.isBlank()) "未设置服务地址"
-                        else com.luckyagent.android.ui.components.socketStateLabel(state.socketState),
+                        com.luckyagent.android.ui.components.socketStateLabel(
+                            state.socketState,
+                            responding = state.isResponding,
+                            addressMissing = state.settings.apiBase.isBlank(),
+                        ),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Medium,
                     )

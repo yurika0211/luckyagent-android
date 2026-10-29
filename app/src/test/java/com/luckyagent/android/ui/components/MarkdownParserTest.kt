@@ -289,4 +289,30 @@ class MarkdownParserTest {
         assertEquals("after", (blocks[1] as MdBlock.Paragraph).text)
     }
 
+    @Test fun plainReplyDoesNotNeedALiveSurface() {
+        val parsed = MarkdownParseCache.parse("just text\n\n- one\n- two", streaming = false)
+
+        assertTrue(parsed.blocks.none(::blockNeedsLiveSurface))
+        assertTrue(!parsed.needsLiveSurface)
+    }
+
+    @Test fun mermaidFenceNeedsALiveSurface() {
+        val parsed = MarkdownParseCache.parse("```mermaid\nflowchart LR\n  A-->B\n```", streaming = false)
+
+        assertTrue(parsed.blocks.single().let(::blockNeedsLiveSurface))
+        assertTrue(parsed.needsLiveSurface)
+    }
+
+    @Test fun displayMathNeedsALiveSurface() {
+        val parsed = MarkdownParseCache.parse("\$\$x^2\$\$", streaming = false)
+
+        assertTrue(parsed.needsLiveSurface)
+    }
+
+    @Test fun fencedCodeDoesNotNeedALiveSurface() {
+        val parsed = MarkdownParseCache.parse("```kotlin\nval x = 1\n```", streaming = false)
+
+        assertTrue(!parsed.needsLiveSurface)
+    }
+
 }

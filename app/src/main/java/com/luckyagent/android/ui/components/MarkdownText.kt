@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -39,6 +38,7 @@ fun MarkdownText(
     imageHeaders: Map<String, String> = emptyMap(),
     imageBaseUrl: String = "",
     streaming: Boolean = false,
+    active: Boolean = true,
 ) {
     // Streaming output is intentionally plain text until the turn finishes.
     // Re-parsing a growing body every 40 ms costs more than the transient
@@ -75,15 +75,57 @@ fun MarkdownText(
     val detailsContext = remember(htmlNodes, detailsState) {
         HtmlDetailsContext(detailsState, detailsState.identities(htmlNodes.flatten()))
     }
+    // Heavy blocks (WebView, LaTeX) only mount while this message is inside the
+    // chat window. A nested lazy list would steal the outer scroll, so the
+    // blocks stay in a Column and the row decides `active`.
     Column(modifier) {
-        blocks.forEachIndexed { index, block -> key(index) {
+        blocks.forEachIndexed { index, block ->
+            key(index) {
+                MarkdownBlock(
+                    block = block,
+                    active = active || !blockNeedsLiveSurface(block),
+                    color = color,
+                    imageHeaders = imageHeaders,
+                    imageBaseUrl = imageBaseUrl,
+                    htmlNodes = htmlNodes.getOrNull(index).orEmpty(),
+                    richNodes = richNodes,
+                    detailsContext = detailsContext,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MarkdownBlock(
+    block: MdBlock,
+    active: Boolean,
+    color: Color,
+    imageHeaders: Map<String, String>,
+    imageBaseUrl: String,
+    htmlNodes: List<HtmlNode>,
+    richNodes: Map<String, List<HtmlNode>>,
+    detailsContext: HtmlDetailsContext,
+) {
             when (block) {
-                is MdBlock.Mermaid -> MermaidView(source = block.source)
+                is MdBlock.Mermaid -> if (active) {
+                    MermaidView(source = block.source)
+                } else {
+                    HeavyBlockPlaceholder("图表离屏，滚回来再画")
+                }
                 is MdBlock.Html -> {
-                    if (block.showPreview || requiresHtmlPage(block.source)) {
+                    // Parsed once per source. A static drawing renders itself, and the
+                    // parse must not run again on every recomposition.
+                    val svg = remember(block.source) { staticSvgDocument(block.source) }
+                    val heavy = svg != null || block.showPreview || requiresHtmlPage(block.source)
+                    if (!active && heavy) {
+                        HeavyBlockPlaceholder("预览离屏，滚回来再画")
+                    } else if (svg != null) {
+                        InlineSvgPreview(source = block.source, svg = svg)
+                    } else if (block.showPreview || requiresHtmlPage(block.source)) {
                         InlineHtmlPreview(source = block.source, baseUrl = imageBaseUrl, headers = imageHeaders)
                     } else {
-                        NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl, htmlNodes[index], detailsContext)
+                        NativeHtmlContent(block.source, color, imageHeaders, imageBaseUrl, htmlNodes, detailsContext)
                     }
                 }
                 is MdBlock.Code -> CodeText(block.body)
@@ -116,7 +158,11 @@ fun MarkdownText(
                 }
                 MdBlock.IncompleteTable -> Unit
                 is MdBlock.Rule -> HorizontalDivider(Modifier.padding(vertical = 10.dp), color = CloverLine)
-                is MdBlock.Math -> LatexView(block.latex, block.display, color, Modifier.fillMaxWidth())
+                is MdBlock.Math -> if (active) {
+                    LatexView(block.latex, block.display, color, Modifier.fillMaxWidth())
+                } else {
+                    HeavyBlockPlaceholder(block.latex)
+                }
                 is MdBlock.Heading -> RichMarkdownText(block.text, color,
                     baseUrl = imageBaseUrl, headers = imageHeaders,
                     precomputedNodes = richNodes[block.text],
@@ -147,18 +193,42 @@ fun MarkdownText(
                     modifier = Modifier.padding(vertical = 2.dp),
                 )
             }
-        } }
-    }
+}
+
+@Composable
+private fun HeavyBlockPlaceholder(label: String) {
+    Text(
+        label,
+        color = CloverText2,
+        style = MaterialTheme.typography.bodySmall,
+        maxLines = 2,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .background(CloverBgSide, RoundedCornerShape(8.dp))
+            .padding(10.dp),
+    )
 }
 
 @Composable
 internal fun CodeText(source: String, modifier: Modifier = Modifier) {
-    SelectionContainer {
-        Text(source, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, color = CloverText2),
-            modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)
-                .background(CloverBgSide, RoundedCornerShape(8.dp)).border(1.dp, CloverLine, RoundedCornerShape(8.dp))
-                .horizontalScroll(rememberScrollState()).padding(10.dp))
-    }
+    // SelectionContainer walks the whole subtree. One per code fence makes a
+    // long reply expensive to scroll; the message body stays selectable.
+    // A horizontal scroller is only worth it when a line can actually overflow.
+    // Short fences used to pay for one on every block.
+    val wide = source.lineSequence().any { it.length > 72 }
+    val scroll = if (wide) Modifier.horizontalScroll(rememberScrollState()) else Modifier
+    Text(
+        source,
+        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, color = CloverText2),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .background(CloverBgSide, RoundedCornerShape(8.dp))
+            .border(1.dp, CloverLine, RoundedCornerShape(8.dp))
+            .then(scroll)
+            .padding(10.dp),
+    )
 }
 
 @Composable

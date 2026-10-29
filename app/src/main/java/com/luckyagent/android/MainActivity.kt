@@ -18,6 +18,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var appViewModel: AppViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Drop the starting window as soon as Compose can draw. Do not hold it for the session API.
+        setTheme(R.style.Theme_LuckyAgent)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
@@ -58,18 +60,14 @@ class MainActivity : ComponentActivity() {
         val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID).orEmpty()
         val taskId = intent?.getStringExtra(EXTRA_TASK_ID).orEmpty()
         when {
-            // A linked execution session is the most precise destination. Do
-            // not let the notification's fallback section replace it.
-            sessionId.isNotBlank() -> appViewModel.openSessionFromNotification(sessionId)
-            taskId.isNotBlank() -> {
-                if (destination == "background") {
-                    appViewModel.openDestinationFromNotification("background")
-                    appViewModel.selectBackgroundTask(taskId)
-                } else {
-                    appViewModel.openDestinationFromNotification("tasks")
-                    appViewModel.selectTask(taskId)
-                }
+            // A linked execution session opens that chat. The task id still
+            // rides along so the card stays the return target.
+            sessionId.isNotBlank() && taskId.isNotBlank() -> {
+                appViewModel.openWorkCardFromNotification(taskId, destination == "background")
+                appViewModel.openSessionFromNotification(sessionId)
             }
+            sessionId.isNotBlank() -> appViewModel.openSessionFromNotification(sessionId)
+            taskId.isNotBlank() -> appViewModel.openWorkCardFromNotification(taskId, destination == "background")
             destination.isNotBlank() -> appViewModel.openDestinationFromNotification(destination)
         }
     }

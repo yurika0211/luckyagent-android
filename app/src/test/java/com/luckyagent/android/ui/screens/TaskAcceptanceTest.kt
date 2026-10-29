@@ -24,13 +24,13 @@ class TaskAcceptanceTest {
 
     @Test
     fun statusModeAndSourceCopyStayStable() {
-        assertEquals("Queued", friendlyTaskStatus("pending"))
-        assertEquals("In progress", friendlyTaskStatus("running"))
-        assertEquals("Needs attention", friendlyTaskStatus("blocked"))
-        assertEquals("Completed", friendlyTaskStatus("completed"))
-        assertEquals("Failed", friendlyTaskStatus("failed"))
-        assertEquals("Timed out", friendlyTaskStatus("timeout"))
-        assertEquals("Cancelled", friendlyTaskStatus("cancelled"))
+        assertEquals("排队中", friendlyTaskStatus("pending"))
+        assertEquals("进行中", friendlyTaskStatus("running"))
+        assertEquals("需要处理", friendlyTaskStatus("blocked"))
+        assertEquals("已完成", friendlyTaskStatus("completed"))
+        assertEquals("失败", friendlyTaskStatus("failed"))
+        assertEquals("超时", friendlyTaskStatus("timeout"))
+        assertEquals("已取消", friendlyTaskStatus("cancelled"))
         assertEquals("Parallel", friendlyTaskMode("parallel"))
         assertEquals("Step by step", friendlyTaskMode("pipeline"))
         assertEquals("Review rounds", friendlyTaskMode("debate"))

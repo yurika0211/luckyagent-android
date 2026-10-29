@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.PlaylistRemove
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilterChip
@@ -27,7 +28,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,9 +61,12 @@ import com.luckyagent.android.ui.theme.CloverText3
 @Composable
 fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
     val trace = state.trajectory
-    val records = remember(trace, state.trajectoryFilter, state.trajectoryQuery) {
+    val records = remember(trace, state.trajectoryFilter, state.trajectoryQuery, state.hiddenSessionCards, state.settings.sessionId) {
         val q = state.trajectoryQuery.trim().lowercase()
-        (trace?.tools.orEmpty()).filter { record ->
+        val sessionId = state.settings.sessionId
+        (trace?.tools.orEmpty()).filterIndexed { index, record ->
+            val key = traceRecordKey(record, index, trace?.offset ?: 0)
+            if (hiddenSessionCard(state.hiddenSessionCards, sessionId, SessionCardKind.Trace, key)) return@filterIndexed false
             val okFilter = when (state.trajectoryFilter) {
                 TrajectoryFilter.All -> true
                 TrajectoryFilter.Success -> record.success
@@ -94,7 +101,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
 
         if (state.trajectoryLoading) {
             Text(
-                "Loading tool trace…",
+                "正在读取本轮轨迹",
                 color = CloverText2,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
@@ -109,12 +116,12 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                     .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                SummaryStat("Calls", (summary.totalCalls ?: summary.tools.size).toString(), Modifier.weight(1f))
-                SummaryStat("OK", (summary.successes ?: summary.tools.count { it.success }).toString(), Modifier.weight(1f))
-                SummaryStat("Fail", (summary.failures ?: summary.tools.count { !it.success }).toString(), Modifier.weight(1f))
+                SummaryStat("调用", (summary.totalCalls ?: summary.tools.size).toString(), Modifier.weight(1f))
+                SummaryStat("成功", (summary.successes ?: summary.tools.count { it.success }).toString(), Modifier.weight(1f))
+                SummaryStat("失败", (summary.failures ?: summary.tools.count { !it.success }).toString(), Modifier.weight(1f))
                 val rate = summary.successRate
                 SummaryStat(
-                    "Rate",
+                    "成功率",
                     if (rate != null) "${(rate * 100).toInt()}%" else "—",
                     Modifier.weight(1f),
                 )
@@ -130,9 +137,9 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             listOf(
-                TrajectoryFilter.All to "All",
-                TrajectoryFilter.Success to "Success",
-                TrajectoryFilter.Failure to "Failure",
+                TrajectoryFilter.All to "全部",
+                TrajectoryFilter.Success to "成功",
+                TrajectoryFilter.Failure to "失败",
             ).forEach { (value, label) ->
                 FilterChip(
                     selected = state.trajectoryFilter == value,
@@ -156,7 +163,7 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             decorationBox = { inner ->
                 if (state.trajectoryQuery.isEmpty()) {
-                    Text("Filter by tool / args / result", color = CloverText3)
+                    Text("搜索工具、参数或结果", color = CloverText3)
                 }
                 inner()
             },
@@ -165,8 +172,8 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
         when {
             state.settings.sessionId.isBlank() -> {
                 EmptyState(
-                    title = "No session selected",
-                    body = "Open Chat, pick a session, then return here to inspect tool calls.",
+                    title = "还没有会话",
+                    body = "先回聊天打开一轮对话，工具调用会出现在这里。",
                     modifier = Modifier.padding(16.dp),
                     actionLabel = "打开聊天",
                     onAction = { vm.navigate(AppDestination.Chat) },
@@ -174,9 +181,11 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
             }
             !state.trajectoryLoading && state.trajectoryError == null && records.isEmpty() && trace?.tools.isNullOrEmpty() -> {
                 EmptyState(
-                    title = "No tool activity yet",
-                    body = "Tool calls from this session will show as structured cards once the agent runs tools.",
+                    title = "这轮还没有轨迹",
+                    body = "聊天里用到工具之后，调用会按步骤出现在这里。",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(AppDestination.Chat) },
                     icon = {
                         Icon(
                             Icons.Outlined.PlaylistRemove,
@@ -190,9 +199,11 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
             }
             !state.trajectoryLoading && records.isEmpty() -> {
                 EmptyState(
-                    title = "No matches",
-                    body = "No calls match the current filters.",
+                    title = "没有匹配的轨迹",
+                    body = "换个筛选，或回到聊天继续这一轮。",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(AppDestination.Chat) },
                 )
             }
             else -> {
@@ -201,8 +212,18 @@ fun TrajectoryScreen(state: AppUiState, vm: AppViewModel) {
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    itemsIndexed(records, key = { idx, r -> "${r.name}-$idx-${r.arguments.orEmpty().hashCode()}" }) { _, record ->
-                        TrajectoryEventCard(record)
+                    itemsIndexed(records, key = { idx, r -> traceRecordKey(r, idx, trace?.offset ?: 0) }) { index, record ->
+                        val hideKey = traceRecordKey(record, index, trace?.offset ?: 0)
+                        TrajectoryEventCard(
+                            record,
+                            onHide = {
+                                vm.hideSessionCard(
+                                    state.settings.sessionId,
+                                    SessionCardKind.Trace,
+                                    hideKey,
+                                )
+                            },
+                        )
                     }
                 }
             }
@@ -220,8 +241,28 @@ private fun SummaryStat(label: String, value: String, modifier: Modifier = Modif
     }
 }
 
+internal fun traceRecordKey(record: ToolTraceRecord, index: Int, offset: Int): String {
+    val id = record.id?.trim().orEmpty()
+    if (id.isNotEmpty()) return id
+    return "page-${offset + index}-${record.name}-${record.arguments.orEmpty().hashCode()}"
+}
+
 @Composable
-private fun TrajectoryEventCard(record: ToolTraceRecord) {
+private fun TrajectoryEventCard(
+    record: ToolTraceRecord,
+    onHide: (() -> Unit)? = null,
+) {
+    var confirmHide by remember { mutableStateOf(false) }
+    if (confirmHide && onHide != null) {
+        HideSessionCardDialog(
+            name = "轨迹",
+            onDismiss = { confirmHide = false },
+            onConfirm = {
+                confirmHide = false
+                onHide()
+            },
+        )
+    }
     val ok = record.success
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -238,6 +279,11 @@ private fun TrajectoryEventCard(record: ToolTraceRecord) {
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
+            if (onHide != null) {
+                IconButton(onClick = { confirmHide = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除轨迹", modifier = Modifier.size(16.dp), tint = CloverText3)
+                }
+            }
             StatusChip(if (ok) "success" else "failure")
             record.durationMs?.let {
                 Spacer(Modifier.width(6.dp))

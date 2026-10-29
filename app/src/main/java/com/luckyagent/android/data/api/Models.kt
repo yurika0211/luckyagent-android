@@ -7,6 +7,18 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
+data class DraftExpandRequest(
+    val message: String,
+    val intent: String = "expand",
+)
+
+@Serializable
+data class DraftExpandResponse(
+    val response: String = "",
+    val error: String? = null,
+)
+
+@Serializable
 data class SoulInfo(
     val name: String = "",
     @SerialName("system_prompt") val systemPrompt: String = "",
@@ -22,6 +34,8 @@ data class SessionsResponse(
 data class RuntimeSession(
     val id: String,
     val title: String? = null,
+    val recap: String? = null,
+    @SerialName("recap_updated_at") val recapUpdatedAt: String? = null,
     @SerialName("agent_role") val agentRole: String? = null,
     val pinned: Boolean = false,
     val project: String? = null,
@@ -56,6 +70,8 @@ internal fun sessionHistoryFetch(code: Int, body: String, decode: (String) -> Se
 data class SessionHistory(
     val id: String? = null,
     val title: String? = null,
+    val recap: String? = null,
+    @SerialName("recap_updated_at") val recapUpdatedAt: String? = null,
     @SerialName("agent_role") val agentRole: String? = null,
     @SerialName("agent_system_prompt") val agentSystemPrompt: String? = null,
     val pinned: Boolean = false,
@@ -129,6 +145,11 @@ data class ProviderMessage(
     val name: String? = null,
     @SerialName("tool_call_id") val toolCallId: String? = null,
     @SerialName("tool_calls") val toolCalls: List<HistoryToolCall> = emptyList(),
+    /**
+     * True when this copy is a server preview, not the stored body.
+     * Not serialized: a preview must not be written back as a complete message.
+     */
+    @kotlinx.serialization.Transient val contentTruncated: Boolean = false,
     /** Present when large tool/assistant bodies are externalized server-side. */
     @SerialName("blob_hash") val blobHash: String? = null,
     @SerialName("blob_bytes") val blobBytes: Int? = null,
@@ -596,6 +617,7 @@ data class ReceivedMemoryTrace(val trace: MemorySearchTrace, val receivedAt: Lon
 
 @Serializable
 data class ToolTraceRecord(
+    val id: String? = null,
     val name: String = "",
     val arguments: String? = null,
     val result: String? = null,

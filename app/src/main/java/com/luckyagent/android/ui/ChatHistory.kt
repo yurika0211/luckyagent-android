@@ -2,7 +2,51 @@ package com.luckyagent.android.ui
 
 import com.luckyagent.android.data.api.ProviderMessage
 
-/** Shared history projection, kept pure so tool-round commentary and final answers can be regression tested. */
+/**
+ * Project each message once and join tool results through their most recent
+ * call/result index. Searching all prior bubbles for every tool result becomes
+ * quadratic for long histories or results whose call is outside the page.
+ */
+internal fun projectHistoryBubbles(
+    messages: List<ProviderMessage>,
+    startIndex: Int = 0,
+    project: (ProviderMessage, Int) -> List<ChatBubble> = { message, index -> message.toHistoryBubbles(index) },
+): List<ChatBubble> {
+    val bubbles = mutableListOf<ChatBubble>()
+    val toolIndices = HashMap<String, Int>()
+    messages.forEachIndexed { index, message ->
+        project(message, startIndex + index).forEach { bubble ->
+            val callIndex = if (message.role == "tool" && bubble.role == "tool" && !message.toolCallId.isNullOrBlank()) {
+                toolIndices[message.toolCallId]
+            } else null
+            if (callIndex != null) {
+                val call = bubbles[callIndex]
+                bubbles[callIndex] = call.copy(
+                    content = bubble.content,
+                    toolOutput = bubble.toolOutput,
+                    attachments = if (bubble.attachments.isNotEmpty()) bubble.attachments else call.attachments,
+                    // A call lives on the assistant row; its result owns these
+                    // fields, including the ordinal used to expand a preview.
+                    contentTruncated = bubble.contentTruncated,
+                    historyIndex = bubble.historyIndex,
+                )
+            } else {
+                bubbles += bubble
+                if (bubble.role == "tool" && !bubble.stepId.isNullOrBlank()) {
+                    toolIndices[bubble.stepId] = bubbles.lastIndex
+                }
+            }
+        }
+    }
+    return bubbles
+}
+
+/**
+ * Shared history projection, kept pure so tool-round commentary and final answers can be regression tested.
+ * Every bubble carries [idx], the session-wide oldest-first index of the server
+ * message it came from. That index is the identity a live turn is reconciled
+ * against; a page offset moves when the window moves, this does not.
+ */
 internal fun ProviderMessage.toHistoryBubbles(
     idx: Int,
     messageAttachments: List<ChatMedia> = emptyList(),
@@ -18,6 +62,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             role = "reasoning",
             content = capUiText(reasoning, MAX_UI_REASONING_CHARS),
             reasoningHasContent = true,
+            serverOrdinal = idx,
         )
     }
     toolCalls.forEachIndexed { toolIndex, tool ->
@@ -36,6 +81,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             toolDone = true,
             stepId = tool.id,
             attachments = messageAttachments,
+            serverOrdinal = idx,
         )
     }
     if (role == "tool") {
@@ -48,6 +94,9 @@ internal fun ProviderMessage.toHistoryBubbles(
             toolDone = true,
             stepId = toolCallId,
             attachments = messageAttachments,
+            contentTruncated = contentTruncated,
+            historyIndex = idx,
+            serverOrdinal = idx,
         )
     } else if (role == "system" && compactLabel != null) {
         result += ChatBubble(
@@ -55,6 +104,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             role = "compact",
             content = compactLabel,
             createdAt = createdAt,
+            serverOrdinal = idx,
         )
     } else if (base.isNotBlank() || (result.isEmpty() && toolCalls.isEmpty())) {
         result += ChatBubble(
@@ -65,7 +115,10 @@ internal fun ProviderMessage.toHistoryBubbles(
             usage = usage,
             attachments = messageAttachments,
             isIntermediate = role == "assistant" && toolCalls.isNotEmpty(),
+            contentTruncated = contentTruncated,
+            historyIndex = idx,
             outboundId = clientMessageId,
+            serverOrdinal = idx,
         )
     }
     return result

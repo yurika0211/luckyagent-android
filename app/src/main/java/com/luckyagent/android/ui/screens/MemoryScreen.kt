@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.*
@@ -127,7 +128,7 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
             ScreenHeader(
                 eyebrow = "Vault",
                 title = "记忆",
-                subtitle = "Knowledge graph and recall paths",
+                subtitle = "已连接电脑上的知识图谱和召回",
                 onBack = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 actions = { IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Refresh, "Refresh") } },
             )
@@ -153,10 +154,10 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { vm.runMemoryTrace() }),
                         modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(CloverSurface2).padding(horizontal = 14.dp, vertical = 12.dp),
-                        decorationBox = { inner -> if (state.memoryTraceQuery.isEmpty()) Text("Trace a memory query…", color = CloverText3); inner() },
+                        decorationBox = { inner -> if (state.memoryTraceQuery.isEmpty()) Text("输入要召回的内容", color = CloverText3); inner() },
                     )
                     Button(onClick = { vm.runMemoryTrace() }, enabled = !state.memoryTraceLoading && state.memoryTraceQuery.isNotBlank()) {
-                        Text(if (state.memoryTraceLoading) "Tracing…" else "Trace")
+                        Text(if (state.memoryTraceLoading) "正在召回" else "召回")
                     }
                 }
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -200,7 +201,7 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
         }
         item(key = "graph-search") {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BasicTextField(value = graphSearch, onValueChange = { graphSearch = it }, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (graphSearch.isBlank()) Text("Search title, category, tag", color = CloverText3); inner() })
+                BasicTextField(value = graphSearch, onValueChange = { graphSearch = it }, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (graphSearch.isBlank()) Text("搜索标题、分类或标签", color = CloverText3); inner() })
                 Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(state.memoryGraphIsolated, vm::setMemoryGraphIsolated); Text("Isolated", style = MaterialTheme.typography.labelMedium) }
             }
         }
@@ -492,16 +493,30 @@ private fun DetailPanel(node: MemoryGraphNode?, traceNode: MemoryTraceNode?, nei
 private fun LazyListScope.memoryRecallItems(state: AppUiState, vm: AppViewModel) {
     item(key = "recall-search") { RecallSearchBar(state.memoryQuery, state.memoryEntries.size, vm) }
     if (state.memoryEntries.isEmpty() && !state.memoryLoading && state.memoryError == null) {
-        item(key = "recall-empty") { EmptyState("No memories matched", "Try another recall query. Write/remember stays on the host runtime.", Modifier.padding(horizontal = 16.dp)) }
+        item(key = "recall-empty") {
+            EmptyState(
+                "没有匹配的记忆",
+                "换个召回词再试。写入仍在已连接的电脑上完成。",
+                Modifier.padding(horizontal = 16.dp),
+                actionLabel = "回到聊天",
+                onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
+            )
+        }
     }
-    itemsIndexed(state.memoryEntries, key = { index, entry -> entry.id?.let { "memory-$it" } ?: "memory-index-$index" }) { _, entry ->
-        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) { MemoryEntryCard(entry) }
+    itemsIndexed(state.memoryEntries, key = { index, entry -> entry.id?.let { "memory-$it" } ?: "memory-index-$index" }) { index, entry ->
+        val key = memoryCardKey(entry, index)
+        if (hiddenSessionCard(state.hiddenSessionCards, state.settings.sessionId, SessionCardKind.Memory, key)) return@itemsIndexed
+        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            MemoryEntryCard(entry) {
+                vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Memory, key)
+            }
+        }
     }
 }
 
 @Composable private fun RecallSearchBar(query: String, count: Int, vm: AppViewModel) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("Recall query…", color = CloverText3); inner() })
+        BasicTextField(value = query, onValueChange = vm::updateMemoryQuery, singleLine = true, cursorBrush = SolidColor(CloverAccent), textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.refreshMemory() }), modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(CloverSurface2).padding(10.dp), decorationBox = { inner -> if (query.isBlank()) Text("输入要召回的内容", color = CloverText3); inner() })
         IconButton(onClick = vm::refreshMemory) { Icon(Icons.Outlined.Search, contentDescription = "Recall") }
         Text("$count results", style = MaterialTheme.typography.titleSmall, color = CloverText2)
     }
@@ -511,11 +526,33 @@ private fun relativeTime(time: Long): String { val seconds = ((System.currentTim
 
 @Composable private fun StatPill(label: String, value: String) { Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) { Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3); Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) } }
 
+internal fun memoryCardKey(entry: MemoryEntry, index: Int): String {
+    val id = entry.id?.trim().orEmpty()
+    if (id.isNotEmpty()) return id
+    return "index-$index-${entry.content.orEmpty().hashCode()}"
+}
+
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun MemoryEntryCard(entry: MemoryEntry) {
+@Composable private fun MemoryEntryCard(entry: MemoryEntry, onHide: (() -> Unit)? = null) {
+    var confirmHide by remember { mutableStateOf(false) }
+    if (confirmHide && onHide != null) {
+        HideSessionCardDialog(
+            name = "记忆",
+            onDismiss = { confirmHide = false },
+            onConfirm = {
+                confirmHide = false
+                onHide()
+            },
+        )
+    }
     CloverCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(entry.category ?: "memory", style = MaterialTheme.typography.labelLarge, color = CloverAccent, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            if (onHide != null) {
+                IconButton(onClick = { confirmHide = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除记忆", modifier = Modifier.size(16.dp), tint = CloverText3)
+                }
+            }
             entry.tier?.let { MetaChip(it) }
             entry.importance?.let { Spacer(Modifier.width(6.dp)); MetaChip("imp ${"%.1f".format(it)}") }
         }

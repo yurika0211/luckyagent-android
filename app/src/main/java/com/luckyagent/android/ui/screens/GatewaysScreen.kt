@@ -86,7 +86,7 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
         ScreenHeader(
             eyebrow = "Channels",
             title = "渠道",
-            subtitle = "Start and stop channels on the connected lh serve host",
+            subtitle = "在已连接的电脑上启动或停止渠道",
             actions = {
                 IconButton(onClick = vm::refreshGateways, enabled = !state.gatewaysLoading && state.gatewayAction == null) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
@@ -95,12 +95,12 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
         )
 
         if (state.gatewaysLoading) {
-            Text("Loading gateways…", color = CloverText2, modifier = Modifier.padding(horizontal = 16.dp))
+            Text("正在读取渠道", color = CloverText2, modifier = Modifier.padding(horizontal = 16.dp))
         }
         state.gatewaysError?.let { ErrorLine(it) }
         state.gatewayActionError?.let { ErrorLine(it) }
         Text(
-            "Start uses the host configuration. Telegram can receive a token here; other channels show a clear host-config error when required values are missing.",
+            "启动使用电脑上已有的配置。Telegram 可以在这里填令牌；缺配置时会说明要去电脑上补哪一项。",
             color = CloverText3,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -144,14 +144,14 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
                     telegramToken = ""
                 }
             },
-            title = { Text("Start Telegram") },
+            title = { Text("启动 Telegram") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Optional: enter a bot token to override the host config. It is sent only to the connected host and is not saved by the app.", style = MaterialTheme.typography.bodyMedium)
+                    Text("可以填一个机器人令牌，只发给已连接的电脑，手机不保存。不填就用电脑上已有的配置。", style = MaterialTheme.typography.bodyMedium)
                     OutlinedTextField(
                         value = telegramToken,
                         onValueChange = { telegramToken = it },
-                        label = { Text("Bot token") },
+                        label = { Text("机器人令牌") },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -166,7 +166,7 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
                         telegramToken = ""
                     },
                     enabled = state.gatewayAction == null,
-                ) { Text("Start") }
+                ) { Text("启动") }
             },
             dismissButton = {
                 TextButton(
@@ -175,7 +175,7 @@ fun GatewaysScreen(state: AppUiState, vm: AppViewModel) {
                         telegramToken = ""
                     },
                     enabled = state.gatewayAction == null,
-                ) { Text("Cancel") }
+                ) { Text("取消") }
             },
         )
     }
@@ -189,9 +189,10 @@ private fun EmptyGatewayState(vm: AppViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(Icons.Outlined.LinkOff, contentDescription = null, tint = CloverText3, modifier = Modifier.size(48.dp))
-        Text("No gateway entries", style = MaterialTheme.typography.titleMedium)
-        Text("Refresh after the host API is available.", color = CloverText3)
-        TextButton(onClick = vm::refreshGateways) { Text("Refresh") }
+        Text("还没有渠道", style = MaterialTheme.typography.titleMedium)
+        Text("连上电脑后重试这一条。渠道会从已连接的服务读出来。", color = CloverText3)
+        TextButton(onClick = vm::refreshGateways) { Text("重试这一条") }
+        TextButton(onClick = { vm.navigate(com.luckyagent.android.ui.AppDestination.Settings) }) { Text("打开设置") }
     }
 }
 
@@ -209,7 +210,7 @@ private fun GatewayCard(
             title = option.label,
             subtitle = listOfNotNull(
                 option.description,
-                if (gateway.connected == true) "connected" else null,
+                if (gateway.connected == true) "已接通" else null,
             ).joinToString(" · "),
             trailing = { StatusChip(if (gateway.running) "running" else "stopped") },
         )
@@ -219,9 +220,9 @@ private fun GatewayCard(
                 Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Stat("Sent", stats.messagesSent?.toString() ?: "—")
-                Stat("Recv", stats.messagesReceived?.toString() ?: "—")
-                Stat("Errors", stats.errors?.toString() ?: "—")
+                Stat("发出", stats.messagesSent?.toString() ?: "—")
+                Stat("收到", stats.messagesReceived?.toString() ?: "—")
+                Stat("失败", stats.errors?.toString() ?: "—")
             }
         }
         if (!gateway.error.isNullOrBlank()) {
@@ -233,15 +234,15 @@ private fun GatewayCard(
             }
             if (gateway.running) {
                 OutlinedButton(onClick = onStop, enabled = !anyActionInFlight) {
-                    Text("Stop")
+                    Text("停止")
                 }
             } else {
                 Button(onClick = onStart, enabled = !anyActionInFlight) {
-                    Text("Start")
+                    Text("启动")
                 }
             }
             if (actionInFlight) {
-                Text("Working…", color = CloverText2, style = MaterialTheme.typography.labelSmall)
+                Text("正在处理", color = CloverText2, style = MaterialTheme.typography.labelSmall)
             }
         }
     }

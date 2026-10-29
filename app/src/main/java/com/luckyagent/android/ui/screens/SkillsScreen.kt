@@ -81,7 +81,7 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
         ScreenHeader(
             eyebrow = "Capabilities",
             title = "技能",
-            subtitle = state.skillsDir?.let { "dir · $it" } ?: "Loaded skill packs from the host runtime",
+            subtitle = state.skillsDir?.let { "目录 · $it" } ?: "已连接电脑上装好的技能",
             actions = {
                 IconButton(onClick = vm::refreshSkills) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
@@ -90,12 +90,12 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
         )
 
         if (state.skillsLoading) {
-            Text("Loading skills…", color = CloverText2, modifier = Modifier.padding(horizontal = 16.dp))
+            Text("正在读取技能", color = CloverText2, modifier = Modifier.padding(horizontal = 16.dp))
         }
         state.skillsError?.let { ErrorLine(it) }
 
         Text(
-            "Install / enable / rollback stay on desktop GUI. Phone view is structured read-only inventory.",
+            "手机只查看已装技能。安装和启停仍在电脑上完成。",
             color = CloverText3,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -115,7 +115,7 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             decorationBox = { inner ->
                 if (state.skillsQuery.isEmpty()) {
-                    Text("Filter skills / tools", color = CloverText3)
+                    Text("搜索技能或工具", color = CloverText3)
                 }
                 inner()
             },
@@ -124,18 +124,20 @@ fun SkillsScreen(state: AppUiState, vm: AppViewModel) {
         when {
             !state.skillsLoading && state.skills.isEmpty() && state.skillsError == null -> {
                 EmptyState(
-                    title = "No skills loaded",
-                    body = "The runtime returned an empty skills list.",
+                    title = "还没有技能",
+                    body = "连上电脑后重试这一条。技能从已连接的服务读出来。",
                     modifier = Modifier.padding(16.dp),
-                    actionLabel = "刷新",
+                    actionLabel = "重试这一条",
                     onAction = vm::refreshSkills,
                 )
             }
             !state.skillsLoading && filtered.isEmpty() -> {
                 EmptyState(
-                    title = "No matches",
-                    body = "No skills match “${state.skillsQuery}”.",
+                    title = "没有匹配的技能",
+                    body = "没有技能匹配「${state.skillsQuery}」。换个词，或回到聊天。",
                     modifier = Modifier.padding(16.dp),
+                    actionLabel = "回到聊天",
+                    onAction = { vm.navigate(com.luckyagent.android.ui.AppDestination.Chat) },
                 )
             }
             else -> {

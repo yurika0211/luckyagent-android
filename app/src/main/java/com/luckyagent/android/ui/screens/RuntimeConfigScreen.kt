@@ -18,7 +18,7 @@ fun RuntimeConfigScreen(state: AppUiState, vm: AppViewModel, onBack: () -> Unit)
         ScreenHeader(
             eyebrow = "Runtime",
             title = "服务器配置",
-            subtitle = "保存后会影响这台电脑上的服务 · ${state.settings.apiBase}",
+            subtitle = "保存后会影响这台电脑上的服务 · ${state.settings.apiBase.ifBlank { "未设置服务地址" }}",
             onBack = onBack,
         )
         Column(

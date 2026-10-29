@@ -13,7 +13,7 @@
 - 非 `file:///android_asset/mermaid/` 的请求被 `shouldInterceptRequest` 丢掉。
 - 源码经 `JSONObject` 传给 `renderMermaid`，不拼进 HTML。
 - 页面 `onPageFinished` 之后才渲染。成功回传高度，上限 480dp。
-- 点击图表打开全屏预览；预览中的 WebView 开启双指缩放，右上角按钮关闭预览。
+- 点击图表打开全屏预览。行内 WebView 不吃点击，页面把轻点交给 `MermaidBridge.onTapped`。预览中的 WebView 开启双指缩放，右上角按钮关闭预览。
 - 渲染失败，或 3 秒没有回调，撤掉 WebView，显示源码。
 
 ## 不做
