@@ -1508,7 +1508,7 @@ private fun ChatConversation(
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                 shape = RoundedCornerShape(8.dp),
-                color = CloverSurface,
+                color = CloverSurface.copy(alpha = state.settings.recapOpacity.coerceIn(0, 100) / 100f),
                 border = BorderStroke(1.dp, CloverLine),
             ) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
