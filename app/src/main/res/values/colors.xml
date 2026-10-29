@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Mirrored from UI/GUI/src/styles.css :root -->
-    <color name="clover_bg">#f9faf4</color>
-    <color name="clover_bg_side">#eef1e5</color>
+    <!-- Nude peach primary + moss secondary palette. -->
+    <color name="clover_bg">#fbf8f3</color>
+    <color name="clover_bg_side">#f1eee6</color>
     <color name="clover_surface">#ffffff</color>
-    <color name="clover_surface_2">#f0f3e7</color>
-    <color name="clover_user_bubble">#e9efd9</color>
-    <color name="clover_line">#e0e5d2</color>
-    <color name="clover_text">#16190f</color>
-    <color name="clover_text2">#565a4b</color>
-    <color name="clover_text3">#737866</color>
-    <color name="clover_accent">#3f8a37</color>
-    <color name="clover_accent_hover">#35762e</color>
-    <color name="clover_leaf">#9dc74b</color>
-    <color name="clover_leaf_ink">#16190f</color>
-    <color name="ic_launcher_background">#eef1e5</color>
+    <color name="clover_surface_2">#f3f0e9</color>
+    <color name="clover_user_bubble">#f4e2dc</color>
+    <color name="clover_line">#e4ded5</color>
+    <color name="clover_text">#211d1a</color>
+    <color name="clover_text2">#625a53</color>
+    <color name="clover_text3">#81766d</color>
+    <color name="clover_accent">#c97978</color>
+    <color name="clover_accent_hover">#a95f64</color>
+    <color name="clover_leaf">#788b61</color>
+    <color name="clover_leaf_ink">#20251d</color>
+    <color name="ic_launcher_background">#f1eee6</color>
 </resources>
