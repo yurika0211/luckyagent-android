@@ -25,5 +25,21 @@ data class CronJob(
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("delete_after_run") val deleteAfterRun: Boolean = false,
+    /** The original five-field expression when the server exposes one. */
+    val expression: String = "",
     val metadata: Map<String, String> = emptyMap(),
 )
+
+@Serializable
+data class CronCreateRequest(
+    val name: String = "",
+    val description: String = "",
+    val schedule: String,
+    val mode: String = "agent",
+    val command: String,
+    val metadata: Map<String, String> = emptyMap(),
+    @SerialName("delete_after_run") val deleteAfterRun: Boolean = false,
+)
+
+@Serializable
+data class CronActionRequest(val action: String)

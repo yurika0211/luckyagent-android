@@ -47,6 +47,7 @@ import com.luckyagent.android.data.api.MemorySearchTrace
 import com.luckyagent.android.data.api.ReceivedMemoryTrace
 import com.luckyagent.android.data.api.CommandExecution
 import com.luckyagent.android.data.api.CronJob
+import com.luckyagent.android.data.api.CronCreateRequest
 import com.luckyagent.android.data.api.AutonomyDashboardResponse
 import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
 import com.luckyagent.android.data.api.AutonomyTaskSummary
@@ -4987,6 +4988,59 @@ class AppViewModel(
 
     fun refreshCron() {
         viewModelScope.launch { refreshCronNow() }
+    }
+
+    fun createCronJob(
+        name: String,
+        schedule: String,
+        command: String,
+        description: String,
+    ) {
+        viewModelScope.launch {
+            _ui.update { it.copy(cronLoading = true, cronError = null) }
+            val sessionId = currentSessionId().trim()
+            val result = if (sessionId.isBlank()) {
+                Result.failure(IllegalStateException("请先打开一个会话，再创建定时任务"))
+            } else {
+                container.api.createCronJob(
+                    CronCreateRequest(
+                        name = name.trim(),
+                        schedule = schedule.trim(),
+                        command = command.trim(),
+                        description = description.trim(),
+                        metadata = mapOf("session_id" to sessionId, "platform" to "android"),
+                    ),
+                )
+            }
+            if (result.isSuccess) refreshCronNow()
+            else _ui.update { it.copy(cronLoading = false, cronError = result.exceptionOrNull()?.message ?: "创建定时任务失败") }
+        }
+    }
+
+    fun pauseCronJob(id: String) {
+        mutateCronJob(id, "pause")
+    }
+
+    fun resumeCronJob(id: String) {
+        mutateCronJob(id, "resume")
+    }
+
+    fun deleteCronJob(id: String) {
+        viewModelScope.launch {
+            _ui.update { it.copy(cronLoading = true, cronError = null) }
+            val result = container.api.deleteCronJob(id)
+            if (result.isSuccess) refreshCronNow()
+            else _ui.update { it.copy(cronLoading = false, cronError = result.exceptionOrNull()?.message ?: "删除定时任务失败") }
+        }
+    }
+
+    private fun mutateCronJob(id: String, action: String) {
+        viewModelScope.launch {
+            _ui.update { it.copy(cronLoading = true, cronError = null) }
+            val result = container.api.updateCronJob(id, action)
+            if (result.isSuccess) refreshCronNow()
+            else _ui.update { it.copy(cronLoading = false, cronError = result.exceptionOrNull()?.message ?: "更新定时任务失败") }
+        }
     }
 
     private suspend fun refreshCronNow() {
