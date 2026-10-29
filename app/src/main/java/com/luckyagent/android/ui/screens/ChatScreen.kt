@@ -1676,7 +1676,6 @@ private fun SessionNavigationCard(
     onOpenBackground: (String?) -> Unit,
     onOpenTrace: () -> Unit,
     onOpenMemory: () -> Unit,
-    onDismiss: () -> Unit,
 ) {
     val mine = remember(tasks, sessionId) { tasksForSession(tasks, sessionId) }
     val board = remember(background, sessionId) { backgroundForSession(background, sessionId) }
