@@ -196,7 +196,9 @@ class LuckyAgentWsClient internal constructor(
                 ),
             ),
         )
-        return webSocket.send(reconnect)
+        val sent = webSocket.send(reconnect)
+        if (sent) connection.touch()
+        return sent
     }
 
     private fun snapshotConfig(sessionId: String): ConnectionConfig {
@@ -340,6 +342,9 @@ class LuckyAgentWsClient internal constructor(
      * frame or an already-marked truncation, never a sliced JSON document.
      */
     private fun handleInboundFrame(connection: ManagedConnection, text: String) {
+        // Receiving a frame is a use of the socket too. Keep the LRU clock
+        // current even when the frame is too large to decode or render.
+        connection.touch()
         // A reconnect can replay a large or malformed frame. Do not let
         // callback-thread exceptions crash the process.
         if (text.length > MAX_INBOUND_MESSAGE_CHARS) {
@@ -380,7 +385,11 @@ class LuckyAgentWsClient internal constructor(
                         val stateHint = (env.data as? kotlinx.serialization.json.JsonObject)
                             ?.get("state")
                             ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
-                        _state.value = if (stateHint == "idle") SocketState.Connected else SocketState.Running
+                        _state.value = when (stateHint) {
+                            "connected", "idle", "completed", "cancelled" -> SocketState.Connected
+                            "error" -> SocketState.Error
+                            else -> SocketState.Running
+                        }
                     }
                     "stream_end", "final", "done", "chat_done", "assistant_message" -> {
                         _state.value = SocketState.Connected
@@ -452,6 +461,7 @@ class LuckyAgentWsClient internal constructor(
             if (connection.readiness.value != SocketState.Connected) return null
             val ws = connection.socketRef.get() ?: return null
             if (!ws.send(payload)) return null
+            connection.touch()
             if (trackLease) connection.leases += 1
         }
         if (trackLease && isCurrent(connection)) _state.value = SocketState.Running
@@ -476,7 +486,9 @@ class LuckyAgentWsClient internal constructor(
         synchronized(connection) {
             if (connection.readiness.value != SocketState.Connected) return false
             val ws = connection.socketRef.get() ?: return false
-            return ws.send(payload)
+            val sent = ws.send(payload)
+            if (sent) connection.touch()
+            return sent
         }
     }
 
@@ -493,7 +505,9 @@ class LuckyAgentWsClient internal constructor(
         synchronized(connection) {
             if (connection.readiness.value != SocketState.Connected) return false
             val ws = connection.socketRef.get() ?: return false
-            return ws.send(payload)
+            val sent = ws.send(payload)
+            if (sent) connection.touch()
+            return sent
         }
     }
 
@@ -514,7 +528,9 @@ class LuckyAgentWsClient internal constructor(
         synchronized(connection) {
             if (connection.readiness.value != SocketState.Connected) return false
             val ws = connection.socketRef.get() ?: return false
-            return ws.send(payload)
+            val sent = ws.send(payload)
+            if (sent) connection.touch()
+            return sent
         }
     }
 
@@ -522,6 +538,7 @@ class LuckyAgentWsClient internal constructor(
         val connection = connections[connectionId] ?: return
         val idle = synchronized(connection) {
             connection.leases = (connection.leases - 1).coerceAtLeast(0)
+            if (connection.leases == 0) connection.touch()
             connection.leases == 0
         }
         if (idle) trimIdleConnections()
@@ -538,16 +555,22 @@ class LuckyAgentWsClient internal constructor(
     private fun trimIdleConnections() {
         val currentId = currentConnectionId.get()
         val current = currentId?.let(connections::get)
-        val idle = connections.values.filter { it.id != currentId && it.leases == 0 }
-        val (sameEndpoint, staleEndpoint) = idle.partition { connection ->
+        val idle = connections.values.mapNotNull { connection ->
+            if (connection.id == currentId) return@mapNotNull null
+            synchronized(connection) {
+                if (connection.leases == 0) connection to connection.lastUsedAt else null
+            }
+        }
+        val (sameEndpoint, staleEndpoint) = idle.partition { (connection, _) ->
             current == null || sameEndpoint(connection.config, current.config)
         }
-        staleEndpoint.forEach(::closeConnection)
+        staleEndpoint.forEach { (connection, _) -> closeConnection(connection) }
         val evict = idleConnectionsToEvict(
-            sameEndpoint.map { it.id to it.lastUsedAt },
+            sameEndpoint.map { (connection, lastUsedAt) -> connection.id to lastUsedAt },
             MAX_IDLE_CONNECTIONS,
         ).toSet()
-        sameEndpoint.filter { it.id in evict }.forEach(::closeConnection)
+        sameEndpoint.filter { (connection, _) -> connection.id in evict }
+            .forEach { (connection, _) -> closeConnection(connection) }
     }
 
     private fun sameEndpoint(a: ConnectionConfig, b: ConnectionConfig): Boolean =

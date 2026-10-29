@@ -2992,7 +2992,7 @@ class AppViewModel(
         if (settingsChanged) {
             settingsReconnectJob?.cancel()
             settingsReconnectJob = viewModelScope.launch {
-                kotlinx.coroutines.delay(450)
+                kotlinx.coroutines.delay(SETTINGS_RECONNECT_DEBOUNCE_MS)
                 connectSocket()
                 settingsReconnectJob = null
             }
@@ -5520,6 +5520,7 @@ class AppViewModel(
 
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
+        const val SETTINGS_RECONNECT_DEBOUNCE_MS = 450L
         val artifactPathPattern = Regex(
             """(?i)(?:MEDIA:\s*)?(?:~[/\\]\.luckyagent[/\\](?:workspace|uploads)[/\\][^\s`"'<>]+|/[^\s`"'<>/]+(?:/[^\s`"'<>/]+)*/\.luckyagent/(?:workspace|uploads)/[^\s`"'<>]+)""",
         )

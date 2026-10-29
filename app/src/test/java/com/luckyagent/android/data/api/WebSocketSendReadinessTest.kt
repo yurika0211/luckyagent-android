@@ -197,4 +197,35 @@ class WebSocketSendReadinessTest {
         assertEquals(SocketState.Running, client.state.value)
         assertEquals(2, server.requestCount)
     }
+
+    @Test
+    fun messageTrafficKeepsRecentlyUsedConnectionWarm() = runBlocking {
+        val sessionIds = listOf("A", "B", "C", "D", "E", "F")
+        val peers = sessionIds.map { Peer() }
+        peers.forEach { peer -> server.enqueue(MockResponse().withWebSocketUpgrade(peer)) }
+
+        sessionIds.take(5).forEachIndexed { index, sessionId ->
+            assertTrue(client.awaitConnected(sessionId, 5_000))
+            val handle = client.sendChat("initial $sessionId", sessionId = sessionId)
+            assertNotNull(handle)
+            val sent = handle!!
+            assertEquals("reconnect", peers[index].nextType())
+            assertEquals("chat", peers[index].nextType())
+            client.release(sent.connectionId)
+        }
+
+        // A was last touched by real traffic after E became the current session.
+        val aHandle = client.sendChat("recent A", sessionId = "A")
+        assertNotNull(aHandle)
+        assertEquals("chat", peers[0].nextType())
+        client.release(aHandle!!.connectionId)
+
+        // The sixth idle socket forces one eviction. A must survive because it
+        // was touched by the send immediately before the trim.
+        assertTrue(client.awaitConnected("F", 5_000))
+        val stillWarm = client.sendChat("A is warm", sessionId = "A")
+        assertNotNull(stillWarm)
+        assertEquals("chat", peers[0].nextType())
+        client.release(stillWarm!!.connectionId)
+    }
 }
