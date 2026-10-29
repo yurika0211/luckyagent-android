@@ -221,6 +221,7 @@ import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
+import com.luckyagent.android.ui.components.OpenUiTree
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
@@ -2117,6 +2118,14 @@ private fun BubbleRow(
                             if (bubble.contentTruncated) {
                                 FullTextButton(bubble, expanding, onExpand)
                             }
+                        }
+                        bubble.openUi?.takeIf { it.nodes.isNotEmpty() }?.let { tree ->
+                            Spacer(Modifier.height(8.dp))
+                            OpenUiTree(
+                                tree = tree,
+                                interactive = !bubble.streaming && tree.state != "streaming",
+                                onAction = { _, _ -> },
+                            )
                         }
                         if (bubble.attachments.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
