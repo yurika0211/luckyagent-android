@@ -139,6 +139,37 @@ internal fun confirmedOutboundIds(
     return confirmed
 }
 
+/**
+ * Put local outbox rows back where they belong in the stored conversation.
+ *
+ * They used to be appended after every stored row. When the runtime had already
+ * written the message but its outbox row was still alive (a slow acknowledgement,
+ * a reconnect that painted history first), the local copy appeared *under its own
+ * answer*. A row is placed in front of the first stored row that is newer than
+ * it; rows newer than everything stay at the end.
+ *
+ * A row without a comparable timestamp is left at the end rather than guessed
+ * into the middle of the history.
+ */
+internal fun interleavePendingOutbound(
+    stored: List<ChatBubble>,
+    pending: List<ChatBubble>,
+): List<ChatBubble> {
+    if (pending.isEmpty()) return stored
+    if (stored.isEmpty()) return pending
+    val merged = stored.toMutableList()
+    pending.forEach { bubble ->
+        val at = bubble.createdAt.toEpochMilliOrNull()?.let { sentAt ->
+            merged.indexOfFirst { existing ->
+                val existingAt = existing.createdAt.toEpochMilliOrNull() ?: return@indexOfFirst false
+                existingAt > sentAt
+            }
+        } ?: -1
+        if (at < 0) merged += bubble else merged.add(at, bubble)
+    }
+    return merged
+}
+
 private data class TextCandidate(
     val index: Int,
     val text: String,

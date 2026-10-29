@@ -27,6 +27,7 @@ import com.luckyagent.android.data.cache.latestPageAlreadyStored
 import com.luckyagent.android.data.cache.historySyncAction
 import com.luckyagent.android.data.cache.mergeLatestPage
 import com.luckyagent.android.data.cache.olderHistoryOffset
+import com.luckyagent.android.data.cache.olderPageEnd
 import com.luckyagent.android.data.cache.prependOlderPage
 import com.luckyagent.android.data.cache.withContentTruncation
 import com.luckyagent.android.data.api.MediaAttachment
@@ -246,6 +247,12 @@ data class AppUiState(
     val historyRefreshing: Boolean = false,
     val historyLoadingMore: Boolean = false,
     val historyHasMore: Boolean = false,
+    /**
+     * Bumped whenever a page only added rows in front of the loaded ones.
+     * The list keeps indices, so the screen uses this to put the reader back on
+     * the row they were looking at.
+     */
+    val historyPrefixPushes: Int = 0,
     /** Server index whose full body is being fetched. -1 when idle. */
     val expandingHistoryIndex: Int = -1,
     val composer: String = "",
@@ -3431,36 +3438,87 @@ class AppViewModel(
             syncLatestHistory(apiBase, apiKey, sessionId)
             return
         }
-        val offset = olderHistoryOffset(historyMessages.size)
-        if (offset <= 0) {
+        if (historyStartIndex <= 0) {
             _ui.update { it.copy(historyLoadingMore = false, historyHasMore = false) }
             return
         }
-        val result = container.api.sessionHistory(
-            sessionId,
-            limit = SessionCachePolicy.LATEST_PAGE,
-            offset = offset,
-            includeFull = true,
-        )
-        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
-        result.onSuccess { fetch ->
+        // The offset counts from the newest row, so it has to be derived from the
+        // server total, not from how many rows happen to be cached. Messages that
+        // arrived since the cache was painted would otherwise push the page past
+        // the window start and turn one "load older" into a full refetch.
+        val cached = currentHistoryPage()
+        var offset = olderHistoryOffset(cached.messageCount, cached.startIndex)
+        var attempts = 0
+        while (true) {
+            val result = container.api.sessionHistory(
+                sessionId,
+                limit = SessionCachePolicy.LATEST_PAGE,
+                offset = offset,
+                includeFull = true,
+            )
+            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
+            val failure = result.exceptionOrNull()
+            if (failure != null) {
+                if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
+                _ui.update {
+                    it.copy(
+                        historyLoading = false,
+                        historyRefreshing = false,
+                        historyLoadingMore = false,
+                        activityLine = if (historyMessages.isNotEmpty()) {
+                            SessionCachePolicy.REFRESH_FAILED_LABEL
+                        } else {
+                            "没能读到这轮对话。回到聊天后重试这一条。"
+                        },
+                        showingOfflineCache = historyMessages.isNotEmpty(),
+                    )
+                }
+                return
+            }
+            val fetch = result.getOrThrow()
             if (fetch.notModified) {
                 finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
-                return@onSuccess
+                return
             }
-            val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
+            val history = fetch.history ?: run {
+                failHistoryRefresh(sessionId, "empty history")
+                return
+            }
             val remoteCount = history.messageCount ?: historyStartIndex + historyMessages.size
-            val cached = currentHistoryPage()
-            when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset).let { result ->
-                if (result is LatestMerge.Appended) {
-                    LatestMerge.Appended(result.page.withContentTruncation(history.contentTruncated == true))
-                } else {
-                    result
+            val current = currentHistoryPage()
+            // Realign once against the total the server just reported. Any drift
+            // since the cache was painted is now known exactly, so the retry ends
+            // on the cache boundary instead of discarding the cached prefix.
+            val realigned = olderHistoryOffset(remoteCount, current.startIndex)
+            if (realigned != offset && attempts < 1 && olderPageEnd(remoteCount, offset) != current.startIndex) {
+                offset = realigned
+                attempts += 1
+                continue
+            }
+            when (
+                val merged = prependOlderPage(
+                    current,
+                    history.messages,
+                    remoteCount,
+                    history.hasMore == true,
+                    requestedOffset = offset,
+                ).let { result ->
+                    if (result is LatestMerge.Appended) {
+                        LatestMerge.Appended(result.page.withContentTruncation(history.contentTruncated == true))
+                    } else {
+                        result
+                    }
                 }
-            }) {
+            ) {
                 is LatestMerge.Invalidate -> {
-                    if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onSuccess
-                    if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
+                    // Only an inconsistent cache (shrunk session, offset past the
+                    // start) gets here now. Rebuilding is the safe reset.
+                    if (!currentCacheConnectionMatches(apiBase, apiKey) ||
+                        currentSessionId() != sessionId ||
+                        historySessionId != sessionId
+                    ) {
+                        return
+                    }
                     historyMessages = emptyList()
                     historyStartIndex = 0
                     historyMessageCount = 0
@@ -3469,25 +3527,16 @@ class AppViewModel(
                 }
                 is LatestMerge.Appended -> {
                     persistHistoryPage(apiBase, apiKey, sessionId, history.title, history.updatedAt, merged.page)
-                    if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
+                    if (!currentCacheConnectionMatches(apiBase, apiKey) ||
+                        currentSessionId() != sessionId ||
+                        historySessionId != sessionId
+                    ) {
+                        return
+                    }
                     applyHistoryPage(sessionId, merged.page, offline = false)
                 }
             }
-        }.onFailure { error ->
-            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
-            _ui.update {
-                it.copy(
-                    historyLoading = false,
-                    historyRefreshing = false,
-                    historyLoadingMore = false,
-                    activityLine = if (historyMessages.isNotEmpty()) {
-                        SessionCachePolicy.REFRESH_FAILED_LABEL
-                    } else {
-                        "没能读到这轮对话。回到聊天后重试这一条。"
-                    },
-                    showingOfflineCache = historyMessages.isNotEmpty(),
-                )
-            }
+            return
         }
     }
 
@@ -3541,6 +3590,10 @@ class AppViewModel(
             historyToBubbles(page.messages, page.startIndex)
         }
         if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        // A growing prefix keeps every item key but moves every index. The screen
+        // needs one signal to re-anchor the viewport; appends and replacements
+        // must not scroll anything.
+        val pushedPrefix = historyMessages.isNotEmpty() && page.startIndex < historyStartIndex
         historyMessages = page.messages
         historyStartIndex = page.startIndex
         historyMessageCount = page.messageCount
@@ -3583,6 +3636,7 @@ class AppViewModel(
                 activity = shownActivity,
                 historyBubbles = historyBubbles,
                 preserveLiveTurn = keepLiveTurn && stillOwned,
+                prefixPushed = pushedPrefix,
             )
         }
     }
@@ -3622,6 +3676,15 @@ class AppViewModel(
         ).firstOrNull { it.role.equals("user", ignoreCase = true) } ?: return null
         val storedText = candidate.content?.trim().orEmpty()
         if (storedText != live.content.trim()) return null
+        // The runtime does not persist client_message_id, so text is the only
+        // evidence left. Repeated prompts ("继续", a retried line) make it
+        // ambiguous: pinning the wrong row moves this answer onto the previous
+        // question. Leave the live rows alone instead of guessing.
+        val sameTextRows = page.messages.count { message ->
+            message.role.equals("user", ignoreCase = true) &&
+                message.content?.trim() == storedText
+        }
+        if (sameTextRows > 1) return null
         return baseline
     }
 
@@ -3640,6 +3703,7 @@ class AppViewModel(
         activity: String,
         historyBubbles: List<ChatBubble>,
         preserveLiveTurn: Boolean = false,
+        prefixPushed: Boolean = false,
     ) {
         val bubbles = historyBubbles
         val confirmedIds = confirmedOutbound(sessionId, historyMessages)
@@ -3660,8 +3724,10 @@ class AppViewModel(
             } else {
                 emptyList()
             }
-            // A pending outbox bubble and the live user bubble are one message.
-            val shown = (bubbles + live + pendingBubbles).distinctBy { it.id }
+            // A stored row and its still-pending outbox copy are one message.
+            // Appending the copy put it under its own answer.
+            val stored = (bubbles + live).distinctBy { it.id }
+            val shown = interleavePendingOutbound(stored, pendingBubbles).distinctBy { it.id }
             current.copy(
                 bubbles = shown,
                 outboundQueue = pendingItems,
@@ -3671,6 +3737,7 @@ class AppViewModel(
                 historyRefreshing = false,
                 historyLoadingMore = false,
                 historyHasMore = historyStartIndex > 0,
+                historyPrefixPushes = current.historyPrefixPushes + if (prefixPushed) 1 else 0,
                 showingOfflineCache = offline,
                 progressSteps = if (preserveLiveTurn && running) current.progressSteps else emptyList(),
                 liveSummary = if (preserveLiveTurn && running) current.liveSummary else null,
