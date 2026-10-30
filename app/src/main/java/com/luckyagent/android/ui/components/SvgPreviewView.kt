@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceResponse
@@ -163,6 +164,10 @@ private fun SvgPage(
     onCrashed: () -> Unit,
 ) {
     val document = remember(svg, fit) { svgPreviewDocument(svg, fit) }
+    // A declared viewBox/width/height already gives the Compose card its exact
+    // aspect ratio. Do not start a JavaScript runtime or run getBBox for every
+    // ordinary SVG; the probe is only needed for the legacy no-frame case.
+    val measureSize = svg.frame == null
     val reportSize by rememberUpdatedState(onSize)
     val reportCrash by rememberUpdatedState(onCrashed)
     val bridge = remember { SvgSizeBridge { w, h -> reportSize(w, h) } }
@@ -170,10 +175,17 @@ private fun SvgPage(
         modifier = modifier,
         factory = { context ->
             WebView(context).apply {
+                // AndroidView's default WRAP_CONTENT makes WebView treat CSS
+                // percentage/viewport heights as content-dependent (zero). The
+                // enclosing card already supplies an exact size.
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
                 setBackgroundColor(0)
                 // The injected size probe is the only script this page needs; the
                 // document policy in svgPreviewDocument allows none from the source.
-                settings.javaScriptEnabled = true
+                settings.javaScriptEnabled = measureSize
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.blockNetworkLoads = true
@@ -181,7 +193,7 @@ private fun SvgPage(
                 // Nested scrolling fights the chat list. The touch listener, installed in
                 // update so it follows `fit`, decides which one owns each drag.
                 isNestedScrollingEnabled = false
-                addJavascriptInterface(bridge, "LuckySvgBridge")
+                if (measureSize) addJavascriptInterface(bridge, "LuckySvgBridge")
                 if (zoomable) {
                     settings.setSupportZoom(true)
                     settings.builtInZoomControls = true
@@ -198,7 +210,9 @@ private fun SvgPage(
                     }
 
                     override fun onPageFinished(view: WebView, url: String) {
-                        view.evaluateJavascript("LuckySvgBridge.report(String($SVG_SIZE_JS))", null)
+                        if (measureSize) {
+                            view.evaluateJavascript("LuckySvgBridge.report(String($SVG_SIZE_JS))", null)
+                        }
                     }
 
                     override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -210,10 +224,12 @@ private fun SvgPage(
             }
         },
         update = { view ->
-            // fit flips after the first measurement of an undeclared frame, and the
-            // card width changes on rotation. Either one needs a new document.
-            val loaded = view.tag as? String
-            if (loaded != document) {
+            // AndroidView keeps the native view across recompositions. A history
+            // refresh (or a fit/scroll layout change) must load the new document,
+            // while unrelated recompositions must not restart it. `fit` flips after
+            // the first measurement of an undeclared frame, and the card width
+            // changes on rotation; both produce a different document string.
+            if (view.tag != document) {
                 view.tag = document
                 view.loadDataWithBaseURL(null, document, "text/html", "utf-8", null)
             }

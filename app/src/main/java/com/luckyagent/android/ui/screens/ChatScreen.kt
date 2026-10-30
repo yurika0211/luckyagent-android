@@ -495,7 +495,12 @@ internal fun surfaceStaysLive(visibleKeys: List<Any>, key: Any, wasLive: Boolean
  */
 @Composable
 private fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
-    var live by remember(key) { mutableStateOf(true) }
+    // Start cold. LazyColumn composes a prefetch window before it has reported
+    // visible keys; mounting a WebView for every prefetched history row was the
+    // source of the first-scroll hitch. Once layout settles, only rows that are
+    // actually visible become live. The empty-layout case remains cold and will
+    // be revisited when LazyListState publishes its first layoutInfo snapshot.
+    var live by remember(key) { mutableStateOf(false) }
     if (!listState.isScrollInProgress) {
         live = surfaceStaysLive(listState.layoutInfo.visibleItemsInfo.map { it.key }, key, live)
     }
