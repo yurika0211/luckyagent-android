@@ -2572,6 +2572,12 @@ class AppViewModel(
             toolOutput = bubble.toolOutput,
         )
 
+    fun sendOpenUiAction(treeId: String, widgetId: String, label: String) {
+        if (treeId.isBlank() || widgetId.isBlank()) return
+        val values = if (label.isBlank()) emptyMap() else mapOf("label" to label)
+        container.wsClient.sendUiAction(currentSessionId(), treeId, widgetId, values)
+    }
+
     fun notifyCopied() {
         _ui.update { it.copy(snackbarMessage = "已复制") }
     }

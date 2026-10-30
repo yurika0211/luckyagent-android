@@ -3,6 +3,7 @@ package com.luckyagent.android.data.openui
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -45,6 +46,55 @@ class OpenUiCatalogTest {
         assertEquals(null, openUiTreeFromToolArguments("not json"))
         assertEquals(null, openUiTreeFromToolArguments(null))
         assertEquals(null, openUiTreeFromToolArguments("""{"tree":{"state":"complete","nodes":[]}}"""))
+    }
+
+    @Test
+    fun tableGridJoinsHeaderAndClipsBody() {
+        val json = Json { ignoreUnknownKeys = true }
+        val props = json.parseToJsonElement(
+            """{"columns":["饮品","咖啡因"],"rows":[["红茶","47-95 mg"],["咖啡","80-200 mg"]]}""",
+        ).jsonObject
+        val (grid, extra) = OpenUiNode(id = "t", type = "Table", props = props).tableGrid()
+        assertEquals(listOf("饮品", "咖啡因"), grid[0])
+        assertEquals(listOf("红茶", "47-95 mg"), grid[1])
+        assertEquals(0, extra)
+        assertEquals(3, grid.size)
+    }
+
+    @Test
+    fun mapPointsReadNameAndCoordinates() {
+        val json = Json { ignoreUnknownKeys = true }
+        val props = json.parseToJsonElement(
+            """{"points":[{"name":"望京","lat":39.99,"lng":116.48},{"label":"只写了名字"}]}""",
+        ).jsonObject
+        val points = OpenUiNode(id = "m", type = "Map", props = props).mapPoints()
+        assertEquals("望京", points[0].name)
+        assertEquals(39.99, points[0].lat)
+        assertEquals(116.48, points[0].lng)
+        assertEquals("只写了名字", points[1].name)
+        assertEquals(null, points[1].lat)
+    }
+
+    @Test
+    fun listItemsReadsLabelsAndClips() {
+        val json = Json { ignoreUnknownKeys = true }
+        val props = json.parseToJsonElement(
+            """{"items":[{"label":"红茶"},{"text":"咖啡"},"水"]}""",
+        ).jsonObject
+        val (items, extra) = OpenUiNode(id = "l", type = "List", props = props).listItems(maxItems = 2)
+        assertEquals(listOf("红茶", "咖啡"), items)
+        assertEquals(1, extra)
+    }
+
+    @Test
+    fun chartSeriesReadsNamedValues() {
+        val json = Json { ignoreUnknownKeys = true }
+        val props = json.parseToJsonElement(
+            """{"kind":"bar","series":[{"name":"咖啡因","values":[47,95]}]}""",
+        ).jsonObject
+        val series = OpenUiNode(id = "c", type = "Chart", props = props).chartSeries()
+        assertEquals("咖啡因", series.single().name)
+        assertEquals(listOf(47f, 95f), series.single().values)
     }
 
     @Test
