@@ -107,6 +107,8 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.List
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -1987,43 +1989,62 @@ private fun ChatTopBar(
                     expanded = moreExpanded,
                     onDismissRequest = { moreExpanded = false },
                 ) {
-                    openNavigation?.let { onOpen ->
-                        DropdownMenuItem(
-                            text = { Text("这台电脑") },
-                            onClick = {
-                                moreExpanded = false
-                                onOpen()
-                            },
-                        )
+                    Surface(
+                        modifier = Modifier.widthIn(min = 220.dp),
+                        shape = RoundedCornerShape(20.dp),
+                        color = CloverSurface,
+                        border = BorderStroke(1.dp, CloverLine.copy(alpha = .7f)),
+                        tonalElevation = 2.dp,
+                    ) {
+                        Column(Modifier.padding(vertical = 4.dp)) {
+                            openNavigation?.let { onOpen ->
+                                DropdownMenuItem(
+                                    text = { Text("这台电脑") },
+                                    leadingIcon = { Icon(Icons.Outlined.Apps, contentDescription = null) },
+                                    onClick = {
+                                        moreExpanded = false
+                                        onOpen()
+                                    },
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("会话列表") },
+                                leadingIcon = { Icon(Icons.Outlined.List, contentDescription = null) },
+                                onClick = {
+                                    moreExpanded = false
+                                    onMenu()
+                                },
+                            )
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                color = CloverLine.copy(alpha = .55f),
+                            )
+                            DropdownMenuItem(
+                                text = { Text("设置") },
+                                leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+                                onClick = {
+                                    moreExpanded = false
+                                    onOpenSettings()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("重新连接") },
+                                leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                                onClick = {
+                                    moreExpanded = false
+                                    onReconnect()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("多 agent 画布") },
+                                leadingIcon = { Icon(Icons.Outlined.AccountTree, contentDescription = null) },
+                                onClick = {
+                                    moreExpanded = false
+                                    onOpenCanvas()
+                                },
+                            )
+                        }
                     }
-                    DropdownMenuItem(
-                        text = { Text("设置") },
-                        onClick = {
-                            moreExpanded = false
-                            onOpenSettings()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("重新连接") },
-                        onClick = {
-                            moreExpanded = false
-                            onReconnect()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("会话列表") },
-                        onClick = {
-                            moreExpanded = false
-                            onMenu()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("多 agent 画布") },
-                        onClick = {
-                            moreExpanded = false
-                            onOpenCanvas()
-                        },
-                    )
                 }
             }
         }
@@ -3282,7 +3303,9 @@ private fun ComposerBar(
         ) {
             if (showLuckyCommands) {
                 LuckyClover(
-                    modifier = Modifier.wrapContentSize(unbounded = true),
+                    modifier = Modifier
+                        .offset(y = (-58).dp)
+                        .wrapContentSize(unbounded = true),
                     onCommand = { action ->
                         onChange(action)
                         onSend()
@@ -3327,18 +3350,25 @@ private fun LuckyClover(
     onDismiss: () -> Unit,
 ) {
     val leaves = listOf(
-        "/lucky on" to "开始" to Alignment.TopCenter,
-        "/lucky status" to "状态" to Alignment.CenterStart,
-        "/lucky off" to "提交" to Alignment.CenterEnd,
-        "/lucky cancel" to "放弃" to Alignment.BottomCenter,
+        "/lucky on" to "开始",
+        "/lucky status" to "状态",
+        "/lucky off" to "提交",
+        "/lucky cancel" to "放弃",
     )
-    Box(modifier.size(176.dp)) {
-        Box(Modifier.matchParentSize().clickable(onClick = onDismiss))
-        leaves.forEach { (commandLabel, alignment) ->
-            val (command, label) = commandLabel
+    Box(
+        modifier
+            .widthIn(min = 248.dp)
+            .heightIn(min = 52.dp)
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            leaves.forEach { (command, label) ->
             Surface(
                 onClick = { onCommand(command) },
-                modifier = Modifier.align(alignment),
                 shape = CircleShape,
                 color = CloverSurface.copy(alpha = .96f),
                 border = BorderStroke(1.dp, CloverAccent.copy(alpha = .45f)),
@@ -3350,6 +3380,7 @@ private fun LuckyClover(
                     style = MaterialTheme.typography.labelMedium,
                     color = CloverAccent,
                 )
+            }
             }
         }
     }
@@ -3861,6 +3892,9 @@ private fun ModelSwitchSheet(
     onSelect: (ModelRef) -> Unit,
 ) {
     val sections = remember(state.models) { modelSheetSections(state.models) }
+    val chatSections = remember(sections) { sections.filter { it.first == "chat" } }
+    val functionSections = remember(sections) { sections.filter { it.first != "chat" } }
+    var showFunctionModels by rememberSaveable { mutableStateOf(false) }
     var showEffortOptions by rememberSaveable { mutableStateOf(false) }
     val effort = state.modelEffort
     val effortSupported = effort?.supported == true
@@ -3935,7 +3969,7 @@ private fun ModelSwitchSheet(
                     modifier = Modifier.padding(vertical = 12.dp),
                 )
             }
-            sections.forEach { (kind, models) ->
+            chatSections.forEach { (kind, models) ->
                 val active = state.activeModels[kind] ?: models.firstOrNull { it.current }
                 Text(
                     modelKindLabel(kind),
@@ -3961,6 +3995,52 @@ private fun ModelSwitchSheet(
                         }
                     }
                 }
+            }
+            if (functionSections.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                ModelPickerLink(
+                    icon = Icons.Outlined.MoreHoriz,
+                    title = "其他功能模型",
+                    subtitle = "已配置 ${functionSections.size} 类",
+                    onClick = { showFunctionModels = !showFunctionModels },
+                )
+            }
+            if (showFunctionModels) {
+                functionSections.forEach { (kind, models) ->
+                    val active = state.activeModels[kind] ?: models.firstOrNull { it.current }
+                    Text(
+                        modelKindLabel(kind),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = CloverText2,
+                        modifier = Modifier.padding(top = 10.dp, bottom = 6.dp),
+                    )
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        color = CloverSurface.copy(alpha = .72f),
+                        border = BorderStroke(1.dp, CloverLine.copy(alpha = .7f)),
+                    ) {
+                        Column(Modifier.padding(vertical = 6.dp)) {
+                            models.forEach { model ->
+                                ModelPickerCardRow(
+                                    model = model,
+                                    selected = active?.id == model.id || (active == null && model.current),
+                                    switching = state.modelSwitchingKey == "$kind|${model.id}",
+                                    enabled = state.modelSwitchingKey == null,
+                                    onClick = { onSelect(model) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (state.modelsLoaded && !state.modelsLoading && functionSections.isEmpty() && state.modelsError == null) {
+                Text(
+                    "暂无可用模型",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CloverText3,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
             }
             Spacer(Modifier.height(12.dp))
             ModelPickerLink(
@@ -4023,12 +4103,6 @@ private fun ModelSwitchSheet(
                 }
             }
             Spacer(Modifier.height(8.dp))
-            ModelPickerLink(
-                icon = Icons.Outlined.MoreHoriz,
-                title = "More models",
-                subtitle = null,
-                onClick = onRetry,
-            )
             Spacer(Modifier.height(18.dp))
         }
     }
