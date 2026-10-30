@@ -342,7 +342,7 @@ class LuckyAgentApi(
      * Rewrites a composer draft without opening a session.
      * The server owns the expand instruction; the client only sends the draft.
      */
-    suspend fun expandDraft(draft: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun expandDraft(draft: String, timeoutMs: Long? = null): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val message = draft.trim()
             require(message.isNotEmpty()) { "草稿是空的" }
@@ -352,7 +352,11 @@ class LuckyAgentApi(
                 .post(payload.toRequestBody(jsonMedia))
                 .header("Content-Type", "application/json")
                 .build()
-            client.newCall(request).execute().use { resp ->
+            val requestClient = timeoutMs
+                ?.takeIf { it > 0 }
+                ?.let { client.newBuilder().callTimeout(it, TimeUnit.MILLISECONDS).build() }
+                ?: client
+            requestClient.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) error(gatewayError(body))
                 val decoded = json.decodeFromString(DraftExpandResponse.serializer(), body)
