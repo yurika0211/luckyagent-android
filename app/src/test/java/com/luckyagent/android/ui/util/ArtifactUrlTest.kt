@@ -24,5 +24,16 @@ class ArtifactUrlTest {
         assertNull(validatedArtifactPath("workspace/"))
         assertNull(validatedArtifactPath("workspace//file.txt"))
         assertEquals("uploads/file.txt", validatedArtifactPath("uploads/file.txt"))
+        assertEquals("cwd/build/app.apk", validatedArtifactPath("cwd/build/app.apk"))
+    }
+
+    @Test fun absoluteServicePathsAreEncodedForTheServerRootCheck() {
+        val url = artifactDownloadUrl("/srv/luckyagent/build/app-debug.apk", "https://example.test")!!
+        assertEquals("/srv/luckyagent/build/app-debug.apk", url.toHttpUrl().queryParameter("path"))
+    }
+
+    @Test fun arbitraryTildePathsArePassedToTheServer() {
+        val url = artifactDownloadUrl("~/Downloads/report.pdf", "https://example.test")!!
+        assertEquals("~/Downloads/report.pdf", url.toHttpUrl().queryParameter("path"))
     }
 }

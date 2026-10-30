@@ -5656,7 +5656,7 @@ class AppViewModel(
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
         val artifactPathPattern = Regex(
-            """(?i)(?:MEDIA:\s*)?(?:~[/\\]\.luckyagent[/\\](?:workspace|uploads)[/\\][^\s`"'<>]+|/[^\s`"'<>/]+(?:/[^\s`"'<>/]+)*/\.luckyagent/(?:workspace|uploads)/[^\s`"'<>]+)""",
+            """(?i)(?<![\w:])(?:MEDIA:\s*)?(?:~[/\\][^\s`"'<>]+|/(?:[^\s`"'<>/]+/)+[^\s`"'<>/]+)""",
         )
     }
 
