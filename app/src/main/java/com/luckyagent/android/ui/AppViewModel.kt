@@ -436,6 +436,10 @@ class AppViewModel(
     private var expandingHistoryIndex = -1
     private var assistantBufferId: String? = null
     private var assistantBufferIndex: Int? = null
+    /** A tree that arrived before its answer bubble existed. */
+    private var pendingOpenUi: OpenUiDelta? = null
+    /** Turn that owns [pendingOpenUi]; a later turn must not inherit it. */
+    private var pendingOpenUiTurnId: String? = null
     private val assistantPending = StringBuilder()
     private var assistantFlushJob: Job? = null
     private var currentTurnId = "turn-0"
@@ -1648,6 +1652,9 @@ class AppViewModel(
     private fun handleToolCall(data: kotlinx.serialization.json.JsonElement?) {
         foldAssistantRound()
         val name = extractToolName(data) ?: "tool"
+        // The tree reaches the client as `ui_delta`; showing the raw call would
+        // dump the whole catalog into the process fold.
+        if (name == "present_ui") return
         val stepId = extractField(data, "step_id").orEmpty()
         val args = extractToolArgs(data)?.let { capUiText(it, MAX_UI_TOOL_ARGS_CHARS) }
         val stepKey = "$currentTurnId:$stepId"
@@ -1669,6 +1676,8 @@ class AppViewModel(
 
     private fun handleToolResult(data: kotlinx.serialization.json.JsonElement?) {
         val name = extractToolName(data) ?: "tool"
+        // Its acknowledgement is a rendering instruction, not a result to read.
+        if (name == "present_ui") return
         if (name == "__memory_trace") {
             val rawElement = (data as? JsonObject)?.get("output") ?: (data as? JsonObject)?.get("display")
             val raw = when (rawElement) {
@@ -2083,13 +2092,27 @@ class AppViewModel(
 
     private fun attachOpenUi(tree: OpenUiDelta) {
         val bubbles = _ui.value.bubbles.toMutableList()
-        val idx = bubbles.indexOfLast { it.role.equals("assistant", true) && (it.streaming || it.openUi != null) }
+        // A tree belongs to the answer being streamed, not to a card of its own.
+        // The tool round that produced it has already folded, so wait for the
+        // answer bubble when it does not exist yet.
+        val idx = bubbles.indexOfLast {
+            it.role.equals("assistant", true) && !it.isIntermediate && (it.streaming || it.openUi != null)
+        }
         if (idx >= 0) {
             bubbles[idx] = bubbles[idx].copy(openUi = tree)
         } else {
-            bubbles += ChatBubble(id = "ui-${tree.treeId}", role = "assistant", content = "", streaming = tree.state == "streaming", openUi = tree)
+            pendingOpenUi = tree
+            pendingOpenUiTurnId = currentTurnId
         }
         _ui.value = _ui.value.copy(bubbles = bubbles)
+    }
+
+    /** Hands the waiting tree to the answer bubble, once, inside its own turn. */
+    private fun consumePendingOpenUi(): OpenUiDelta? {
+        val tree = pendingOpenUi?.takeIf { pendingOpenUiTurnId == currentTurnId } ?: return null
+        pendingOpenUi = null
+        pendingOpenUiTurnId = null
+        return tree
     }
 
     private fun appendAssistant(piece: String) {
@@ -2113,6 +2136,7 @@ class AppViewModel(
         if (assistantPending.isEmpty()) return
         val piece = assistantPending.toString()
         assistantPending.setLength(0)
+        val waitingTree = consumePendingOpenUi()
         _ui.update { st ->
             val cachedIndex = assistantBufferIndex
                 ?.takeIf { it in st.bubbles.indices && st.bubbles[it].id == id }
@@ -2125,6 +2149,7 @@ class AppViewModel(
                     bubble.copy(
                         content = appendUiText(bubble.content, piece, MAX_UI_MESSAGE_CHARS),
                         streaming = true,
+                        openUi = bubble.openUi ?: waitingTree,
                     ),
                 )
             } else {
@@ -2133,6 +2158,7 @@ class AppViewModel(
                     role = "assistant",
                     content = capUiText(piece, MAX_UI_MESSAGE_CHARS),
                     streaming = true,
+                    openUi = waitingTree,
                 )
             }
             assistantBufferIndex = if (idx >= 0) idx else list.lastIndex
@@ -2153,6 +2179,7 @@ class AppViewModel(
         val pending = assistantPending.toString()
         assistantPending.setLength(0)
         val id = assistantBufferId
+        val waitingTree = consumePendingOpenUi()
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
             val lastAssistantIndex = list.indexOfLast { bubble ->
@@ -2180,8 +2207,11 @@ class AppViewModel(
                         createdAt = createdAt ?: answer.createdAt,
                         usage = usage ?: answer.usage,
                         attachments = if (safeAttachments.isNotEmpty()) safeAttachments else answer.attachments,
+                        openUi = answer.openUi ?: waitingTree,
                     )
-                } else if (!full.isNullOrBlank() || pending.isNotEmpty() || attachments.isNotEmpty()) {
+                } else if (!full.isNullOrBlank() || pending.isNotEmpty() ||
+                    attachments.isNotEmpty() || waitingTree != null
+                ) {
                     list += ChatBubble(
                         id = id,
                         role = "assistant",
@@ -2190,9 +2220,10 @@ class AppViewModel(
                         createdAt = createdAt,
                         usage = usage,
                         attachments = safeAttachments,
+                        openUi = waitingTree,
                     )
                 }
-            } else if (!full.isNullOrBlank() || attachments.isNotEmpty()) {
+            } else if (!full.isNullOrBlank() || attachments.isNotEmpty() || waitingTree != null) {
                 list += ChatBubble(
                     id = "a-${System.currentTimeMillis()}",
                     role = "assistant",
@@ -2200,6 +2231,7 @@ class AppViewModel(
                     createdAt = createdAt,
                     usage = usage,
                     attachments = safeAttachments,
+                    openUi = waitingTree,
                 )
             }
             st.copy(
@@ -2235,6 +2267,9 @@ class AppViewModel(
         assistantPending.setLength(0)
         assistantBufferId = null
         assistantBufferIndex = null
+        // The open turn is gone, so a tree still waiting for it has nowhere to go.
+        pendingOpenUi = null
+        pendingOpenUiTurnId = null
     }
 
     private fun foldAssistantRound() {
