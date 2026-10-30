@@ -479,6 +479,12 @@ class AppViewModel(
     private var attachmentNoticeJob: Job? = null
     private var pluginsLoadJob: Job? = null
     private var pluginsMutationJob: Job? = null
+    /** In-flight slash command; cancelled when the phone leaves the computer connection. */
+    private var runtimeCommandJob: Job? = null
+    /** The standalone reply in flight, if any. */
+    private var standaloneJob: Job? = null
+    /** Newest standalone attempt; only that one may settle 「正在回复」. */
+    private var standaloneRequestGeneration = 0
 
     init {
         viewModelScope.launch {
@@ -510,7 +516,7 @@ class AppViewModel(
                         runtimeConfigError = if (endpointChanged) null else current.runtimeConfigError,
                     )
                 }
-                if (endpointChanged) resetForEndpointChange(s)
+                if (endpointChanged && s.connectionMode != "standalone") resetForEndpointChange(s)
                 val shouldVerify = s.connectionMode != "standalone" &&
                     s.apiBase.isNotBlank() &&
                     s.apiKey.isNotBlank() &&
@@ -520,11 +526,14 @@ class AppViewModel(
         }
         viewModelScope.launch {
             container.wsClient.state.collect { st ->
-                _ui.update { it.copy(socketState = st) }
+                if (!isStandaloneConnection()) {
+                    _ui.update { it.copy(socketState = st) }
+                }
             }
         }
         viewModelScope.launch {
             container.wsClient.lastError.collect { err ->
+                if (isStandaloneConnection()) return@collect
                 val rejected = err?.contains("认证失败") == true
                 _ui.update {
                     it.copy(
@@ -541,28 +550,32 @@ class AppViewModel(
         }
         viewModelScope.launch {
             container.wsClient.reconnectInfo.collect { info ->
-                _ui.update { it.copy(reconnectInfo = info) }
+                if (!isStandaloneConnection()) {
+                    _ui.update { it.copy(reconnectInfo = info) }
+                }
             }
         }
         observeWs()
         ensureRuntimeWatch()
-        if (container.settingsRepository.snapshot().connectionMode == "standalone") {
+        if (isStandaloneConnection()) {
             showStandaloneSession()
+        } else {
+            historySessionId = currentSessionId()
+            restoreOutboundQueue()
+            restoreCachedSession()
+            refreshSessions()
+            refreshPersona()
+            connectSocket()
+            startApprovalPolling()
+            // Keep the composer chip useful as soon as the runtime is reachable; this is
+            // asynchronous and never gates sending a chat message.
+            loadModels()
         }
-        historySessionId = currentSessionId()
-        restoreOutboundQueue()
-        restoreCachedSession()
-        refreshSessions()
-        refreshPersona()
-        connectSocket()
-        startApprovalPolling()
-        // Keep the composer chip useful as soon as the runtime is reachable; this is
-        // asynchronous and never gates sending a chat message.
-        loadModels()
     }
 
     /** Drop the previous runtime's in-memory history before loading the new namespace. */
     private fun resetForEndpointChange(settings: com.luckyagent.android.data.settings.ClientSettings) {
+        if (settings.connectionMode == "standalone") return
         pluginsLoadJob?.cancel()
         pluginsMutationJob?.cancel()
         _ui.update { it.copy(pluginManager = PluginManagerUiState()) }
@@ -668,6 +681,7 @@ class AppViewModel(
     }
 
     private fun startApprovalPolling() {
+        if (isStandaloneConnection()) return
         approvalPollingJob?.cancel()
         approvalPollingJob = viewModelScope.launch {
             while (isActive) {
@@ -678,10 +692,12 @@ class AppViewModel(
     }
 
     private suspend fun refreshApprovalsInternal() {
+        if (isStandaloneConnection()) return
         val showLoading = _ui.value.pendingApprovals.isEmpty()
         if (showLoading) _ui.update { it.copy(approvalsLoading = true, approvalsError = null) }
         container.api.listApprovals()
             .onSuccess { approvals ->
+                if (isStandaloneConnection()) return@onSuccess
                 _ui.update {
                     it.copy(
                         pendingApprovals = approvals,
@@ -691,6 +707,7 @@ class AppViewModel(
                 }
             }
             .onFailure { error ->
+                if (isStandaloneConnection()) return@onFailure
                 _ui.update {
                     it.copy(
                         approvalsLoading = false,
@@ -735,6 +752,7 @@ class AppViewModel(
         eventsJob?.cancel()
         eventsJob = viewModelScope.launch {
             container.wsClient.events.collect { event ->
+                if (isStandaloneConnection()) return@collect
                 try {
                     val env = event.envelope
                     ensureReplayedRun(event)
@@ -970,6 +988,26 @@ class AppViewModel(
                 }
             }
         }
+    }
+
+    private fun isStandaloneConnection(): Boolean =
+        container.settingsRepository.snapshot().connectionMode == "standalone"
+
+    private fun isStandaloneRequestCurrent(settings: StandaloneSettings): Boolean {
+        val current = container.settingsRepository.snapshot()
+        return current.connectionMode == "standalone" &&
+            current.standaloneApiBase == settings.apiBase &&
+            current.standaloneApiKey == settings.apiKey &&
+            current.standaloneSessionId == settings.sessionId
+    }
+
+    /**
+     * The stored transcript belongs to a session, not to the credentials it was
+     * fetched with: editing the URL or Key must not hide a reply already paid for.
+     */
+    private fun isStandaloneSessionCurrent(sessionId: String): Boolean {
+        val current = container.settingsRepository.snapshot()
+        return current.connectionMode == "standalone" && current.standaloneSessionId == sessionId
     }
 
     private fun currentSessionId(): String =
@@ -2246,6 +2284,7 @@ class AppViewModel(
 
     fun navigate(dest: AppDestination) {
         _ui.update { it.copy(destination = dest) }
+        if (isStandaloneConnection()) return
         ensureRuntimeWatch()
         when (dest) {
             AppDestination.Tasks -> {
@@ -2525,6 +2564,7 @@ class AppViewModel(
     }
 
     fun loadModels(force: Boolean = false) {
+        if (isStandaloneConnection()) return
         val current = _ui.value
         if (current.modelsLoading || (!force && current.modelsLoaded)) return
         _ui.update { it.copy(modelsLoading = true, modelsError = null) }
@@ -2532,6 +2572,7 @@ class AppViewModel(
             // Opening the sheet and tapping retry both ask the server to query
             // the current chat key. A plain list is the local catalog.
             container.api.listModels(refresh = true).onSuccess { payload ->
+                if (isStandaloneConnection()) return@onSuccess
                 val models = payload.models
                 val active = models
                     .filter { it.current }
@@ -2547,6 +2588,7 @@ class AppViewModel(
                 }
                 loadModelEffort(force = true)
             }.onFailure { error ->
+                if (isStandaloneConnection()) return@onFailure
                 _ui.update {
                     it.copy(
                         modelsLoaded = true,
@@ -2559,6 +2601,7 @@ class AppViewModel(
     }
 
     fun loadModelEffort(force: Boolean = false) {
+        if (isStandaloneConnection()) return
         val current = _ui.value
         if (current.modelEffortLoading || (!force && current.modelEffort != null)) return
         val endpointSnapshot = container.settingsRepository.snapshot()
@@ -2566,12 +2609,20 @@ class AppViewModel(
         viewModelScope.launch {
             container.api.getModelEffort().onSuccess { effort ->
                 val active = container.settingsRepository.snapshot()
-                if (active.apiBase == endpointSnapshot.apiBase && active.apiKey == endpointSnapshot.apiKey && active.useBearer == endpointSnapshot.useBearer) {
+                if (active.connectionMode == "runtime" &&
+                    active.apiBase == endpointSnapshot.apiBase &&
+                    active.apiKey == endpointSnapshot.apiKey &&
+                    active.useBearer == endpointSnapshot.useBearer
+                ) {
                     _ui.update { it.copy(modelEffort = effort, modelEffortLoading = false, modelEffortError = null) }
                 }
             }.onFailure { error ->
                 val active = container.settingsRepository.snapshot()
-                if (active.apiBase == endpointSnapshot.apiBase && active.apiKey == endpointSnapshot.apiKey && active.useBearer == endpointSnapshot.useBearer) {
+                if (active.connectionMode == "runtime" &&
+                    active.apiBase == endpointSnapshot.apiBase &&
+                    active.apiKey == endpointSnapshot.apiKey &&
+                    active.useBearer == endpointSnapshot.useBearer
+                ) {
                     _ui.update { it.copy(modelEffortLoading = false, modelEffortError = error.message ?: "读取思维强度失败") }
                 }
             }
@@ -2579,6 +2630,7 @@ class AppViewModel(
     }
 
     fun setModelEffort(value: String) {
+        if (isStandaloneConnection()) return
         val effort = value.trim().lowercase()
         if (effort.isBlank() || _ui.value.modelEffortSaving) return
         val current = _ui.value.modelEffort
@@ -2588,12 +2640,20 @@ class AppViewModel(
         viewModelScope.launch {
             container.api.setModelEffort(effort).onSuccess { next ->
                 val active = container.settingsRepository.snapshot()
-                if (active.apiBase == endpointSnapshot.apiBase && active.apiKey == endpointSnapshot.apiKey && active.useBearer == endpointSnapshot.useBearer) {
+                if (active.connectionMode == "runtime" &&
+                    active.apiBase == endpointSnapshot.apiBase &&
+                    active.apiKey == endpointSnapshot.apiKey &&
+                    active.useBearer == endpointSnapshot.useBearer
+                ) {
                     _ui.update { it.copy(modelEffort = next, modelEffortSaving = false, modelEffortError = null, snackbarMessage = "思维强度已更新") }
                 }
             }.onFailure { error ->
                 val active = container.settingsRepository.snapshot()
-                if (active.apiBase == endpointSnapshot.apiBase && active.apiKey == endpointSnapshot.apiKey && active.useBearer == endpointSnapshot.useBearer) {
+                if (active.connectionMode == "runtime" &&
+                    active.apiBase == endpointSnapshot.apiBase &&
+                    active.apiKey == endpointSnapshot.apiKey &&
+                    active.useBearer == endpointSnapshot.useBearer
+                ) {
                     _ui.update { it.copy(modelEffortSaving = false, modelEffortError = error.message ?: "保存思维强度失败") }
                 }
             }
@@ -2981,6 +3041,7 @@ class AppViewModel(
         val prev = container.settingsRepository.snapshot()
         container.settingsRepository.update(transform)
         val next = container.settingsRepository.snapshot()
+        val connectionModeChanged = prev.connectionMode != next.connectionMode
         val settingsChanged =
             prev.apiBase != next.apiBase ||
                 prev.wsUrl != next.wsUrl ||
@@ -2997,7 +3058,97 @@ class AppViewModel(
                 )
             }
         }
-        if (settingsChanged) {
+        if (connectionModeChanged) {
+            settingsReconnectJob?.cancel()
+            settingsReconnectJob = null
+            if (next.connectionMode == "standalone") {
+                stopRuntimeWatch()
+                approvalPollingJob?.cancel()
+                approvalPollingJob = null
+                historyJob?.cancel()
+                contextInspectJob?.cancel()
+                pluginsLoadJob?.cancel()
+                pluginsMutationJob?.cancel()
+                runtimeCommandJob?.cancel()
+                runtimeCommandJob = null
+                historySessionId = null
+                historyMessages = emptyList()
+                historyStartIndex = 0
+                resetAssistantStream()
+                toolStepIndex.clear()
+                container.wsClient.disconnect()
+                _ui.update {
+                    it.copy(
+                        bubbles = emptyList(),
+                        historyLoading = false,
+                        historyLoadingMore = false,
+                        historyHasMore = false,
+                        isResponding = false,
+                        commandExecuting = false,
+                        commandExecution = null,
+                        commandsError = null,
+                        pendingQuote = null,
+                        contextInspect = null,
+                        contextInspectError = null,
+                        contextInspectLoading = false,
+                        liveSummary = null,
+                        processNotice = null,
+                        outboundQueue = emptyList(),
+                        sessions = emptyList(),
+                        sessionsLoading = false,
+                        sessionsError = null,
+                        showingOfflineCache = false,
+                        socketState = SocketState.Closed,
+                        socketError = null,
+                        reconnectInfo = null,
+                        healthText = null,
+                        healthOk = null,
+                        pendingApprovals = emptyList(),
+                        approvalsLoading = false,
+                        approvalsError = null,
+                        models = emptyList(),
+                        activeModels = emptyMap(),
+                        modelsLoaded = false,
+                        modelsLoading = false,
+                        modelsError = null,
+                        modelEffort = null,
+                        modelEffortLoading = false,
+                        modelEffortSaving = false,
+                        modelEffortError = null,
+                    )
+                }
+                showStandaloneSession()
+            } else {
+                // Leaving standalone proves the phone is done with that attempt.
+                container.standalone.cancel()
+                standaloneJob?.cancel()
+                standaloneJob = null
+                standaloneRequestGeneration += 1
+                val runtimeSessionId = next.sessionId.ifBlank { "android-main" }
+                historySessionId = runtimeSessionId
+                historyMessages = emptyList()
+                historyStartIndex = 0
+                _ui.update {
+                    it.copy(
+                        bubbles = emptyList(),
+                        historyLoading = true,
+                        historyLoadingMore = false,
+                        historyHasMore = false,
+                        isResponding = false,
+                        standaloneNotice = null,
+                        standaloneTokens = 0,
+                        outboundQueue = outboundChatQueue.items(runtimeSessionId),
+                    )
+                }
+                restoreCachedSession()
+                refreshSessions()
+                refreshPersona()
+                connectSocket()
+                startApprovalPolling()
+                loadModels()
+            }
+        }
+        if (settingsChanged && next.connectionMode == "runtime" && !connectionModeChanged) {
             settingsReconnectJob?.cancel()
             settingsReconnectJob = viewModelScope.launch {
                 kotlinx.coroutines.delay(SETTINGS_RECONNECT_DEBOUNCE_MS)
@@ -3008,8 +3159,10 @@ class AppViewModel(
     }
 
     fun probeHealth() {
+        if (isStandaloneConnection()) return
         viewModelScope.launch {
             val result = container.api.healthLive()
+            if (isStandaloneConnection()) return@launch
             _ui.update {
                 it.copy(
                     healthOk = result.isSuccess,
@@ -3058,8 +3211,10 @@ class AppViewModel(
     }
 
     private fun refreshPersona() {
+        if (isStandaloneConnection()) return
         viewModelScope.launch {
             container.api.soul().onSuccess { info ->
+                if (isStandaloneConnection()) return@onSuccess
                 val name = info.name.trim().ifBlank { personaNameFromPrompt(info.systemPrompt) }
                 if (name.isNotBlank()) _ui.update { it.copy(personaName = name) }
             }
@@ -3067,12 +3222,16 @@ class AppViewModel(
     }
 
     fun refreshSessions() {
+        if (isStandaloneConnection()) return
         viewModelScope.launch {
             val connection = container.settingsRepository.snapshot()
             val apiBase = connection.apiBase
             val apiKey = connection.apiKey
             val cached = runCatching { dedupeSessions(container.sessionCache.listSessions(apiBase, apiKey)) }
                 .getOrDefault(emptyList())
+            // Reading the cache is a suspension point: the phone may have switched
+            // to standalone while it ran, where computer sessions do not belong.
+            if (isStandaloneConnection()) return@launch
             if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
             _ui.update { state ->
                 state.copy(
@@ -3083,6 +3242,7 @@ class AppViewModel(
             }
             val q = _ui.value.sessionQuery
             val result = container.api.listSessions(q)
+            if (isStandaloneConnection()) return@launch
             if (!currentCacheConnectionMatches(apiBase, apiKey)) return@launch
             if (result.isSuccess) {
                 val remote = dedupeSessions(result.getOrDefault(emptyList()))
@@ -3139,6 +3299,7 @@ class AppViewModel(
     }
 
     fun selectSession(id: String, keepWorkCard: Boolean = false) {
+        if (isStandaloneConnection()) return
         val target = id.ifBlank { "android-main" }
         val leaving = currentSessionId()
         if (leaving != target) parkCurrentTurn(leaving)
@@ -3208,6 +3369,7 @@ class AppViewModel(
         reset: Boolean = true,
         forceSync: Boolean = false,
     ) {
+        if (isStandaloneConnection()) return
         val target = sessionId.ifBlank { "android-main" }
         if (target != currentSessionId()) return
         if (!reset && (_ui.value.historyLoading || _ui.value.historyLoadingMore || !_ui.value.historyHasMore)) return
@@ -3279,12 +3441,13 @@ class AppViewModel(
     }
 
     fun refreshContextInspect(sessionId: String = currentSessionId()) {
+        if (isStandaloneConnection()) return
         val target = sessionId.trim().ifBlank { currentSessionId() }
         contextInspectJob?.cancel()
         contextInspectJob = viewModelScope.launch {
             _ui.update { it.copy(contextInspectLoading = true, contextInspectError = null) }
             val result = container.api.inspectContext(target)
-            if (currentSessionId() != target) return@launch
+            if (isStandaloneConnection() || currentSessionId() != target) return@launch
             _ui.update { state ->
                 if (result.isSuccess) {
                     state.copy(
@@ -3303,6 +3466,7 @@ class AppViewModel(
     }
 
     private fun restoreCachedSession() {
+        if (isStandaloneConnection()) return
         viewModelScope.launch {
             val settings = container.settingsRepository.snapshot()
             val target = settings.sessionId.ifBlank { return@launch }
@@ -3312,6 +3476,7 @@ class AppViewModel(
     }
 
     private suspend fun paintCachedHistory(apiBase: String, apiKey: String, sessionId: String): Boolean {
+        if (isStandaloneConnection()) return false
         val page = runCatching { container.sessionCache.loadPage(apiBase, sessionId, apiKey) }.getOrNull() ?: return false
         if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return false
         if (historyMessages.isNotEmpty()) return true
@@ -3326,7 +3491,7 @@ class AppViewModel(
         sessionId: String,
         forceSync: Boolean = false,
     ) {
-        if (!currentCacheConnectionMatches(apiBase, apiKey)) return
+        if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey)) return
         val cached = runCatching { container.sessionCache.sessionMeta(apiBase, sessionId, apiKey) }.getOrNull()
         val remote = _ui.value.sessions.firstOrNull { it.id == sessionId }
         val action = when {
@@ -3356,8 +3521,9 @@ class AppViewModel(
             offset = 0,
             includeFull = true,
         )
-        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
+        if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { fetch ->
+            if (isStandaloneConnection()) return@onSuccess
             if (fetch.notModified) {
                 finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
                 return@onSuccess
@@ -3387,25 +3553,25 @@ class AppViewModel(
                         page,
                         stored = stored,
                     )
-                    if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
+                    if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
                     applyHistoryPage(sessionId, page, offline = false)
                 }
             }
         }.onFailure { error ->
-            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
+            if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
             failHistoryRefresh(sessionId, error.message)
         }
     }
 
     private suspend fun syncFullHistory(apiBase: String, apiKey: String, sessionId: String) {
-        if (!currentCacheConnectionMatches(apiBase, apiKey)) return
+        if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey)) return
         val result = container.api.sessionHistory(
             sessionId,
             limit = null,
             offset = 0,
             includeFull = true,
         )
-        if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
+        if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
         result.onSuccess { fetch ->
             if (fetch.notModified) {
                 finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
@@ -3429,10 +3595,10 @@ class AppViewModel(
                 history.updatedAt,
                 page,
             )
-            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
+            if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
             applyHistoryPage(sessionId, page, offline = false)
         }.onFailure { error ->
-            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
+            if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
             failHistoryRefresh(sessionId, error.message)
         }
     }
@@ -3490,7 +3656,7 @@ class AppViewModel(
     }
 
     private suspend fun syncOlderHistory(apiBase: String, apiKey: String, sessionId: String) {
-        if (!currentCacheConnectionMatches(apiBase, apiKey)) return
+        if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey)) return
         if (historyMessages.isEmpty()) {
             syncLatestHistory(apiBase, apiKey, sessionId)
             return
@@ -3513,10 +3679,10 @@ class AppViewModel(
                 offset = offset,
                 includeFull = true,
             )
-            if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
+            if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
             val failure = result.exceptionOrNull()
             if (failure != null) {
-                if (!currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
+                if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
                 _ui.update {
                     it.copy(
                         historyLoading = false,
@@ -3570,7 +3736,8 @@ class AppViewModel(
                 is LatestMerge.Invalidate -> {
                     // Only an inconsistent cache (shrunk session, offset past the
                     // start) gets here now. Rebuilding is the safe reset.
-                    if (!currentCacheConnectionMatches(apiBase, apiKey) ||
+                    if (isStandaloneConnection() ||
+                        !currentCacheConnectionMatches(apiBase, apiKey) ||
                         currentSessionId() != sessionId ||
                         historySessionId != sessionId
                     ) {
@@ -3584,7 +3751,8 @@ class AppViewModel(
                 }
                 is LatestMerge.Appended -> {
                     persistHistoryPage(apiBase, apiKey, sessionId, history.title, history.updatedAt, merged.page)
-                    if (!currentCacheConnectionMatches(apiBase, apiKey) ||
+                    if (isStandaloneConnection() ||
+                        !currentCacheConnectionMatches(apiBase, apiKey) ||
                         currentSessionId() != sessionId ||
                         historySessionId != sessionId
                     ) {
@@ -4017,6 +4185,7 @@ class AppViewModel(
     }
 
     fun connectSocket(force: Boolean = false) {
+        if (isStandaloneConnection()) return
         settingsReconnectJob?.cancel()
         settingsReconnectJob = null
         container.wsClient.connect(currentSessionId(), force = force)
@@ -4168,6 +4337,11 @@ class AppViewModel(
 
     fun sendComposer() {
         if (_ui.value.settings.connectionMode == "standalone") {
+            if (_ui.value.composer.trim().equals("/stop", ignoreCase = true)) {
+                _ui.update { it.copy(composer = "") }
+                stopStandalone()
+                return
+            }
             sendStandalone()
             return
         }
@@ -4239,6 +4413,9 @@ class AppViewModel(
     }
 
     fun saveStandaloneSettings(apiBase: String, apiKey: String, model: String) {
+        // New credentials make the attempt in flight obsolete; releasing it here keeps
+        // 「正在回复」 from outliving a request the user is no longer waiting for.
+        stopStandalone(notice = null)
         updateSettings {
             it.copy(
                 connectionMode = "standalone",
@@ -4250,14 +4427,21 @@ class AppViewModel(
         checkStandalone()
     }
 
+    /** Aborts the standalone reply in flight and clears its indicators. */
+    private fun stopStandalone(notice: String? = "已停止") {
+        container.standalone.cancel()
+        standaloneJob?.cancel()
+        standaloneJob = null
+        standaloneRequestGeneration += 1
+        _ui.update { it.copy(isResponding = false, standaloneNotice = notice) }
+    }
+
     fun useRuntimeConnection() {
         updateSettings { it.copy(connectionMode = "runtime") }
-        refreshSessions()
     }
 
     fun useStandaloneConnection() {
         updateSettings { it.copy(connectionMode = "standalone") }
-        showStandaloneSession()
     }
 
     fun compactStandalone() {
@@ -4275,10 +4459,33 @@ class AppViewModel(
 
     private fun checkStandalone() {
         val settings = standaloneSettings()
+        // The probe shares the client's active call, so a stop cancels it too.
+        // Capture the generation: a cancelled probe must not report a failure.
+        val generation = standaloneRequestGeneration
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            container.standalone.check(settings).onSuccess {
+            container.standalone.check(settings).onSuccess { resolvedModel ->
+                if (generation != standaloneRequestGeneration) return@onSuccess
+                if (!isStandaloneRequestCurrent(settings)) return@onSuccess
+                if (settings.model.isBlank() && resolvedModel.isNotBlank()) {
+                    updateSettings { current ->
+                        if (
+                            current.connectionMode == "standalone" &&
+                            current.standaloneApiBase == settings.apiBase &&
+                            current.standaloneApiKey == settings.apiKey &&
+                            current.standaloneModel.isBlank()
+                        ) {
+                            current.copy(standaloneModel = resolvedModel)
+                        } else {
+                            current
+                        }
+                    }
+                }
+                if (generation != standaloneRequestGeneration) return@onSuccess
+                if (!isStandaloneRequestCurrent(settings)) return@onSuccess
                 _ui.update { it.copy(standaloneNotice = "模型已连通", healthOk = true) }
             }.onFailure { error ->
+                if (generation != standaloneRequestGeneration) return@onFailure
+                if (!isStandaloneRequestCurrent(settings)) return@onFailure
                 _ui.update { it.copy(standaloneNotice = error.message ?: "模型没有连通", healthOk = false) }
             }
         }
@@ -4303,49 +4510,84 @@ class AppViewModel(
         )
         pushBubble(userBubble)
         _ui.update { it.copy(composer = "", isResponding = true, standaloneNotice = if (searchQuery != null) "正在搜索" else "正在回复") }
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            var session = stored.copy(messages = stored.messages + StandaloneMessage("user", text))
-            val search = searchQuery?.let { query ->
-                container.standalone.search(query).fold(
-                    onSuccess = { result ->
-                        session = session.copy(messages = session.messages + StandaloneMessage("assistant", result, kind = "search"))
-                        result
-                    },
-                    onFailure = { error ->
-                        val notice = "这次没有拿到外部结果：${error.message ?: "搜索失败"}"
-                        session = session.copy(messages = session.messages + StandaloneMessage("assistant", notice, kind = "search"))
-                        notice
-                    },
-                )
-            }
-            val prompt = buildStandaloneMessages(session, if (search != null) "请结合这次搜索结果回答：\n$search\n\n用户问题：$text" else text)
-            val reply = container.standalone.complete(settings, prompt).fold(
-                onSuccess = { it },
-                onFailure = { error ->
+        val generation = ++standaloneRequestGeneration
+        standaloneJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                var session = stored.copy(messages = stored.messages + StandaloneMessage("user", text))
+                var promptSession = stored
+                // A stop bumps the generation; a blocking search/complete already in
+                // flight cannot be interrupted mid-call, so every step re-checks this
+                // before spending another request or writing the reply.
+                fun stopped() = generation != standaloneRequestGeneration
+                fun persistAbandoned() {
                     container.standaloneStore.save(session)
-                    showStandaloneSession(session)
-                    _ui.update { it.copy(isResponding = false, standaloneNotice = error.message ?: "模型请求失败，已有消息还在") }
+                }
+
+                val search = searchQuery?.let { query ->
+                    container.standalone.search(query).fold(
+                        onSuccess = { result ->
+                            val searchMessage = StandaloneMessage("assistant", result, kind = "search")
+                            session = session.copy(messages = session.messages + searchMessage)
+                            promptSession = promptSession.copy(messages = promptSession.messages + searchMessage)
+                            result
+                        },
+                        onFailure = { error ->
+                            val notice = "这次没有拿到外部结果：${error.message ?: "搜索失败"}"
+                            val searchMessage = StandaloneMessage("assistant", notice, kind = "search")
+                            session = session.copy(messages = session.messages + searchMessage)
+                            promptSession = promptSession.copy(messages = promptSession.messages + searchMessage)
+                            notice
+                        },
+                    )
+                }
+                if (stopped()) {
+                    persistAbandoned()
                     return@launch
-                },
-            )
-            session = session.copy(
-                title = session.title.ifBlank { text.take(24) },
-                messages = session.messages + StandaloneMessage("assistant", reply),
-            )
-            val compacted = if (standaloneContextTokens(session) > 3000) compactStandaloneSession(session) else null
-            val saved = compacted ?: session
-            container.standaloneStore.save(saved)
-            showStandaloneSession(saved)
-            _ui.update {
-                it.copy(
-                    isResponding = false,
-                    standaloneNotice = if (compacted != null) "上下文已自动压缩" else null,
+                }
+                val prompt = buildStandaloneMessages(
+                    promptSession,
+                    if (search != null) "请结合这次搜索结果回答：\n$search\n\n用户问题：$text" else text,
                 )
+                val reply = container.standalone.complete(settings, prompt).fold(
+                    onSuccess = { it },
+                    onFailure = { error ->
+                        container.standaloneStore.save(session)
+                        // A cancelled call reports OkHttp's own text; the user asked
+                        // to stop, so keep 「已停止」 instead of showing a failure.
+                        if (stopped()) return@launch
+                        if (isStandaloneSessionCurrent(sessionId)) {
+                            showStandaloneSession(session)
+                            _ui.update { it.copy(standaloneNotice = error.message ?: "模型请求失败，已有消息还在") }
+                        }
+                        return@launch
+                    },
+                )
+                if (stopped()) {
+                    persistAbandoned()
+                    return@launch
+                }
+                session = session.copy(
+                    title = session.title.ifBlank { text.take(24) },
+                    messages = session.messages + StandaloneMessage("assistant", reply),
+                )
+                val compacted = if (standaloneContextTokens(session) > 3000) compactStandaloneSession(session) else null
+                val saved = compacted ?: session
+                container.standaloneStore.save(saved)
+                if (!isStandaloneSessionCurrent(sessionId)) return@launch
+                showStandaloneSession(saved)
+                _ui.update { it.copy(standaloneNotice = if (compacted != null) "上下文已自动压缩" else null) }
+            } finally {
+                // Every exit, including a cancel or a failed request, releases the
+                // indicator. A newer attempt owns it and settles it itself.
+                if (generation == standaloneRequestGeneration) {
+                    _ui.update { it.copy(isResponding = false) }
+                }
             }
         }
     }
 
     private fun showStandaloneSession(session: StandaloneSession? = null) {
+        if (!isStandaloneConnection()) return
         val settings = container.settingsRepository.snapshot()
         val loaded = session ?: container.standaloneStore.load(settings.standaloneSessionId)
         val bubbles = loaded.messages.mapIndexed { index, message ->
@@ -4646,7 +4888,7 @@ class AppViewModel(
             )
         }
 
-        viewModelScope.launch {
+        runtimeCommandJob = viewModelScope.launch {
             val catalogResult = container.api.listCommands()
             val commands = catalogResult.getOrNull()
             if (commands == null) {
@@ -4706,6 +4948,9 @@ class AppViewModel(
         error: String? = null,
         execution: CommandExecution? = null,
     ) {
+        // A command that outlives the computer connection must not append its
+        // result to the standalone transcript the user is reading now.
+        if (isStandaloneConnection()) return
         val now = System.currentTimeMillis()
         pushBubble(ChatBubble(id = "runtime-command-$now", role = "assistant", content = output, createdAt = nowIsoTimestamp()))
         _ui.update {
@@ -4893,7 +5138,7 @@ class AppViewModel(
     }
 
     private fun ensureRuntimeWatch() {
-        if (!appInForeground) return
+        if (!appInForeground || isStandaloneConnection()) return
         startTaskPolling()
         startBackgroundPolling()
         startCronPolling()
