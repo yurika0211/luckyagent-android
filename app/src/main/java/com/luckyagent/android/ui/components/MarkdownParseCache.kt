@@ -13,7 +13,9 @@ internal data class ParsedMarkdown(
     val svgNodes: List<SvgDocument?>,
 ) {
     /** WebView / native drawing blocks. Plain text replies stay false. */
-    val needsLiveSurface: Boolean = blocks.any(::blockNeedsLiveSurface)
+    val needsLiveSurface: Boolean = blocks.indices.any { index ->
+        blockNeedsLiveSurface(blocks[index], svgNodes.getOrNull(index) != null)
+    }
 }
 
 /**
@@ -23,6 +25,14 @@ internal data class ParsedMarkdown(
 internal fun blockNeedsLiveSurface(block: MdBlock): Boolean = when (block) {
     is MdBlock.Mermaid -> true
     is MdBlock.Html -> block.showPreview || requiresHtmlPage(block.source) || staticSvgDocument(block.source) != null
+    is MdBlock.Math -> true
+    else -> false
+}
+
+/** Same classification using the parsed SVG projection, avoiding a second parse on the UI thread. */
+internal fun blockNeedsLiveSurface(block: MdBlock, hasStaticSvg: Boolean): Boolean = when (block) {
+    is MdBlock.Mermaid -> true
+    is MdBlock.Html -> block.showPreview || requiresHtmlPage(block.source) || hasStaticSvg
     is MdBlock.Math -> true
     else -> false
 }

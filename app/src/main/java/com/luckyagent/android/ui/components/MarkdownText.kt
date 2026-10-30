@@ -82,9 +82,10 @@ fun MarkdownText(
     Column(modifier) {
         blocks.forEachIndexed { index, block ->
             key(index) {
+                val liveSurface = blockNeedsLiveSurface(block, svgNodes.getOrNull(index) != null)
                 MarkdownBlock(
                     block = block,
-                    active = active || !blockNeedsLiveSurface(block),
+                    active = active || !liveSurface,
                     color = color,
                     imageHeaders = imageHeaders,
                     imageBaseUrl = imageBaseUrl,
