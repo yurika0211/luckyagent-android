@@ -23,6 +23,23 @@ class ModelsTest {
     }
 
     @Test
+    fun uiActionFrameCarriesTreeAndWidget() {
+        val json = Json { encodeDefaults = true; explicitNulls = false }
+        val frame = json.encodeToString(
+            UIActionOutbound.serializer(),
+            UIActionOutbound(
+                id = "req-2",
+                sessionId = "session-1",
+                data = UIActionOutboundData(treeId = "t1", widgetId = "go", values = mapOf("label" to "重试")),
+            ),
+        )
+        assertTrue(frame.contains("\"type\":\"ui_action\""))
+        assertTrue(frame.contains("\"tree_id\":\"t1\""))
+        assertTrue(frame.contains("\"widget_id\":\"go\""))
+        assertTrue(frame.contains("\"label\":\"重试\""))
+    }
+
+    @Test
     fun expandDraftSendsOnlyTheDraftAndIntent() {
         val json = Json { encodeDefaults = true; explicitNulls = false }
         val encoded = json.encodeToString(

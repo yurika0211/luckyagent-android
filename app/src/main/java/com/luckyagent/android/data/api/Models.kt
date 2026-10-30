@@ -343,6 +343,21 @@ data class LuckyOutboundData(
 )
 
 @Serializable
+data class UIActionOutbound(
+    val type: String = "ui_action",
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
+    val data: UIActionOutboundData,
+)
+
+@Serializable
+data class UIActionOutboundData(
+    @SerialName("tree_id") val treeId: String,
+    @SerialName("widget_id") val widgetId: String,
+    val values: Map<String, String> = emptyMap(),
+)
+
+@Serializable
 data class ApprovalOption(
     val id: String,
     val label: String,

@@ -492,6 +492,25 @@ class LuckyAgentWsClient internal constructor(
         }
     }
 
+    fun sendUiAction(sessionId: String?, treeId: String, widgetId: String, values: Map<String, String> = emptyMap()): Boolean {
+        val connection = connectionFor(sessionId) ?: return false
+        val payload = json.encodeToString(
+            UIActionOutbound.serializer(),
+            UIActionOutbound(
+                id = UUID.randomUUID().toString(),
+                sessionId = connection.config.sessionId,
+                data = UIActionOutboundData(treeId = treeId, widgetId = widgetId, values = values),
+            ),
+        )
+        synchronized(connection) {
+            if (connection.readiness.value != SocketState.Connected) return false
+            val ws = connection.socketRef.get() ?: return false
+            val sent = ws.send(payload)
+            if (sent) connection.touch()
+            return sent
+        }
+    }
+
     fun sendLucky(sessionId: String, action: String): Boolean {
         val connection = connectionFor(sessionId) ?: return false
         val payload = json.encodeToString(

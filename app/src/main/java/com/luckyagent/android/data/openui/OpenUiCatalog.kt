@@ -91,3 +91,77 @@ fun JsonObject.stringList(key: String): List<String> {
         listOfNotNull((el as? JsonPrimitive)?.contentOrNull)
     }
 }
+
+fun OpenUiNode.listItems(maxItems: Int = 12): Pair<List<String>, Int> {
+    val items = props["items"]?.jsonArray?.mapNotNull { el ->
+        val obj = el as? JsonObject
+        if (obj != null) obj.string("label") ?: obj.string("text")
+        else (el as? JsonPrimitive)?.contentOrNull
+    } ?: props.stringList("items")
+    return items.take(maxItems) to (items.size - maxItems).coerceAtLeast(0)
+}
+
+/** Header plus at most [maxRows] body rows; extra is how many body rows were clipped. */
+fun OpenUiNode.tableGrid(maxRows: Int = 8): Pair<List<List<String>>, Int> {
+    val columns = props.stringList("columns")
+    val rows = props["rows"]?.jsonArray.orEmpty().map { row ->
+        runCatching { row.jsonArray.map { it.jsonPrimitive.content } }.getOrElse {
+            listOf(row.toString())
+        }
+    }
+    val grid = buildList {
+        if (columns.isNotEmpty()) add(columns)
+        addAll(rows.take(maxRows))
+    }
+    return grid to (rows.size - maxRows).coerceAtLeast(0)
+}
+
+data class OpenUiMapPoint(
+    val name: String,
+    val lat: Double?,
+    val lng: Double?,
+)
+
+fun OpenUiNode.mapPoints(): List<OpenUiMapPoint> {
+    val raw = props["points"] ?: return emptyList()
+    val array = runCatching { raw.jsonArray }.getOrNull() ?: return emptyList()
+    return array.mapNotNull { el ->
+        val obj = el as? JsonObject
+        if (obj != null) {
+            val lat = obj.double("lat") ?: obj.double("latitude")
+            val lng = obj.double("lng") ?: obj.double("lon") ?: obj.double("longitude")
+            val name = obj.string("name") ?: obj.string("label") ?: obj.string("title")
+                ?: listOfNotNull(lat, lng).joinToString(", ").ifBlank { null }
+            OpenUiMapPoint(name = name.orEmpty(), lat = lat, lng = lng)
+        } else {
+            val text = (el as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            OpenUiMapPoint(name = text, lat = null, lng = null)
+        }
+    }
+}
+
+data class OpenUiChartSeries(
+    val name: String,
+    val values: List<Float>,
+)
+
+fun OpenUiNode.chartSeries(): List<OpenUiChartSeries> {
+    val raw = props["series"] ?: return emptyList()
+    val array = runCatching { raw.jsonArray }.getOrNull() ?: return emptyList()
+    return array.mapIndexedNotNull { i, el ->
+        val obj = el as? JsonObject
+        if (obj != null) {
+            val name = obj.string("name") ?: obj.string("label") ?: "系列 ${i + 1}"
+            val values = (obj["values"] ?: obj["data"] ?: obj["y"])?.let { nums ->
+                runCatching { nums.jsonArray.mapNotNull { it.jsonPrimitive.content.toFloatOrNull() } }.getOrNull()
+            }.orEmpty()
+            OpenUiChartSeries(name, values)
+        } else {
+            val n = (el as? JsonPrimitive)?.contentOrNull?.toFloatOrNull()
+            if (n != null) OpenUiChartSeries("系列 1", listOf(n)) else null
+        }
+    }
+}
+
+private fun JsonObject.double(key: String): Double? =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
