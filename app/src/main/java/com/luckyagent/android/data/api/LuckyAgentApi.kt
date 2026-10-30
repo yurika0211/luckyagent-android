@@ -824,6 +824,53 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun createCronJob(requestBody: CronCreateRequest): Result<CronJob> = withContext(Dispatchers.IO) {
+        runCatching {
+            val payload = json.encodeToString(CronCreateRequest.serializer(), requestBody)
+            val request = Request.Builder()
+                .url(url("/api/v1/cron"))
+                .post(payload.toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("create cron ${resp.code}: $body")
+                json.decodeFromString(CronJob.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun updateCronJob(id: String, action: String): Result<CronJob> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "cron id required" }
+            val payload = json.encodeToString(CronActionRequest.serializer(), CronActionRequest(action))
+            val request = Request.Builder()
+                .url(url("/api/v1/cron/${id.trim()}"))
+                .patch(payload.toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("update cron ${resp.code}: $body")
+                json.decodeFromString(CronJob.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun deleteCronJob(id: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(id.isNotBlank()) { "cron id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/cron/${id.trim()}"))
+                .delete()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("delete cron ${resp.code}: $body")
+            }
+        }
+    }
+
     suspend fun runCommand(
         command: String,
         args: String,
