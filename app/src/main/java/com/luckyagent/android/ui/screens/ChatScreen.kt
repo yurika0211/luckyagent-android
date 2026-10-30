@@ -127,6 +127,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.luckyagent.android.ui.components.CloverCard
@@ -1266,30 +1267,35 @@ private fun ChatConversation(
                 },
             )
         }
-        if (!hiddenSessionCard(state.hiddenSessionCards, state.settings.sessionId, SessionCardKind.Panel, SESSION_PANEL_CARD_ID)) {
-        SessionNavigationCard(
-            sessionId = state.settings.sessionId,
-            tasks = state.tasks,
-            background = state.backgroundTasks,
-            hiddenCards = state.hiddenSessionCards,
-            tasksError = state.tasksError,
-            backgroundError = state.backgroundError,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            onHideCard = { kind, id -> vm.hideSessionCard(state.settings.sessionId, kind, id) },
-            onHidePanel = {
-                vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Panel, SESSION_PANEL_CARD_ID)
-            },
-            onOpenTask = { taskId ->
-                if (taskId != null) vm.selectTask(taskId)
-                vm.navigate(AppDestination.Tasks)
-            },
-            onOpenBackground = { taskId ->
-                if (taskId != null) vm.selectBackgroundTask(taskId)
-                vm.navigate(AppDestination.Background)
-            },
-            onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
-            onOpenMemory = { vm.navigate(AppDestination.Memory) },
-        )
+        // The composer plus menu decides whether the card exists at all; the
+        // delete key still removes it for this session only.
+        if (
+            state.settings.showSessionCard &&
+            !hiddenSessionCard(state.hiddenSessionCards, state.settings.sessionId, SessionCardKind.Panel, SESSION_PANEL_CARD_ID)
+        ) {
+            SessionNavigationCard(
+                sessionId = state.settings.sessionId,
+                tasks = state.tasks,
+                background = state.backgroundTasks,
+                hiddenCards = state.hiddenSessionCards,
+                tasksError = state.tasksError,
+                backgroundError = state.backgroundError,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                onHideCard = { kind, id -> vm.hideSessionCard(state.settings.sessionId, kind, id) },
+                onHidePanel = {
+                    vm.hideSessionCard(state.settings.sessionId, SessionCardKind.Panel, SESSION_PANEL_CARD_ID)
+                },
+                onOpenTask = { taskId ->
+                    if (taskId != null) vm.selectTask(taskId)
+                    vm.navigate(AppDestination.Tasks)
+                },
+                onOpenBackground = { taskId ->
+                    if (taskId != null) vm.selectBackgroundTask(taskId)
+                    vm.navigate(AppDestination.Background)
+                },
+                onOpenTrace = { vm.navigate(AppDestination.Trajectory) },
+                onOpenMemory = { vm.navigate(AppDestination.Memory) },
+            )
         }
 
         val listState = rememberLazyListState()
@@ -1776,7 +1782,7 @@ private fun SessionNavigationCard(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "当前会话",
-                style = MaterialTheme.typography.labelMedium,
+style = MaterialTheme.typography.labelMedium,
                 color = CloverText3,
                 modifier = Modifier.weight(1f),
             )
@@ -3077,6 +3083,10 @@ private fun ComposerBar(
         AnimatedVisibility(visible = showAttachmentOptions && !isRecordingVoice) {
             Column {
                 AttachmentActionRow(
+                    showSessionCard = state.settings.showSessionCard,
+                    onToggleSessionCard = { shown ->
+                        vm.updateSettings { it.copy(showSessionCard = shown) }
+                    },
                     onCameraCapture = onCameraCapture,
                     onVoiceCapture = onVoiceCapture,
                     onVisualPick = onVisualPick,
@@ -4218,6 +4228,8 @@ private fun ModelOptionRow(
 
 @Composable
 private fun AttachmentActionRow(
+    showSessionCard: Boolean,
+    onToggleSessionCard: (Boolean) -> Unit,
     onCameraCapture: () -> Unit,
     onVoiceCapture: () -> Unit,
     onVisualPick: () -> Unit,
@@ -4226,20 +4238,52 @@ private fun AttachmentActionRow(
     expandingDraft: Boolean,
     expandEnabled: Boolean,
 ) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            AttachmentAction(Icons.Outlined.CameraAlt, "拍照", onCameraCapture)
+            AttachmentAction(Icons.Outlined.Mic, "录音", onVoiceCapture)
+            AttachmentAction(Icons.Outlined.PhotoLibrary, "相册", onVisualPick)
+            AttachmentAction(Icons.Outlined.AttachFile, "文件", onFilePick)
+            AttachmentAction(
+                icon = Icons.Outlined.AutoAwesome,
+                label = "扩写",
+                onClick = onExpandDraft,
+                enabled = expandEnabled,
+                busy = expandingDraft,
+            )
+        }
+        SessionCardToggle(showSessionCard, onToggleSessionCard)
+    }
+}
+
+@Composable
+private fun SessionCardToggle(
+    shown: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        AttachmentAction(Icons.Outlined.CameraAlt, "拍照", onCameraCapture)
-        AttachmentAction(Icons.Outlined.Mic, "录音", onVoiceCapture)
-        AttachmentAction(Icons.Outlined.PhotoLibrary, "相册", onVisualPick)
-        AttachmentAction(Icons.Outlined.AttachFile, "文件", onFilePick)
-        AttachmentAction(
-            icon = Icons.Outlined.AutoAwesome,
-            label = "扩写",
-            onClick = onExpandDraft,
-            enabled = expandEnabled,
-            busy = expandingDraft,
+        Column(Modifier.weight(1f)) {
+            Text("当前会话卡", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                if (shown) "显示在聊天顶部" else "已隐藏",
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverText3,
+            )
+        }
+        Switch(
+            checked = shown,
+            onCheckedChange = onToggle,
+            modifier = Modifier.semantics { contentDescription = "显示当前会话卡" },
         )
     }
 }
