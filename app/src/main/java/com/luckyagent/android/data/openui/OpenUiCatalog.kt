@@ -2,6 +2,7 @@ package com.luckyagent.android.data.openui
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -60,6 +61,25 @@ fun JsonElement?.asOpenUiDelta(): OpenUiDelta? {
         nodes = nodes,
         patch = obj["patch"]?.jsonPrimitive?.contentOrNull == "true" || (obj["patch"] as? JsonPrimitive)?.content == "true",
     ).keepCatalog()
+}
+
+/** Only a closed tree is restored from history; a half-streamed one stays Markdown. */
+private val closedStates = setOf("complete", "waiting_input")
+
+/**
+ * Rebuild a catalog-validated tree from a stored `present_ui` tool call.
+ *
+ * History reaches the client as plain messages, so the tree has to come back
+ * out of the call arguments; otherwise the transcript keeps only a JSON dump.
+ */
+fun openUiTreeFromToolArguments(arguments: String?): OpenUiDelta? {
+    val raw = arguments?.trim().orEmpty()
+    if (raw.isEmpty()) return null
+    val element = runCatching { Json.parseToJsonElement(raw) }.getOrNull() ?: return null
+    val treeElement = (element as? JsonObject)?.get("tree") ?: element
+    val tree = treeElement.asOpenUiDelta() ?: return null
+    if (tree.nodes.isEmpty()) return null
+    return tree.takeIf { it.state in closedStates }
 }
 
 fun JsonObject.string(key: String): String? =

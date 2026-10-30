@@ -1,6 +1,8 @@
 package com.luckyagent.android.ui
 
 import com.luckyagent.android.data.api.ProviderMessage
+import com.luckyagent.android.data.openui.OpenUiDelta
+import com.luckyagent.android.data.openui.openUiTreeFromToolArguments
 
 /**
  * Project each message once and join tool results through their most recent
@@ -14,8 +16,25 @@ internal fun projectHistoryBubbles(
 ): List<ChatBubble> {
     val bubbles = mutableListOf<ChatBubble>()
     val toolIndices = HashMap<String, Int>()
+    // A stored `present_ui` call belongs to the answer that follows it, which is
+    // usually the next assistant row rather than the row holding the call.
+    var pendingOpenUi: OpenUiDelta? = null
     messages.forEachIndexed { index, message ->
-        project(message, startIndex + index).forEach { bubble ->
+        if (message.role == "user") pendingOpenUi = null
+        message.toolCalls.forEach { call ->
+            if (call.name == "present_ui") {
+                openUiTreeFromToolArguments(call.arguments)?.let { pendingOpenUi = it }
+            }
+        }
+        project(message, startIndex + index).forEach { raw ->
+            var bubble = raw
+            val tree = pendingOpenUi
+            if (tree != null && bubble.openUi == null && bubble.role.equals("assistant", true) &&
+                !bubble.isIntermediate && bubble.content.isNotBlank()
+            ) {
+                bubble = bubble.copy(openUi = tree)
+                pendingOpenUi = null
+            }
             val callIndex = if (message.role == "tool" && bubble.role == "tool" && !message.toolCallId.isNullOrBlank()) {
                 toolIndices[message.toolCallId]
             } else null
@@ -66,6 +85,11 @@ internal fun ProviderMessage.toHistoryBubbles(
         )
     }
     toolCalls.forEachIndexed { toolIndex, tool ->
+        // `present_ui` carries a catalog tree, not work: keep it out of the
+        // process fold and hang the closed tree under the final answer instead.
+        if (tool.name == "present_ui") {
+            return@forEachIndexed
+        }
         result += ChatBubble(
             id = "$bubbleBase-tool-$toolIndex",
             role = "tool",
@@ -85,6 +109,8 @@ internal fun ProviderMessage.toHistoryBubbles(
         )
     }
     if (role == "tool") {
+        // The acknowledgement text of a rendered tree is not a step the user reads.
+        if (name == "present_ui") return result
         result += ChatBubble(
             id = "$bubbleBase-tool-result",
             role = "tool",
