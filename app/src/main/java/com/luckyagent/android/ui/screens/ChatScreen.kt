@@ -191,7 +191,9 @@ import com.luckyagent.android.ui.recapLabel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.luckyagent.android.ui.canCreateSessionInGroup
 import com.luckyagent.android.ui.isFixedRoleSession
+import com.luckyagent.android.ui.projectForNewSession
 import com.luckyagent.android.ui.sessionGroups
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
@@ -774,6 +776,14 @@ fun ChatScreen(
     val sessionPaneWidth = 304.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var createSessionOpen by remember { mutableStateOf(false) }
+    var createSessionTitle by remember { mutableStateOf("") }
+    var createSessionProject by remember { mutableStateOf<String?>(null) }
+    fun requestCreateSession(project: String? = null) {
+        createSessionProject = project
+        createSessionTitle = ""
+        createSessionOpen = true
+    }
     var projectTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var projectText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<RuntimeSession?>(null) }
@@ -826,12 +836,8 @@ fun ChatScreen(
                         compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
                     }
                 },
-                onCreate = {
-                    vm.createSession()
-                    if (!usePermanentSessionPane) {
-                        compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
-                    }
-                },
+                onCreate = { requestCreateSession() },
+                onCreateInGroup = { name -> requestCreateSession(projectForNewSession(name)) },
                 onQueryChange = vm::updateSessionQuery,
                 onRename = { session ->
                     renameTarget = session
@@ -868,7 +874,7 @@ fun ChatScreen(
                     vm = vm,
                     showSessionMenu = !sessionPaneExpanded,
                     onOpenSessions = { sessionPaneExpanded = true },
-                    onNewSession = vm::createSession,
+                    onNewSession = { requestCreateSession() },
                     onOpenSettings = onOpenSettings,
                     showAttachmentOptions = showAttachmentOptions,
                     onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
@@ -949,7 +955,7 @@ fun ChatScreen(
                             onOpenSessions = {
                                 compactPagerScope.launch { compactPagerState.animateScrollToPage(sessionsPage) }
                             },
-                            onNewSession = vm::createSession,
+                            onNewSession = { requestCreateSession() },
                             onOpenSettings = onOpenSettings,
                             showAttachmentOptions = showAttachmentOptions,
                             onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
@@ -982,6 +988,40 @@ fun ChatScreen(
                     }
                 }
             }
+        }
+
+        if (createSessionOpen) {
+            val projectLabel = createSessionProject?.takeIf { it.isNotBlank() }
+            AlertDialog(
+                onDismissRequest = { createSessionOpen = false },
+                title = { Text(if (projectLabel == null) "新建会话" else "在「$projectLabel」新建") },
+                text = {
+                    OutlinedTextField(
+                        value = createSessionTitle,
+                        onValueChange = { createSessionTitle = it },
+                        singleLine = true,
+                        label = { Text("会话标题") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = createSessionTitle.trim().isNotEmpty(),
+                        onClick = {
+                            val title = createSessionTitle.trim()
+                            if (title.isEmpty()) return@TextButton
+                            vm.createSession(title, createSessionProject)
+                            createSessionOpen = false
+                            if (!usePermanentSessionPane) {
+                                compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
+                            }
+                        },
+                    ) { Text("创建") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { createSessionOpen = false }) { Text("取消") }
+                },
+            )
         }
     }
 
@@ -4854,6 +4894,7 @@ private fun SessionDrawer(
     onClose: () -> Unit,
     onSelect: (String) -> Unit,
     onCreate: () -> Unit,
+    onCreateInGroup: (String) -> Unit = {},
     onQueryChange: (String) -> Unit,
     onRename: (RuntimeSession) -> Unit,
     onProject: (RuntimeSession) -> Unit = {},
@@ -5058,14 +5099,19 @@ private fun SessionDrawer(
                         }
                     }
                     sessionGroups(sessions).forEach { group ->
-                        val collapsed = group.name in collapsedGroups
-                        item(key = "group-${group.name}") {
+                        val collapsed = group.key in collapsedGroups
+                        item(key = "group-${group.key}") {
                             SessionGroupHeader(
                                 name = group.name,
                                 count = group.sessions.size,
                                 expanded = !collapsed,
                                 onToggle = {
-                                    collapsedGroups = if (collapsed) collapsedGroups - group.name else collapsedGroups + group.name
+                                    collapsedGroups = if (collapsed) collapsedGroups - group.key else collapsedGroups + group.key
+                                },
+                                onCreate = if (canCreateSessionInGroup(group.name)) {
+                                    { onCreateInGroup(group.name) }
+                                } else {
+                                    null
                                 },
                             )
                         }
@@ -5098,16 +5144,22 @@ private fun SessionGroupHeader(
     count: Int,
     expanded: Boolean,
     onToggle: () -> Unit,
+    onCreate: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onToggle)
             .heightIn(min = 32.dp)
             .padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Row(
+            Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable(onClick = onToggle),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
         Icon(
             if (expanded) Icons.Outlined.ExpandMore else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
             contentDescription = if (expanded) "收起分组" else "展开分组",
@@ -5136,6 +5188,20 @@ private fun SessionGroupHeader(
             style = MaterialTheme.typography.labelSmall,
             color = CloverText3,
         )
+        }
+        if (onCreate != null) {
+            IconButton(
+                onClick = onCreate,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Add,
+                    contentDescription = "在「$name」新建会话",
+                    tint = CloverText2,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
     }
 }
 

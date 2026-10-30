@@ -81,7 +81,30 @@ internal fun fixedSessionRole(agentRole: String?): FixedSessionRole? {
 
 internal fun isFixedRoleSession(session: RuntimeSession): Boolean = fixedSessionRole(session.agentRole) != null
 
-internal data class SessionGroup(val name: String, val sessions: List<RuntimeSession>)
+/**
+ * Only user-owned groups can host a new session. Pinned, Delegated, and Worker are assigned
+ * by pin state or agent_role, so a create action there would not land in that group.
+ */
+internal fun canCreateSessionInGroup(name: String): Boolean =
+    name != SESSION_GROUP_PINNED && name != SESSION_GROUP_DELEGATED && name != SESSION_GROUP_WORKER
+
+/** Blank means unsorted. A fixed category name is never a project the user can assign. */
+internal fun projectForNewSession(groupName: String?): String? {
+    val name = groupName?.trim().orEmpty()
+    if (name.isEmpty() || name == SESSION_GROUP_UNSORTED || !canCreateSessionInGroup(name)) return null
+    return name
+}
+
+/**
+ * A display name is not a stable identity: a user project may be named
+ * "未分类" or "Worker". Keep a separate key so Compose and collapsed state
+ * never merge two groups that happen to have the same label.
+ */
+internal data class SessionGroup(
+    val name: String,
+    val sessions: List<RuntimeSession>,
+    val key: String = name,
+)
 
 /**
  * One session, one group. Order: pinned ordinary sessions, Delegated, Worker, then project names.
@@ -101,13 +124,14 @@ internal fun sessionGroups(sessions: List<RuntimeSession>): List<SessionGroup> {
         }
     }
     val groups = mutableListOf<SessionGroup>()
-    if (pinned.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_PINNED, pinned)
-    if (delegated.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_DELEGATED, delegated)
-    if (worker.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_WORKER, worker)
+    if (pinned.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_PINNED, pinned, key = "fixed:pinned")
+    if (delegated.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_DELEGATED, delegated, key = "fixed:delegated")
+    if (worker.isNotEmpty()) groups += SessionGroup(SESSION_GROUP_WORKER, worker, key = "fixed:worker")
     rest.groupBy { it.project?.trim().orEmpty() }
         .toSortedMap(compareBy { if (it.isEmpty()) "\uFFFF" else it.lowercase() })
         .forEach { (project, rows) ->
-            groups += SessionGroup(project.ifBlank { SESSION_GROUP_UNSORTED }, rows)
+            val name = project.ifBlank { SESSION_GROUP_UNSORTED }
+            groups += SessionGroup(name, rows, key = "project:${project.ifBlank { "<unsorted>" }}")
         }
     return groups
 }
