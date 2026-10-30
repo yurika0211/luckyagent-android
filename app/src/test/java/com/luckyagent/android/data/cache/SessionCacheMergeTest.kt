@@ -86,10 +86,63 @@ class SessionCacheMergeTest {
     }
 
     @Test
-    fun olderOffsetSkipsShownMessagesNotTheOldestIndex() {
-        // 100 messages, screen shows 60–99. offset=60 would skip 40–59.
-        assertEquals(40, olderHistoryOffset(shownCount = 40))
-        assertEquals(0, olderHistoryOffset(shownCount = 0))
+    fun olderOffsetSkipsEverythingAboveTheWindowStart() {
+        // 100 messages cached from index 60. The next older page must end at 60,
+        // so it skips the 40 rows above it (60–99), not the 60 cached rows.
+        assertEquals(40, olderHistoryOffset(remoteCount = 100, startIndex = 60))
+        // A cache that already holds the oldest row skips everything, so the page
+        // that ends at index 0 is empty. Callers never ask; loadMore stops first.
+        assertEquals(100, olderHistoryOffset(remoteCount = 100, startIndex = 0))
+        // A total below the window start must not produce a negative offset.
+        assertEquals(0, olderHistoryOffset(remoteCount = 10, startIndex = 60))
+    }
+
+    @Test
+    fun olderPageStillPrependsWhenNewMessagesArrivedSinceTheCacheWasPainted() {
+        val cached = page(start = 60, count = 100, messages = (60 until 100).map { msg("m$it") })
+        // 5 messages arrived. The offset is derived from the new total, so the
+        // page still ends at 60 instead of landing on 65 and forcing a refetch.
+        val offset = olderHistoryOffset(remoteCount = 105, startIndex = 60)
+        val older = (20 until 60).map { msg("m$it") }
+
+        val merged = prependOlderPage(
+            cached = cached,
+            older = older,
+            remoteCount = 105,
+            serverHasMore = true,
+            requestedOffset = offset,
+        ) as LatestMerge.Appended
+
+        assertEquals(20, merged.page.startIndex)
+        assertEquals(80, merged.page.messages.size)
+        assertEquals(false, merged.page.reachedOldest)
+    }
+
+    @Test
+    fun anEmptyPageOnlyClaimsTheOldestRowWhenItEndsAtTheCacheStart() {
+        val cached = page(start = 40, count = 100, messages = (40 until 100).map { msg("m$it") })
+
+        // offset skipped 60 rows: the page ends at 40, which is the window start.
+        val aligned = prependOlderPage(
+            cached = cached,
+            older = emptyList(),
+            remoteCount = 100,
+            serverHasMore = false,
+            requestedOffset = 60,
+        ) as LatestMerge.Appended
+        assertEquals(true, aligned.page.reachedOldest)
+
+        // offset skipped 100 rows: the page ends at 0, but rows 0–39 exist and
+        // were never read. Claiming the oldest row here hides them forever.
+        assertTrue(
+            prependOlderPage(
+                cached = cached,
+                older = emptyList(),
+                remoteCount = 100,
+                serverHasMore = false,
+                requestedOffset = 100,
+            ) is LatestMerge.Invalidate,
+        )
     }
 
     @Test

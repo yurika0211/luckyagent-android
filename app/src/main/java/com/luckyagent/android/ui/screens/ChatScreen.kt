@@ -1309,6 +1309,36 @@ private fun ChatConversation(
                     }
                 }
         }
+        // The row under the reader, by key. A prepended page keeps every key but
+        // moves every index, so the old index no longer points at the same row.
+        val visibleAnchor = remember(state.settings.sessionId) { mutableStateOf<Pair<String, Int>?>(null) }
+        LaunchedEffect(state.settings.sessionId) {
+            snapshotFlow {
+                listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String
+            }
+                .distinctUntilChanged()
+                .collect { key ->
+                    // Keyed on the row, not the pixel: a fling must not write state
+                    // on every frame. The offset is read once, when the row changes.
+                    if (key != null) visibleAnchor.value = key to listState.firstVisibleItemScrollOffset
+                }
+        }
+        var appliedPrefixPush by remember(state.settings.sessionId) {
+            mutableStateOf(state.historyPrefixPushes)
+        }
+        LaunchedEffect(state.settings.sessionId, state.historyPrefixPushes, timeline) {
+            if (state.historyPrefixPushes == appliedPrefixPush) return@LaunchedEffect
+            appliedPrefixPush = state.historyPrefixPushes
+            val (anchorKey, anchorOffset) = visibleAnchor.value ?: return@LaunchedEffect
+            val index = timeline.indexOfFirst { it.key == anchorKey }
+            if (index < 0) return@LaunchedEffect
+            // Same row, new index. Jump without animation so the rows above the
+            // viewport appear above it instead of pushing it down.
+            // lastAutoScrollPosition stays untouched: it marks the last place the
+            // list followed the newest row, and claiming that here would make the
+            // follow effect jump to the bottom on the next size change.
+            listState.requestScrollToItem(index, anchorOffset)
+        }
         LaunchedEffect(state.settings.sessionId, timeline.size, timeline.lastOrNull()?.key) {
             if (timeline.isEmpty() || restoredSession == state.settings.sessionId) return@LaunchedEffect
             snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }

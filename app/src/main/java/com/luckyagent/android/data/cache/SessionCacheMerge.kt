@@ -137,24 +137,46 @@ fun mergeLatestPage(
 }
 
 /**
- * History offset skips the newest N messages. The next older page therefore
- * uses how many messages are already shown, not the oldest row's session index.
- * Showing 60–99 of 100 requests offset=40 and receives 20–59.
+ * History offset skips the newest N messages, so a page for the window that
+ * starts at [startIndex] must skip every row above it: `total - startIndex`.
+ *
+ * Deriving it from the local row count instead (`messages.size`) silently
+ * assumes the cached total is still current. When k messages arrived since the
+ * cache was painted the page ends k rows past the window start, the merge sees
+ * a gap, and one "load older" escalates into a full `limit=null` refetch.
  */
-fun olderHistoryOffset(shownCount: Int): Int = shownCount.coerceAtLeast(0)
+fun olderHistoryOffset(remoteCount: Int, startIndex: Int): Int =
+    (remoteCount - startIndex).coerceAtLeast(0)
+
+/**
+ * Where a page fetched with [requestedOffset] ends, in server indices.
+ * Negative when the offset skipped past the start of the session.
+ */
+fun olderPageEnd(remoteCount: Int, requestedOffset: Int): Int =
+    remoteCount - requestedOffset.coerceAtLeast(0)
 
 /**
  * Prepend an older page. The page must end exactly where the cache begins.
- * A gap or overlap means the offset drifted and the caller should invalidate.
+ * A gap or overlap means the offset drifted and the caller should realign the
+ * offset from the reported total instead of dropping the whole cache.
  */
 fun prependOlderPage(
     cached: MessagePage,
     older: List<ProviderMessage>,
     remoteCount: Int,
     serverHasMore: Boolean,
-    requestedOffset: Int = cached.messages.size,
+    requestedOffset: Int = olderHistoryOffset(
+        remoteCount = cached.messageCount.coerceAtLeast(cached.startIndex + cached.messages.size),
+        startIndex = cached.startIndex,
+    ),
 ): LatestMerge {
     if (older.isEmpty()) {
+        // An empty page is only "no more history" when it ends where the cache
+        // begins. Anything else is a drifted offset that skipped real rows;
+        // claiming reachedOldest there hides the gap forever.
+        if (olderPageEnd(remoteCount, requestedOffset) != cached.startIndex) {
+            return LatestMerge.Invalidate
+        }
         return LatestMerge.Appended(cached.copy(messageCount = remoteCount, reachedOldest = true))
     }
     if (remoteCount < cached.messageCount) return LatestMerge.Invalidate
