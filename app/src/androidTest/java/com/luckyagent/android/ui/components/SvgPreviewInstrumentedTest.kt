@@ -3,24 +3,32 @@ package com.luckyagent.android.ui.components
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.SystemClock
+import android.view.Choreographer
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.view.inspector.WindowInspector
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -28,6 +36,7 @@ import androidx.test.filters.SdkSuppress
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -101,6 +110,44 @@ class SvgPreviewInstrumentedTest {
         compose.runOnIdle { markdown.value = graph() }
         awaitGraph()
         assertGraphPainted("kruskal-replaced")
+    }
+
+    @Test
+    fun multiSvgHistoryWritesFrameIntervalEvidence() {
+        val source = graph()
+        compose.setContent {
+            MaterialTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        items((0 until 6).toList(), key = { it }) { index ->
+                            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                MarkdownText(source)
+                                Text("SVG $index", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        compose.waitUntil(15_000) { webView() != null }
+        val probe = FrameIntervalProbe(instrumentation)
+        probe.start(durationMs = 2_000)
+        repeat(4) {
+            compose.onRoot().performTouchInput { swipeUp(durationMillis = 250) }
+            compose.waitForIdle()
+        }
+        val intervals = probe.stop()
+        val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+            ?.let(::File) ?: instrumentation.targetContext.getExternalFilesDir(null)!!
+        output.mkdirs()
+        val sorted = intervals.sorted()
+        val p50 = percentile(sorted, 0.50)
+        val p95 = percentile(sorted, 0.95)
+        val max = sorted.lastOrNull() ?: 0.0
+        File(output, "svg-frame-metrics.json").writeText(
+            """{"frameCount":${intervals.size},"p50Ms":$p50,"p95Ms":$p95,"maxMs":$max,"device":"${android.os.Build.MODEL}"}""",
+        )
+        assertTrue("No Choreographer frames were captured", intervals.isNotEmpty())
     }
 
     private fun showMarkdown(markdown: String) = showMarkdown { markdown }
@@ -233,6 +280,51 @@ class SvgPreviewInstrumentedTest {
             found = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull { visit(it) }
         }
         return found
+    }
+
+    private class FrameIntervalProbe(private val instrumentation: android.app.Instrumentation) {
+        private val intervals = CopyOnWriteArrayList<Double>()
+        private val done = CountDownLatch(1)
+        private var choreographer: Choreographer? = null
+        private val callback = object : Choreographer.FrameCallback {
+            private var previous = 0L
+            private var deadline = 0L
+
+            fun arm(durationNanos: Long) {
+                previous = 0L
+                deadline = System.nanoTime() + durationNanos
+            }
+
+            override fun doFrame(frameTimeNanos: Long) {
+                if (previous != 0L) intervals += (frameTimeNanos - previous) / 1_000_000.0
+                previous = frameTimeNanos
+                if (System.nanoTime() < deadline) {
+                    choreographer?.postFrameCallback(this)
+                } else {
+                    done.countDown()
+                }
+            }
+        }
+
+        fun start(durationMs: Long) {
+            instrumentation.runOnMainSync {
+                choreographer = Choreographer.getInstance()
+                callback.arm(durationMs * 1_000_000)
+                choreographer?.postFrameCallback(callback)
+            }
+        }
+
+        fun stop(): List<Double> {
+            done.await(5, TimeUnit.SECONDS)
+            instrumentation.runOnMainSync { choreographer?.removeFrameCallback(callback) }
+            return intervals.toList()
+        }
+    }
+
+    private fun percentile(values: List<Double>, fraction: Double): Double {
+        if (values.isEmpty()) return 0.0
+        val index = ((values.size - 1) * fraction).toInt().coerceIn(0, values.lastIndex)
+        return values[index]
     }
 
     private fun javascript(script: String): String? {

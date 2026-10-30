@@ -51,6 +51,7 @@
 - 静态图页面不包含尺寸桥脚本；首屏只挂载可见行，滚出窗口后不保留 WebView。
 
 测试同时检查 DOM 和设备截图中的实际蓝/灰像素，保存截图及布局诊断，避免“节点存在但图为空”误判通过。
+- `multiSvgHistoryWritesFrameIntervalEvidence` 在六张 SVG 历史中滚动，使用 `Choreographer` 记录帧间隔，并在测试输出目录写入 `svg-frame-metrics.json`（p50/p95/max）。它只采集证据，不把模拟器或设备的帧率伪装成固定通过标准。
 使用独立测试包，不清理用户日常使用的 debug 应用：
 
 ```sh
@@ -58,6 +59,8 @@
   -Pandroid.testInstrumentationRunnerArguments.class=com.luckyagent.android.ui.components.SvgPreviewInstrumentedTest \
   --offline
 ```
+
+在真机上验收时，先确认 `adb devices` 状态为 `device`，再保存测试输出中的 `svg-frame-metrics.json`；至少记录复杂图首次显示和六图历史连续上滑的 p95/max 帧间隔，并注明设备型号、Android 版本和刷新率。
 
 只收到截到 `@k` 的动画 HTML（缺少后续图形和闭合标签）时，不能凭空还原图形；
 动画和滚动流畅度仍需完整输入及真实设备性能验证。最终验收应记录复杂图、多图历史的首帧和滚动帧耗时，
