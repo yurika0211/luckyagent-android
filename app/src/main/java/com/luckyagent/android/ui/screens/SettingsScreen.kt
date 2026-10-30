@@ -285,6 +285,7 @@ private fun SettingsAppearanceCard(state: AppUiState, vm: AppViewModel) {
         OpacitySlider("顶栏", s.chromeOpacity) { value -> vm.updateSettings { it.copy(chromeOpacity = value) } }
         OpacitySlider("卡片", s.cardOpacity) { value -> vm.updateSettings { it.copy(cardOpacity = value) } }
         OpacitySlider("侧栏", s.drawerOpacity) { value -> vm.updateSettings { it.copy(drawerOpacity = value) } }
+        OpacitySlider("回顾", s.recapOpacity) { value -> vm.updateSettings { it.copy(recapOpacity = value) } }
         Text("阅读字体", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Text(
             "使用 Android 内置的 Noto CJK 字体，不联网下载。衬线体更适合长文本阅读。",
