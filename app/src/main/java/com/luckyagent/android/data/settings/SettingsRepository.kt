@@ -47,6 +47,8 @@ data class ClientSettings(
     val chromeOpacity: Int = 62,
     val cardOpacity: Int = 82,
     val drawerOpacity: Int = 90,
+    /** Opacity of the session recap card; defaults to the current opaque look. */
+    val recapOpacity: Int = 100,
     /** App text scale, persisted locally and applied to the Material typography. */
     val fontScale: Float = 1.0f,
     /** `serif` uses the Android Noto Serif CJK fallback; `sans` uses Noto Sans CJK. */
@@ -115,6 +117,7 @@ class SettingsRepository(context: Context) {
             chromeOpacity = prefs.getInt(KEY_CHROME_OPACITY, 62).coerceIn(0, 100),
             cardOpacity = prefs.getInt(KEY_CARD_OPACITY, 82).coerceIn(0, 100),
             drawerOpacity = prefs.getInt(KEY_DRAWER_OPACITY, 90).coerceIn(0, 100),
+            recapOpacity = prefs.getInt(KEY_RECAP_OPACITY, 100).coerceIn(0, 100),
             fontScale = prefs.getFloat(KEY_FONT_SCALE, 1.0f).coerceIn(0.85f, 1.35f),
             fontFamily = prefs.getString(KEY_FONT_FAMILY, "sans")
                 ?.lowercase()
@@ -194,6 +197,7 @@ class SettingsRepository(context: Context) {
             if (next.chromeOpacity != previous.chromeOpacity) putInt(KEY_CHROME_OPACITY, next.chromeOpacity.coerceIn(0, 100))
             if (next.cardOpacity != previous.cardOpacity) putInt(KEY_CARD_OPACITY, next.cardOpacity.coerceIn(0, 100))
             if (next.drawerOpacity != previous.drawerOpacity) putInt(KEY_DRAWER_OPACITY, next.drawerOpacity.coerceIn(0, 100))
+            if (next.recapOpacity != previous.recapOpacity) putInt(KEY_RECAP_OPACITY, next.recapOpacity.coerceIn(0, 100))
             if (next.fontScale != previous.fontScale) putFloat(KEY_FONT_SCALE, next.fontScale.coerceIn(0.85f, 1.35f))
             if (next.fontFamily != previous.fontFamily) putString(KEY_FONT_FAMILY, next.fontFamily)
             if (next.connectionMode != previous.connectionMode) putString(KEY_CONNECTION_MODE, next.connectionMode)
@@ -304,6 +308,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_CHROME_OPACITY = "chrome_opacity"
         private const val KEY_CARD_OPACITY = "card_opacity"
         private const val KEY_DRAWER_OPACITY = "drawer_opacity"
+        private const val KEY_RECAP_OPACITY = "recap_opacity"
         private const val KEY_FONT_SCALE = "font_scale"
         private const val KEY_FONT_FAMILY = "font_family"
         private const val KEY_CONNECTION_MODE = "connection_mode"

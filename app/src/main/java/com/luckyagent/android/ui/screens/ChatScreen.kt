@@ -191,7 +191,9 @@ import com.luckyagent.android.ui.recapLabel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.luckyagent.android.ui.canCreateSessionInGroup
 import com.luckyagent.android.ui.isFixedRoleSession
+import com.luckyagent.android.ui.projectForNewSession
 import com.luckyagent.android.ui.sessionGroups
 import com.luckyagent.android.data.api.TaskSummary
 import com.luckyagent.android.data.api.TaskNode
@@ -221,6 +223,7 @@ import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
+import com.luckyagent.android.ui.components.OpenUiTree
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
@@ -494,7 +497,12 @@ internal fun surfaceStaysLive(visibleKeys: List<Any>, key: Any, wasLive: Boolean
  */
 @Composable
 private fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
-    var live by remember(key) { mutableStateOf(true) }
+    // Start cold. LazyColumn composes a prefetch window before it has reported
+    // visible keys; mounting a WebView for every prefetched history row was the
+    // source of the first-scroll hitch. Once layout settles, only rows that are
+    // actually visible become live. The empty-layout case remains cold and will
+    // be revisited when LazyListState publishes its first layoutInfo snapshot.
+    var live by remember(key) { mutableStateOf(false) }
     if (!listState.isScrollInProgress) {
         live = surfaceStaysLive(listState.layoutInfo.visibleItemsInfo.map { it.key }, key, live)
     }
@@ -768,6 +776,14 @@ fun ChatScreen(
     val sessionPaneWidth = 304.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var createSessionOpen by remember { mutableStateOf(false) }
+    var createSessionTitle by remember { mutableStateOf("") }
+    var createSessionProject by remember { mutableStateOf<String?>(null) }
+    fun requestCreateSession(project: String? = null) {
+        createSessionProject = project
+        createSessionTitle = ""
+        createSessionOpen = true
+    }
     var projectTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var projectText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<RuntimeSession?>(null) }
@@ -820,12 +836,8 @@ fun ChatScreen(
                         compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
                     }
                 },
-                onCreate = {
-                    vm.createSession()
-                    if (!usePermanentSessionPane) {
-                        compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
-                    }
-                },
+                onCreate = { requestCreateSession() },
+                onCreateInGroup = { name -> requestCreateSession(projectForNewSession(name)) },
                 onQueryChange = vm::updateSessionQuery,
                 onRename = { session ->
                     renameTarget = session
@@ -862,7 +874,7 @@ fun ChatScreen(
                     vm = vm,
                     showSessionMenu = !sessionPaneExpanded,
                     onOpenSessions = { sessionPaneExpanded = true },
-                    onNewSession = vm::createSession,
+                    onNewSession = { requestCreateSession() },
                     onOpenSettings = onOpenSettings,
                     showAttachmentOptions = showAttachmentOptions,
                     onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
@@ -943,7 +955,7 @@ fun ChatScreen(
                             onOpenSessions = {
                                 compactPagerScope.launch { compactPagerState.animateScrollToPage(sessionsPage) }
                             },
-                            onNewSession = vm::createSession,
+                            onNewSession = { requestCreateSession() },
                             onOpenSettings = onOpenSettings,
                             showAttachmentOptions = showAttachmentOptions,
                             onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
@@ -976,6 +988,40 @@ fun ChatScreen(
                     }
                 }
             }
+        }
+
+        if (createSessionOpen) {
+            val projectLabel = createSessionProject?.takeIf { it.isNotBlank() }
+            AlertDialog(
+                onDismissRequest = { createSessionOpen = false },
+                title = { Text(if (projectLabel == null) "新建会话" else "在「$projectLabel」新建") },
+                text = {
+                    OutlinedTextField(
+                        value = createSessionTitle,
+                        onValueChange = { createSessionTitle = it },
+                        singleLine = true,
+                        label = { Text("会话标题") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = createSessionTitle.trim().isNotEmpty(),
+                        onClick = {
+                            val title = createSessionTitle.trim()
+                            if (title.isEmpty()) return@TextButton
+                            vm.createSession(title, createSessionProject)
+                            createSessionOpen = false
+                            if (!usePermanentSessionPane) {
+                                compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
+                            }
+                        },
+                    ) { Text("创建") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { createSessionOpen = false }) { Text("取消") }
+                },
+            )
         }
     }
 
@@ -1308,6 +1354,36 @@ private fun ChatConversation(
                     }
                 }
         }
+        // The row under the reader, by key. A prepended page keeps every key but
+        // moves every index, so the old index no longer points at the same row.
+        val visibleAnchor = remember(state.settings.sessionId) { mutableStateOf<Pair<String, Int>?>(null) }
+        LaunchedEffect(state.settings.sessionId) {
+            snapshotFlow {
+                listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String
+            }
+                .distinctUntilChanged()
+                .collect { key ->
+                    // Keyed on the row, not the pixel: a fling must not write state
+                    // on every frame. The offset is read once, when the row changes.
+                    if (key != null) visibleAnchor.value = key to listState.firstVisibleItemScrollOffset
+                }
+        }
+        var appliedPrefixPush by remember(state.settings.sessionId) {
+            mutableStateOf(state.historyPrefixPushes)
+        }
+        LaunchedEffect(state.settings.sessionId, state.historyPrefixPushes, timeline) {
+            if (state.historyPrefixPushes == appliedPrefixPush) return@LaunchedEffect
+            appliedPrefixPush = state.historyPrefixPushes
+            val (anchorKey, anchorOffset) = visibleAnchor.value ?: return@LaunchedEffect
+            val index = timeline.indexOfFirst { it.key == anchorKey }
+            if (index < 0) return@LaunchedEffect
+            // Same row, new index. Jump without animation so the rows above the
+            // viewport appear above it instead of pushing it down.
+            // lastAutoScrollPosition stays untouched: it marks the last place the
+            // list followed the newest row, and claiming that here would make the
+            // follow effect jump to the bottom on the next size change.
+            listState.requestScrollToItem(index, anchorOffset)
+        }
         LaunchedEffect(state.settings.sessionId, timeline.size, timeline.lastOrNull()?.key) {
             if (timeline.isEmpty() || restoredSession == state.settings.sessionId) return@LaunchedEffect
             snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
@@ -1507,7 +1583,7 @@ private fun ChatConversation(
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                 shape = RoundedCornerShape(8.dp),
-                color = CloverSurface,
+                color = CloverSurface.copy(alpha = state.settings.recapOpacity.coerceIn(0, 100) / 100f),
                 border = BorderStroke(1.dp, CloverLine),
             ) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
@@ -2117,6 +2193,14 @@ private fun BubbleRow(
                             if (bubble.contentTruncated) {
                                 FullTextButton(bubble, expanding, onExpand)
                             }
+                        }
+                        bubble.openUi?.takeIf { it.nodes.isNotEmpty() }?.let { tree ->
+                            Spacer(Modifier.height(8.dp))
+                            OpenUiTree(
+                                tree = tree,
+                                interactive = !bubble.streaming && tree.state != "streaming",
+                                onAction = { _, _ -> },
+                            )
                         }
                         if (bubble.attachments.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
@@ -4810,6 +4894,7 @@ private fun SessionDrawer(
     onClose: () -> Unit,
     onSelect: (String) -> Unit,
     onCreate: () -> Unit,
+    onCreateInGroup: (String) -> Unit = {},
     onQueryChange: (String) -> Unit,
     onRename: (RuntimeSession) -> Unit,
     onProject: (RuntimeSession) -> Unit = {},
@@ -5014,14 +5099,19 @@ private fun SessionDrawer(
                         }
                     }
                     sessionGroups(sessions).forEach { group ->
-                        val collapsed = group.name in collapsedGroups
-                        item(key = "group-${group.name}") {
+                        val collapsed = group.key in collapsedGroups
+                        item(key = "group-${group.key}") {
                             SessionGroupHeader(
                                 name = group.name,
                                 count = group.sessions.size,
                                 expanded = !collapsed,
                                 onToggle = {
-                                    collapsedGroups = if (collapsed) collapsedGroups - group.name else collapsedGroups + group.name
+                                    collapsedGroups = if (collapsed) collapsedGroups - group.key else collapsedGroups + group.key
+                                },
+                                onCreate = if (canCreateSessionInGroup(group.name)) {
+                                    { onCreateInGroup(group.name) }
+                                } else {
+                                    null
                                 },
                             )
                         }
@@ -5054,16 +5144,22 @@ private fun SessionGroupHeader(
     count: Int,
     expanded: Boolean,
     onToggle: () -> Unit,
+    onCreate: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onToggle)
             .heightIn(min = 32.dp)
             .padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Row(
+            Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable(onClick = onToggle),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
         Icon(
             if (expanded) Icons.Outlined.ExpandMore else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
             contentDescription = if (expanded) "收起分组" else "展开分组",
@@ -5092,6 +5188,20 @@ private fun SessionGroupHeader(
             style = MaterialTheme.typography.labelSmall,
             color = CloverText3,
         )
+        }
+        if (onCreate != null) {
+            IconButton(
+                onClick = onCreate,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Add,
+                    contentDescription = "在「$name」新建会话",
+                    tint = CloverText2,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
     }
 }
 

@@ -157,12 +157,55 @@ class ChatSendQueueTest {
     }
 
     @Test
+    fun aPendingCopySitsBeforeItsOwnAnswerNotAfterIt() {
+        val stored = listOf(
+            bubble("u-1", "user", "question", "2026-10-29T10:00:00Z"),
+            bubble("a-1", "assistant", "answer", "2026-10-29T10:00:05Z"),
+        )
+        val pending = listOf(bubble("out-1", "user", "question", "2026-10-29T10:00:00Z"))
+
+        val shown = interleavePendingOutbound(stored, pending)
+
+        assertEquals(listOf("u-1", "out-1", "a-1"), shown.map { it.id })
+    }
+
+    @Test
+    fun aPendingRowNewerThanEveryStoredRowStaysAtTheEnd() {
+        val stored = listOf(bubble("a-1", "assistant", "old answer", "2026-10-29T10:00:05Z"))
+        val pending = listOf(bubble("out-1", "user", "next question", "2026-10-29T10:01:00Z"))
+
+        val shown = interleavePendingOutbound(stored, pending)
+
+        assertEquals(listOf("a-1", "out-1"), shown.map { it.id })
+    }
+
+    @Test
+    fun aPendingRowWithoutATimestampIsNotGuessedIntoTheHistory() {
+        val stored = listOf(
+            bubble("u-1", "user", "question", "2026-10-29T10:00:00Z"),
+            bubble("a-1", "assistant", "answer", "2026-10-29T10:00:05Z"),
+        )
+        val pending = listOf(bubble("out-1", "user", "question", null))
+
+        val shown = interleavePendingOutbound(stored, pending)
+
+        assertEquals(listOf("u-1", "a-1", "out-1"), shown.map { it.id })
+    }
+
+    @Test
     fun assistantTextNeverConfirmsAUserRow() {
         val pending = listOf(item("outbound-1", message = "hi"))
         val history = listOf(ProviderMessage(role = "assistant", content = "hi"))
 
         assertTrue(confirmedOutboundIds(pending, history).isEmpty())
     }
+
+    private fun bubble(
+        id: String,
+        role: String,
+        content: String,
+        createdAt: String?,
+    ) = ChatBubble(id = id, role = role, content = content, createdAt = createdAt)
 
     private fun userMessage(
         content: String,

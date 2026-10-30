@@ -19,6 +19,7 @@ class SvgPreviewTest {
         val frame = svg(source).frame
         assertNotNull(frame)
         assertTrue(requiresHtmlPage(source))
+        assertTrue(svgPreviewDocument(svg(source), fit = true).contains("viewBox"))
         assertEquals(SvgFrame(200f, 80f), frame)
         assertEquals(128f, svgCardHeight(frame, widthDp = 320f, viewportDp = 800f))
         assertFalse(svgCardScrolls(frame, widthDp = 320f, viewportDp = 800f))
@@ -32,10 +33,9 @@ class SvgPreviewTest {
         assertTrue(svgCardScrolls(frame, widthDp = 300f, viewportDp = 800f))
     }
 
-    @Test fun missingFrameUsesASquareUntilLayoutReturns() {
+    @Test fun graphicWithoutAFrameKeepsTheHtmlPagePath() {
         val source = "<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>"
-        assertNull(svg(source).frame)
-        assertEquals(200f, svgCardHeight(null, widthDp = 200f, viewportDp = 800f))
+        assertNull(staticSvgDocument(source))
     }
 
     @Test fun scriptOrExternalReferenceStaysOnTheHtmlPagePath() {
@@ -72,13 +72,15 @@ class SvgPreviewTest {
 
     @Test fun previewDocumentContainsTheGraphicAndBlocksNetwork() {
         val source = """<svg viewBox="0 0 10 10"><rect id="box" width="10" height="10"/></svg>"""
-        val doc = Jsoup.parse(svgPreviewDocument(svg(source), fit = true))
+        val preview = svgPreviewDocument(svg(source), fit = true)
+        assertTrue(preview.startsWith("<!doctype html>", ignoreCase = true))
+        val doc = Jsoup.parse(preview)
         assertNotNull(doc.selectFirst("svg rect#box"))
         val csp = doc.selectFirst("meta[http-equiv=Content-Security-Policy]")!!.attr("content")
         assertTrue(csp.contains("default-src 'none'"))
         assertTrue(csp.contains("connect-src 'none'"))
         assertFalse(csp.contains("script-src"))
-        assertTrue(previewStyles(source, fit = true).contains("height:100%"))
+        assertTrue(previewStyles(source, fit = true).contains("height:100vh"))
         // Scrolling cards keep the full frame width so nothing is cropped sideways.
         assertTrue(previewStyles(source, fit = false).contains("width:100%;height:auto"))
     }
@@ -87,6 +89,21 @@ class SvgPreviewTest {
         val source = "<html><head><style>.cls-1{fill:#fff}</style></head>" +
             "<body><svg viewBox='0 0 8 8'><rect class='cls-1' width='8' height='8'/></svg></body></html>"
         assertTrue(previewStyles(source, fit = true).contains(".cls-1{fill:#fff}"))
+    }
+
+    @Test fun svgLayoutCssRemainsRawTextAndOnlySizesTheOuterGraphic() {
+        val source = "<html><head><style>svg > circle {fill:red}</style></head>" +
+            "<body><svg viewBox='0 0 8 8'><circle r='4'/></svg></body></html>"
+        val styles = previewStyles(source, fit = true)
+        assertTrue(styles.contains("svg > circle {fill:red}"))
+        assertTrue(styles.contains("body>svg{"))
+        assertFalse(styles.contains("&gt;"))
+    }
+
+    @Test fun truncatedHtmlIsNotExtractedAsACompleteSvg() {
+        val source = "<!DOCTYPE html><html><body><svg viewBox='0 0 640 500'>" +
+            "<style>.cap{opacity:0}@k"
+        assertNull(staticSvgDocument(source))
     }
 
     @Test fun sizeScriptReadsTheRootOnce() {

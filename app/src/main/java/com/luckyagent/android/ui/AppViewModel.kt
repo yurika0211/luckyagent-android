@@ -15,8 +15,12 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.luckyagent.android.data.AppContainer
+import com.luckyagent.android.data.openui.OpenUiDelta
+import com.luckyagent.android.data.openui.asOpenUiDelta
+import com.luckyagent.android.data.notification.CronPopup
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.notification.RuntimeNoticePolicy
+import com.luckyagent.android.data.notification.cronPopupSuppressed
 import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.cache.CachedOutboundMessage
 import com.luckyagent.android.data.cache.HistorySync
@@ -27,6 +31,7 @@ import com.luckyagent.android.data.cache.latestPageAlreadyStored
 import com.luckyagent.android.data.cache.historySyncAction
 import com.luckyagent.android.data.cache.mergeLatestPage
 import com.luckyagent.android.data.cache.olderHistoryOffset
+import com.luckyagent.android.data.cache.olderPageEnd
 import com.luckyagent.android.data.cache.prependOlderPage
 import com.luckyagent.android.data.cache.withContentTruncation
 import com.luckyagent.android.data.api.MediaAttachment
@@ -43,6 +48,7 @@ import com.luckyagent.android.data.api.MemorySearchTrace
 import com.luckyagent.android.data.api.ReceivedMemoryTrace
 import com.luckyagent.android.data.api.CommandExecution
 import com.luckyagent.android.data.api.CronJob
+import com.luckyagent.android.data.api.CronCreateRequest
 import com.luckyagent.android.data.api.AutonomyDashboardResponse
 import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
 import com.luckyagent.android.data.api.AutonomyTaskSummary
@@ -94,6 +100,7 @@ import com.luckyagent.android.data.standalone.compactStandaloneSession
 import com.luckyagent.android.data.standalone.standaloneContextTokens
 import com.luckyagent.android.data.update.AvailableUpdate
 import com.luckyagent.android.data.work.AgentTaskWork
+import com.luckyagent.android.data.work.CronWatchWork
 import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.TokenFormat
@@ -181,6 +188,7 @@ data class ChatBubble(
      * reconciles against; a page offset moves, this does not.
      */
     val serverOrdinal: Int? = null,
+    val openUi: com.luckyagent.android.data.openui.OpenUiDelta? = null,
 )
 
 data class ChatMedia(
@@ -246,6 +254,12 @@ data class AppUiState(
     val historyRefreshing: Boolean = false,
     val historyLoadingMore: Boolean = false,
     val historyHasMore: Boolean = false,
+    /**
+     * Bumped whenever a page only added rows in front of the loaded ones.
+     * The list keeps indices, so the screen uses this to put the reader back on
+     * the row they were looking at.
+     */
+    val historyPrefixPushes: Int = 0,
     /** Server index whose full body is being fetched. -1 when idle. */
     val expandingHistoryIndex: Int = -1,
     val composer: String = "",
@@ -342,6 +356,8 @@ data class AppUiState(
     val cronCount: Int = 0,
     val cronLoading: Boolean = false,
     val cronError: String? = null,
+    /** A cron run the person should see without opening the notification shade. */
+    val cronPopup: CronPopup? = null,
     val pendingQuote: MessageQuote? = null,
     /** Server-owned /lucky collector for the visible session. */
     val luckyActive: Boolean = false,
@@ -743,6 +759,12 @@ class AppViewModel(
                     markOutboundAccepted(event)
                     val foreground = isForegroundEvent(event)
                     when (env.type) {
+                        "ui_delta" -> {
+                            if (!foreground) return@collect
+                            val tree = env.data.asOpenUiDelta() ?: return@collect
+                            if (tree.nodes.isEmpty()) return@collect
+                            attachOpenUi(tree)
+                        }
                         "stream_chunk", "assistant_delta", "delta", "chunk" -> {
                             if (!foreground) return@collect
                             val piece = extractText(env.data) ?: return@collect
@@ -1386,30 +1408,60 @@ class AppViewModel(
     private fun noteCronProgress(jobs: List<CronJob>) {
         val settings = container.settingsRepository.snapshot()
         val seen = jobs.map { it.id }.toSet()
+        var popup: CronPopup? = null
         jobs.forEach { job ->
+            // The run key is what the person has not seen yet; the popup is only
+            // how that same run is shown while a page is already open.
             val runKey = "${job.id}:${job.lastRun.orEmpty()}:${job.runCount}"
             val previous = cronFingerprints.put(job.id, runKey)
             if (!settings.notifyOnCron || !RuntimeNoticePolicy.cronRunWorthy(previous, runKey)) return@forEach
             val sessionId = job.metadata["session_id"].orEmpty()
-            val viewing = appInForeground && _ui.value.destination == AppDestination.Chat && sessionId.isNotBlank() && sessionId == currentSessionId()
-            if (viewing) return@forEach
+            if (cronPopupSuppressed(appInForeground, _ui.value.destination == AppDestination.Chat, currentSessionId(), sessionId)) return@forEach
             val failed = job.errorCount > 0 && !job.lastError.isNullOrBlank()
             val name = job.name.ifBlank { job.id }
-            container.notifications.notifyCron(
-                sessionId,
-                runKey,
-                RuntimeNoticePolicy.cronBody(name, failed, job.lastError.orEmpty()),
-                failed,
-            )
+            val body = RuntimeNoticePolicy.cronBody(name, failed, job.lastError.orEmpty())
+            container.notifications.notifyCron(sessionId, runKey, body, failed)
+            if (appInForeground) {
+                popup = CronPopup(
+                    jobId = job.id,
+                    sessionId = sessionId,
+                    title = RuntimeNoticePolicy.cronHeadline(name, failed),
+                    body = body,
+                    eventId = runKey,
+                )
+            }
         }
         cronFingerprints.keys.retainAll(seen)
+        if (popup != null) _ui.update { it.copy(cronPopup = popup) }
+    }
+
+    fun dismissCronPopup() {
+        _ui.update { it.copy(cronPopup = null) }
+    }
+
+    fun openCronPopup() {
+        val popup = _ui.value.cronPopup ?: return
+        _ui.update { it.copy(cronPopup = null) }
+        if (popup.sessionId.isNotBlank()) openSessionFromNotification(popup.sessionId)
+        else navigate(AppDestination.Cron)
     }
 
     private fun notifyCronMessage(sessionId: String, eventId: String?, content: String) {
         val settings = container.settingsRepository.snapshot()
         if (!settings.notifyOnCron) return
-        val viewing = appInForeground && sessionId == currentSessionId() && _ui.value.destination == AppDestination.Chat
-        if (!viewing) container.notifications.notifyCron(sessionId, eventId, content)
+        if (cronPopupSuppressed(appInForeground, _ui.value.destination == AppDestination.Chat, currentSessionId(), sessionId)) return
+        container.notifications.notifyCron(sessionId, eventId, content)
+        if (appInForeground) {
+            _ui.update {
+                it.copy(cronPopup = CronPopup(
+                    jobId = eventId.orEmpty(),
+                    sessionId = sessionId,
+                    title = "定时消息",
+                    body = content.ifBlank { "定时任务有新结果" },
+                    eventId = eventId.orEmpty(),
+                ))
+            }
+        }
     }
 
     private fun handleTaskEvent(data: kotlinx.serialization.json.JsonElement?) {
@@ -2026,6 +2078,18 @@ class AppViewModel(
             is JsonObject, is JsonArray -> params.toString()
             else -> params.toString()
         }
+    }
+
+
+    private fun attachOpenUi(tree: OpenUiDelta) {
+        val bubbles = _ui.value.bubbles.toMutableList()
+        val idx = bubbles.indexOfLast { it.role.equals("assistant", true) && (it.streaming || it.openUi != null) }
+        if (idx >= 0) {
+            bubbles[idx] = bubbles[idx].copy(openUi = tree)
+        } else {
+            bubbles += ChatBubble(id = "ui-${tree.treeId}", role = "assistant", content = "", streaming = tree.state == "streaming", openUi = tree)
+        }
+        _ui.value = _ui.value.copy(bubbles = bubbles)
     }
 
     private fun appendAssistant(piece: String) {
@@ -3087,7 +3151,7 @@ class AppViewModel(
         if (settingsChanged && next.connectionMode == "runtime" && !connectionModeChanged) {
             settingsReconnectJob?.cancel()
             settingsReconnectJob = viewModelScope.launch {
-                kotlinx.coroutines.delay(450)
+                kotlinx.coroutines.delay(SETTINGS_RECONNECT_DEBOUNCE_MS)
                 connectSocket()
                 settingsReconnectJob = null
             }
@@ -3597,37 +3661,88 @@ class AppViewModel(
             syncLatestHistory(apiBase, apiKey, sessionId)
             return
         }
-        val offset = olderHistoryOffset(historyMessages.size)
-        if (offset <= 0) {
+        if (historyStartIndex <= 0) {
             _ui.update { it.copy(historyLoadingMore = false, historyHasMore = false) }
             return
         }
-        val result = container.api.sessionHistory(
-            sessionId,
-            limit = SessionCachePolicy.LATEST_PAGE,
-            offset = offset,
-            includeFull = true,
-        )
-        if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
-        result.onSuccess { fetch ->
-            if (isStandaloneConnection()) return@onSuccess
+        // The offset counts from the newest row, so it has to be derived from the
+        // server total, not from how many rows happen to be cached. Messages that
+        // arrived since the cache was painted would otherwise push the page past
+        // the window start and turn one "load older" into a full refetch.
+        val cached = currentHistoryPage()
+        var offset = olderHistoryOffset(cached.messageCount, cached.startIndex)
+        var attempts = 0
+        while (true) {
+            val result = container.api.sessionHistory(
+                sessionId,
+                limit = SessionCachePolicy.LATEST_PAGE,
+                offset = offset,
+                includeFull = true,
+            )
+            if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return
+            val failure = result.exceptionOrNull()
+            if (failure != null) {
+                if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
+                _ui.update {
+                    it.copy(
+                        historyLoading = false,
+                        historyRefreshing = false,
+                        historyLoadingMore = false,
+                        activityLine = if (historyMessages.isNotEmpty()) {
+                            SessionCachePolicy.REFRESH_FAILED_LABEL
+                        } else {
+                            "没能读到这轮对话。回到聊天后重试这一条。"
+                        },
+                        showingOfflineCache = historyMessages.isNotEmpty(),
+                    )
+                }
+                return
+            }
+            val fetch = result.getOrThrow()
             if (fetch.notModified) {
                 finishHistoryRefresh(sessionId, offline = false, activity = historyLoadedLine(sessionId))
-                return@onSuccess
+                return
             }
-            val history = fetch.history ?: return@onSuccess failHistoryRefresh(sessionId, "empty history")
+            val history = fetch.history ?: run {
+                failHistoryRefresh(sessionId, "empty history")
+                return
+            }
             val remoteCount = history.messageCount ?: historyStartIndex + historyMessages.size
-            val cached = currentHistoryPage()
-            when (val merged = prependOlderPage(cached, history.messages, remoteCount, history.hasMore == true, requestedOffset = offset).let { result ->
-                if (result is LatestMerge.Appended) {
-                    LatestMerge.Appended(result.page.withContentTruncation(history.contentTruncated == true))
-                } else {
-                    result
+            val current = currentHistoryPage()
+            // Realign once against the total the server just reported. Any drift
+            // since the cache was painted is now known exactly, so the retry ends
+            // on the cache boundary instead of discarding the cached prefix.
+            val realigned = olderHistoryOffset(remoteCount, current.startIndex)
+            if (realigned != offset && attempts < 1 && olderPageEnd(remoteCount, offset) != current.startIndex) {
+                offset = realigned
+                attempts += 1
+                continue
+            }
+            when (
+                val merged = prependOlderPage(
+                    current,
+                    history.messages,
+                    remoteCount,
+                    history.hasMore == true,
+                    requestedOffset = offset,
+                ).let { result ->
+                    if (result is LatestMerge.Appended) {
+                        LatestMerge.Appended(result.page.withContentTruncation(history.contentTruncated == true))
+                    } else {
+                        result
+                    }
                 }
-            }) {
+            ) {
                 is LatestMerge.Invalidate -> {
-                    if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onSuccess
-                    if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
+                    // Only an inconsistent cache (shrunk session, offset past the
+                    // start) gets here now. Rebuilding is the safe reset.
+                    if (isStandaloneConnection() ||
+                        !currentCacheConnectionMatches(apiBase, apiKey) ||
+                        currentSessionId() != sessionId ||
+                        historySessionId != sessionId
+                    ) {
+                        return
+                    }
                     historyMessages = emptyList()
                     historyStartIndex = 0
                     historyMessageCount = 0
@@ -3636,25 +3751,17 @@ class AppViewModel(
                 }
                 is LatestMerge.Appended -> {
                     persistHistoryPage(apiBase, apiKey, sessionId, history.title, history.updatedAt, merged.page)
-                    if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId || historySessionId != sessionId) return@onSuccess
+                    if (isStandaloneConnection() ||
+                        !currentCacheConnectionMatches(apiBase, apiKey) ||
+                        currentSessionId() != sessionId ||
+                        historySessionId != sessionId
+                    ) {
+                        return
+                    }
                     applyHistoryPage(sessionId, merged.page, offline = false)
                 }
             }
-        }.onFailure { error ->
-            if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return@onFailure
-            _ui.update {
-                it.copy(
-                    historyLoading = false,
-                    historyRefreshing = false,
-                    historyLoadingMore = false,
-                    activityLine = if (historyMessages.isNotEmpty()) {
-                        SessionCachePolicy.REFRESH_FAILED_LABEL
-                    } else {
-                        "没能读到这轮对话。回到聊天后重试这一条。"
-                    },
-                    showingOfflineCache = historyMessages.isNotEmpty(),
-                )
-            }
+            return
         }
     }
 
@@ -3708,6 +3815,10 @@ class AppViewModel(
             historyToBubbles(page.messages, page.startIndex)
         }
         if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        // A growing prefix keeps every item key but moves every index. The screen
+        // needs one signal to re-anchor the viewport; appends and replacements
+        // must not scroll anything.
+        val pushedPrefix = historyMessages.isNotEmpty() && page.startIndex < historyStartIndex
         historyMessages = page.messages
         historyStartIndex = page.startIndex
         historyMessageCount = page.messageCount
@@ -3750,6 +3861,7 @@ class AppViewModel(
                 activity = shownActivity,
                 historyBubbles = historyBubbles,
                 preserveLiveTurn = keepLiveTurn && stillOwned,
+                prefixPushed = pushedPrefix,
             )
         }
     }
@@ -3789,6 +3901,15 @@ class AppViewModel(
         ).firstOrNull { it.role.equals("user", ignoreCase = true) } ?: return null
         val storedText = candidate.content?.trim().orEmpty()
         if (storedText != live.content.trim()) return null
+        // The runtime does not persist client_message_id, so text is the only
+        // evidence left. Repeated prompts ("继续", a retried line) make it
+        // ambiguous: pinning the wrong row moves this answer onto the previous
+        // question. Leave the live rows alone instead of guessing.
+        val sameTextRows = page.messages.count { message ->
+            message.role.equals("user", ignoreCase = true) &&
+                message.content?.trim() == storedText
+        }
+        if (sameTextRows > 1) return null
         return baseline
     }
 
@@ -3807,6 +3928,7 @@ class AppViewModel(
         activity: String,
         historyBubbles: List<ChatBubble>,
         preserveLiveTurn: Boolean = false,
+        prefixPushed: Boolean = false,
     ) {
         val bubbles = historyBubbles
         val confirmedIds = confirmedOutbound(sessionId, historyMessages)
@@ -3827,8 +3949,10 @@ class AppViewModel(
             } else {
                 emptyList()
             }
-            // A pending outbox bubble and the live user bubble are one message.
-            val shown = (bubbles + live + pendingBubbles).distinctBy { it.id }
+            // A stored row and its still-pending outbox copy are one message.
+            // Appending the copy put it under its own answer.
+            val stored = (bubbles + live).distinctBy { it.id }
+            val shown = interleavePendingOutbound(stored, pendingBubbles).distinctBy { it.id }
             current.copy(
                 bubbles = shown,
                 outboundQueue = pendingItems,
@@ -3838,6 +3962,7 @@ class AppViewModel(
                 historyRefreshing = false,
                 historyLoadingMore = false,
                 historyHasMore = historyStartIndex > 0,
+                historyPrefixPushes = current.historyPrefixPushes + if (prefixPushed) 1 else 0,
                 showingOfflineCache = offline,
                 progressSteps = if (preserveLiveTurn && running) current.progressSteps else emptyList(),
                 liveSummary = if (preserveLiveTurn && running) current.liveSummary else null,
@@ -5023,6 +5148,9 @@ class AppViewModel(
         stopTaskPolling()
         stopBackgroundPolling()
         stopCronPolling()
+        if (container.settingsRepository.snapshot().notifyOnCron) {
+            CronWatchWork.enqueue(container.appContext, _ui.value.cronJobs)
+        }
     }
 
     private fun startTaskPolling() {
@@ -5174,6 +5302,59 @@ class AppViewModel(
         viewModelScope.launch { refreshCronNow() }
     }
 
+    fun createCronJob(
+        name: String,
+        schedule: String,
+        command: String,
+        description: String,
+    ) {
+        viewModelScope.launch {
+            _ui.update { it.copy(cronLoading = true, cronError = null) }
+            val sessionId = currentSessionId().trim()
+            val result = if (sessionId.isBlank()) {
+                Result.failure(IllegalStateException("请先打开一个会话，再创建定时任务"))
+            } else {
+                container.api.createCronJob(
+                    CronCreateRequest(
+                        name = name.trim(),
+                        schedule = schedule.trim(),
+                        command = command.trim(),
+                        description = description.trim(),
+                        metadata = mapOf("session_id" to sessionId, "platform" to "android"),
+                    ),
+                )
+            }
+            if (result.isSuccess) refreshCronNow()
+            else _ui.update { it.copy(cronLoading = false, cronError = result.exceptionOrNull()?.message ?: "创建定时任务失败") }
+        }
+    }
+
+    fun pauseCronJob(id: String) {
+        mutateCronJob(id, "pause")
+    }
+
+    fun resumeCronJob(id: String) {
+        mutateCronJob(id, "resume")
+    }
+
+    fun deleteCronJob(id: String) {
+        viewModelScope.launch {
+            _ui.update { it.copy(cronLoading = true, cronError = null) }
+            val result = container.api.deleteCronJob(id)
+            if (result.isSuccess) refreshCronNow()
+            else _ui.update { it.copy(cronLoading = false, cronError = result.exceptionOrNull()?.message ?: "删除定时任务失败") }
+        }
+    }
+
+    private fun mutateCronJob(id: String, action: String) {
+        viewModelScope.launch {
+            _ui.update { it.copy(cronLoading = true, cronError = null) }
+            val result = container.api.updateCronJob(id, action)
+            if (result.isSuccess) refreshCronNow()
+            else _ui.update { it.copy(cronLoading = false, cronError = result.exceptionOrNull()?.message ?: "更新定时任务失败") }
+        }
+    }
+
     private suspend fun refreshCronNow() {
         _ui.update { it.copy(cronLoading = true, cronError = null) }
         val result = container.api.listCronJobs()
@@ -5320,10 +5501,20 @@ class AppViewModel(
         }
     }
 
-    fun createSession(title: String = "Android session") {
+    fun createSession(title: String, project: String? = null) {
+        val trimmedTitle = title.trim()
+        if (trimmedTitle.isEmpty()) return
+        val trimmedProject = project?.trim()?.takeIf { it.isNotEmpty() }
         viewModelScope.launch {
-            val result = container.api.createSession(title)
+            val result = container.api.createSession(trimmedTitle)
             result.onSuccess { session ->
+                var projectFailed = false
+                if (trimmedProject != null) {
+                    projectFailed = container.api.patchSession(
+                        session.id,
+                        SessionPatchRequest(project = trimmedProject),
+                    ).isFailure
+                }
                 historyJob?.cancel()
                 contextInspectJob?.cancel()
                 historySessionId = session.id
@@ -5345,7 +5536,11 @@ class AppViewModel(
                         historyHasMore = false,
                         isResponding = activeRuns[session.id]?.isNotEmpty() == true,
                         outboundQueue = outboundChatQueue.items(session.id),
-                        activityLine = "已新建会话",
+                        activityLine = if (projectFailed) {
+                            "会话已新建，但没能归到「$trimmedProject」分类。请在会话菜单里重试分类。"
+                        } else {
+                            "已新建会话"
+                        },
                         pendingQuote = null,
                         contextInspect = null,
                         contextInspectError = null,
@@ -5705,8 +5900,9 @@ class AppViewModel(
 
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
+        const val SETTINGS_RECONNECT_DEBOUNCE_MS = 450L
         val artifactPathPattern = Regex(
-            """(?i)(?:MEDIA:\s*)?(?:~[/\\]\.luckyagent[/\\](?:workspace|uploads)[/\\][^\s`"'<>]+|/[^\s`"'<>/]+(?:/[^\s`"'<>/]+)*/\.luckyagent/(?:workspace|uploads)/[^\s`"'<>]+)""",
+            """(?i)(?<![\w:])(?:MEDIA:\s*)?(?:~[/\\][^\s`"'<>]+|/(?:[^\s`"'<>/]+/)+[^\s`"'<>/]+)""",
         )
     }
 
