@@ -24,9 +24,19 @@ class WebSocketSendReadinessTest {
     private lateinit var client: LuckyAgentWsClient
 
     private class FakeSettings(@Volatile var current: ClientSettings) : WsSettings {
+        val savedCursors = LinkedBlockingQueue<Pair<String, String>>()
+        val readCursorKeys = LinkedBlockingQueue<String>()
+        private val cursors = mutableMapOf<String, String>()
+
         override fun snapshot() = current
-        override fun eventCursor(sessionId: String) = ""
-        override fun saveEventCursor(sessionId: String, cursor: String) = Unit
+        override fun eventCursor(cursorKey: String): String = synchronized(cursors) {
+            readCursorKeys.offer(cursorKey)
+            cursors[cursorKey].orEmpty()
+        }
+        override fun saveEventCursor(cursorKey: String, cursor: String) {
+            synchronized(cursors) { cursors[cursorKey] = cursor }
+            savedCursors.offer(cursorKey to cursor)
+        }
     }
 
     private class Peer : WebSocketListener() {
@@ -131,6 +141,37 @@ class WebSocketSendReadinessTest {
             assertEquals("reconnect", newPeer.nextType())
             assertEquals("chat", newPeer.nextType())
             assertNull(oldPeer.frames.poll(100, TimeUnit.MILLISECONDS))
+        } finally {
+            client.disconnect()
+            other.shutdown()
+        }
+    }
+
+    @Test
+    fun eventCursorFromOneEndpointIsNotSentToAnotherEndpoint() = runBlocking {
+        val other = MockWebServer().apply { start() }
+        try {
+            val oldPeer = Peer()
+            val newPeer = Peer()
+            server.enqueue(MockResponse().withWebSocketUpgrade(oldPeer))
+            assertTrue(client.awaitConnected("one", 5_000))
+            val oldSocket = oldPeer.sockets.poll(5, TimeUnit.SECONDS) ?: error("Missing old socket")
+            oldSocket.send("""{"type":"stream_chunk","event_id":"runtime-a-1"}""")
+            val saved = settings.savedCursors.poll(5, TimeUnit.SECONDS) ?: error("Missing saved cursor")
+            assertEquals("runtime-a-1", saved.second)
+
+            settings.current = settings.current.copy(apiBase = other.url("/").toString())
+            settings.readCursorKeys.clear()
+            other.enqueue(MockResponse().withWebSocketUpgrade(newPeer))
+            assertTrue(client.awaitConnected("one", 5_000))
+            val newCursorKey = settings.readCursorKeys.poll(5, TimeUnit.SECONDS) ?: error("Missing new cursor read")
+            assertNotEquals(saved.first, newCursorKey)
+
+            val reconnect = Json.parseToJsonElement(
+                newPeer.frames.poll(5, TimeUnit.SECONDS) ?: error("Missing reconnect"),
+            ).jsonObject
+            assertEquals("reconnect", reconnect.getValue("type").jsonPrimitive.content)
+            assertEquals("", reconnect.getValue("data").jsonObject.getValue("last_message_id").jsonPrimitive.content)
         } finally {
             client.disconnect()
             other.shutdown()
