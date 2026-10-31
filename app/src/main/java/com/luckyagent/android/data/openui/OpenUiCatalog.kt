@@ -145,6 +145,11 @@ data class OpenUiChartSeries(
     val values: List<Float>,
 )
 
+/** Optional title/caption already present on a node. Missing keys stay blank. */
+fun OpenUiNode.heading(): String? = props.string("title") ?: props.string("heading") ?: props.string("name")
+
+fun OpenUiNode.caption(): String? = props.string("caption") ?: props.string("description") ?: props.string("subtitle")
+
 fun OpenUiNode.chartSeries(): List<OpenUiChartSeries> {
     val raw = props["series"] ?: return emptyList()
     val array = runCatching { raw.jsonArray }.getOrNull() ?: return emptyList()
