@@ -413,6 +413,7 @@ class AppViewModel(
     private var taskPollingJob: Job? = null
     private var backgroundPollingJob: Job? = null
     private var cronPollingJob: Job? = null
+    private var runRecoveryJob: Job? = null
     private val taskFingerprints = mutableMapOf<String, String>()
     private val backgroundFingerprints = mutableMapOf<String, String>()
     private val cronFingerprints = mutableMapOf<String, String>()
@@ -462,6 +463,7 @@ class AppViewModel(
     private val luckyPending = LinkedHashMap<String, LuckyPendingSegment>()
     private data class ActiveRun(
         val handle: WsChatHandle,
+        var lastEventAt: Long = System.currentTimeMillis(),
     )
 
     private data class ParkedTurn(
@@ -560,6 +562,7 @@ class AppViewModel(
             }
         }
         observeWs()
+        startRunRecoveryWatch()
         ensureRuntimeWatch()
         if (isStandaloneConnection()) {
             showStandaloneSession()
@@ -760,6 +763,7 @@ class AppViewModel(
                 try {
                     val env = event.envelope
                     ensureReplayedRun(event)
+                    touchRun(event)
                     markOutboundAccepted(event)
                     val foreground = isForegroundEvent(event)
                     when (env.type) {
@@ -776,8 +780,10 @@ class AppViewModel(
                             appendAssistant(piece)
                         }
                         "stream_end", "assistant_message", "final", "done", "chat_done", "message" -> {
-                            val requestId = eventRequestId(event)
-                            if (requestId == null) {
+                            val requestId = terminalRequestId(event)
+                            val visibleTurn = hasVisibleTurn(event.sessionId)
+                            val terminalForeground = isForegroundEvent(event, requestId)
+                            if (!terminalFrameShouldSettle(visibleTurn, requestId)) {
                                 val piece = extractFullResponse(env.data) ?: extractText(env.data)
                                 if (!piece.isNullOrBlank()) {
                                     if (event.sessionId == currentSessionId()) {
@@ -788,20 +794,20 @@ class AppViewModel(
                                 }
                                 return@collect
                             }
-                            if (!completeRun(event)) return@collect
+                            if (!completeRun(event, requestId) && !visibleTurn) return@collect
                             finishOutboundRequest(event.sessionId, requestId, success = true)
                             val piece = extractFullResponse(env.data) ?: extractText(env.data)
                             val attachments = distinctMedia(
                                 extractAttachments(env.data) + extractArtifactAttachments(piece.orEmpty()),
                             )
-                            if (foreground) {
+                            if (terminalForeground || visibleTurn && event.sessionId == currentSessionId()) {
                                 finishAssistant(
                                     full = piece,
                                     createdAt = extractField(env.data, "created_at") ?: env.timestamp,
                                     usage = extractUsage(env.data),
                                     attachments = attachments,
                                 )
-                                notifyChatCompleted(event.sessionId, requestId, piece ?: _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, foreground)
+                                notifyChatCompleted(event.sessionId, requestId, piece ?: _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, true)
                                 _ui.update { it.copy(isResponding = false) }
                                 prepareNextForeground(event.sessionId)
                             } else {
@@ -809,17 +815,19 @@ class AppViewModel(
                                 finishBackgroundRun(event.sessionId)
                             }
                             refreshSessions()
-                            if (foreground) refreshContextInspect()
+                            if (terminalForeground || visibleTurn && event.sessionId == currentSessionId()) refreshContextInspect()
                         }
                         "tool_call", "tool" -> if (foreground) handleToolCall(env.data)
                         "tool_result" -> if (foreground) handleToolResult(env.data)
                         "approval", "approval_required" -> handleApprovalEvent(env.data)
                         "approval_resolved" -> refreshApprovals()
                         "cancel", "cancelled" -> {
-                            val requestId = eventRequestId(event)
-                            if (!completeRun(event)) return@collect
+                            val requestId = terminalRequestId(event)
+                            val visibleTurn = hasVisibleTurn(event.sessionId)
+                            val terminalForeground = isForegroundEvent(event, requestId)
+                            if (!completeRun(event, requestId) && !visibleTurn) return@collect
                             finishOutboundRequest(event.sessionId, requestId, success = true)
-                            if (foreground) {
+                            if (terminalForeground || visibleTurn && event.sessionId == currentSessionId()) {
                                 finishAssistant(null)
                                 _ui.update {
                                     it.copy(
@@ -838,9 +846,9 @@ class AppViewModel(
                             }
                         }
                         "error" -> {
-                            val requestId = eventRequestId(event)
+                            val requestId = terminalRequestId(event)
                             val msg = errorText(env)
-                            val matched = completeRun(event)
+                            val matched = completeRun(event, requestId)
                             val visibleStuck = !matched &&
                                 event.sessionId == currentSessionId() &&
                                 (
@@ -859,7 +867,7 @@ class AppViewModel(
                                 // queued as Sending with no id to close it by lookup.
                                 // Leaving it open would block every later message in
                                 // this session, since firstQueued() skips Sending.
-                                if (requestId == null) failInFlightOutbound(event.sessionId, msg)
+                                failInFlightOutbound(event.sessionId, msg)
                                 return@collect
                             }
                             finishOutboundRequest(event.sessionId, requestId, success = false, error = msg)
@@ -922,10 +930,12 @@ class AppViewModel(
                                     }
                                 }
                                 "idle" -> {
-                                    val requestId = eventRequestId(event)
-                                    if (!completeRun(event)) return@collect
+                                    val requestId = terminalRequestId(event)
+                                    val visibleTurn = hasVisibleTurn(event.sessionId)
+                                    val terminalForeground = isForegroundEvent(event, requestId)
+                                    if (!completeRun(event, requestId) && !visibleTurn) return@collect
                                     finishOutboundRequest(event.sessionId, requestId, success = true)
-                                    if (foreground) {
+                                    if (terminalForeground || visibleTurn && event.sessionId == currentSessionId()) {
                                         finishAssistant(null)
                                         notifyChatCompleted(event.sessionId, requestId, _ui.value.bubbles.lastOrNull { it.role == "assistant" }?.content, true)
                                         _ui.update { current ->
@@ -1228,8 +1238,14 @@ class AppViewModel(
         success: Boolean,
         error: String? = null,
     ) {
-        if (requestId.isNullOrBlank()) return
-        val item = outboundChatQueue.findByRequest(sessionId, requestId) ?: return
+        val item = requestId
+            ?.takeIf(String::isNotBlank)
+            ?.let { outboundChatQueue.findByRequest(sessionId, it) }
+            ?: outboundChatQueue.firstInFlight(sessionId)
+            ?: run {
+                dispatchNextOutbound(sessionId)
+                return
+            }
         if (success) {
             val accepted = outboundChatQueue.update(
                 item.id,
@@ -1308,9 +1324,9 @@ class AppViewModel(
         event.envelope.parentId
             ?: event.envelope.runId?.takeIf { id -> activeRuns[event.sessionId]?.containsKey(id) == true }
 
-    private fun isForegroundEvent(event: WsEvent): Boolean {
+    private fun isForegroundEvent(event: WsEvent, requestIdOverride: String? = null): Boolean {
         if (event.sessionId != currentSessionId()) return false
-        val requestId = eventRequestId(event)
+        val requestId = requestIdOverride ?: if (isTerminalEvent(event)) terminalRequestId(event) else eventRequestId(event)
         // A reconnect notice has no request id. Comparing it with a missing
         // foreground id used to treat "connected" as the live turn.
         if (connectionStatusLightsTurn(event.envelope.type, extractField(event.envelope.data, "state"), requestId)) {
@@ -1320,16 +1336,52 @@ class AppViewModel(
         return requestId == foregroundRequestIds[event.sessionId]
     }
 
-    private fun completeRun(event: WsEvent): Boolean {
-        val runs = activeRuns[event.sessionId] ?: return false
-        val requestId = eventRequestId(event) ?: return false
-        val run = runs.remove(requestId) ?: return false
+    private fun isTerminalEvent(event: WsEvent): Boolean = when (event.envelope.type) {
+        "stream_end", "assistant_message", "final", "done", "chat_done", "message",
+        "cancel", "cancelled", "error",
+        -> true
+        "status", "info" -> extractField(event.envelope.data, "state")?.equals("idle", ignoreCase = true) == true
+        else -> false
+    }
+
+    private fun terminalRequestId(event: WsEvent): String? {
+        if (!isTerminalEvent(event)) return eventRequestId(event)
+        val explicit = event.envelope.parentId?.takeIf(String::isNotBlank)
+            ?: event.envelope.runId?.takeIf(String::isNotBlank)
+        val runs = activeRuns[event.sessionId].orEmpty()
+        return selectTerminalRunId(explicit, runs.keys, foregroundRequestIds[event.sessionId])
+    }
+
+    private fun hasVisibleTurn(sessionId: String): Boolean {
+        if (activeRuns[sessionId]?.isNotEmpty() == true) return true
+        if (outboundChatQueue.firstInFlight(sessionId) != null) return true
+        if (sessionId != currentSessionId()) return false
+        val state = _ui.value
+        return state.isResponding || state.bubbles.any { it.streaming }
+    }
+
+    private fun touchRun(event: WsEvent) {
+        val requestId = event.envelope.parentId?.takeIf(String::isNotBlank)
+            ?: event.envelope.runId?.takeIf(String::isNotBlank)
+            ?: foregroundRequestIds[event.sessionId]
+        if (requestId == null) return
+        if (connectionStatusLightsTurn(event.envelope.type, extractField(event.envelope.data, "state"), event.envelope.parentId)) return
+        activeRuns[event.sessionId]?.get(requestId)?.lastEventAt = System.currentTimeMillis()
+    }
+
+    private fun completeRun(event: WsEvent, requestId: String? = terminalRequestId(event)): Boolean =
+        completeRun(event.sessionId, requestId)
+
+    private fun completeRun(sessionId: String, requestId: String?): Boolean {
+        val runs = activeRuns[sessionId] ?: return false
+        val selectedId = requestId ?: return false
+        val run = runs.remove(selectedId) ?: return false
         if (run.handle.ownsLease) container.wsClient.release(run.handle.connectionId)
         if (runs.isEmpty()) {
-            activeRuns.remove(event.sessionId)
-            foregroundRequestIds.remove(event.sessionId)
-        } else if (foregroundRequestIds[event.sessionId] == requestId) {
-            foregroundRequestIds[event.sessionId] = runs.keys.first()
+            activeRuns.remove(sessionId)
+            foregroundRequestIds.remove(sessionId)
+        } else if (foregroundRequestIds[sessionId] == selectedId) {
+            foregroundRequestIds[sessionId] = runs.keys.first()
         }
         publishWorkingSessions()
         return true
@@ -1348,6 +1400,62 @@ class AppViewModel(
         if (sessionId != currentSessionId()) return
         resetAssistantStream()
         loadHistory(sessionId)
+    }
+
+    /**
+     * A socket can disappear after the runtime accepted a turn. If replay does
+     * not produce another event, leave the user a retryable state instead of
+     * keeping the composer locked forever.
+     */
+    private fun startRunRecoveryWatch() {
+        if (runRecoveryJob?.isActive == true) return
+        runRecoveryJob = viewModelScope.launch {
+            while (isActive) {
+                delay(RUN_RECOVERY_POLL_INTERVAL_MS)
+                val now = System.currentTimeMillis()
+                val stale = activeRuns.flatMap { (sessionId, runs) ->
+                    staleRunIds(
+                        lastEventAt = runs.mapValues { (_, run) -> run.lastEventAt },
+                        now = now,
+                        timeoutMs = RUN_IDLE_TIMEOUT_MS,
+                    ).map { requestId -> sessionId to requestId }
+                }
+                stale.forEach { (sessionId, requestId) -> settleStaleRun(sessionId, requestId) }
+            }
+        }
+    }
+
+    private fun settleStaleRun(sessionId: String, requestId: String) {
+        val run = activeRuns[sessionId]?.get(requestId) ?: return
+        if (System.currentTimeMillis() - run.lastEventAt < RUN_IDLE_TIMEOUT_MS) return
+        if (!completeRun(sessionId, requestId)) return
+        val message = "回复连接超时，可能没有完整送达。"
+        finishOutboundRequest(sessionId, requestId, success = false, error = message)
+        if (sessionId != currentSessionId()) {
+            finishBackgroundRun(sessionId)
+            return
+        }
+        finishAssistant(null)
+        clearStreamingBubbles()
+        pushBubble(
+            ChatBubble(
+                id = "timeout-${System.currentTimeMillis()}",
+                role = "error",
+                content = "$message 请重试这一条。",
+            ),
+        )
+        _ui.update { state ->
+            state.copy(
+                isResponding = activeRuns[sessionId]?.isNotEmpty() == true,
+                activityLine = "回复超时 · 请重试这一条",
+                liveSummary = null,
+                processNotice = "回复超时",
+                progressSteps = state.progressSteps.map { step ->
+                    if (step.status == ProgressStatus.Active) step.copy(label = "回复超时", status = ProgressStatus.Failed) else step
+                },
+            )
+        }
+        prepareNextForeground(sessionId)
     }
 
     private fun notifyChatCompleted(sessionId: String, requestId: String?, content: String?, foreground: Boolean) {
@@ -1564,15 +1672,14 @@ class AppViewModel(
      * by id, using the same persisted row so a retry keeps its client id.
      */
     private fun failInFlightOutbound(sessionId: String, message: String) {
-        val stuck = outboundChatQueue.items(sessionId).filter { item ->
-            item.status == OutboundQueueStatus.Sending || item.status == OutboundQueueStatus.Queued
-        }
+        val stuck = outboundChatQueue.items(sessionId).filter { it.status.isInFlight() }
         if (stuck.isEmpty()) return
         stuck.forEach { item ->
             val failed = outboundChatQueue.update(item.id, status = OutboundQueueStatus.Failed, error = message)
             if (failed != null) persistOutbound(failed)
         }
         publishOutboundQueue(sessionId)
+        dispatchNextOutbound(sessionId)
     }
 
     private fun markOutboundAccepted(event: WsEvent) {
@@ -5941,6 +6048,8 @@ class AppViewModel(
 
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
+        const val RUN_RECOVERY_POLL_INTERVAL_MS = 10_000L
+        const val RUN_IDLE_TIMEOUT_MS = 60_000L
         const val SETTINGS_RECONNECT_DEBOUNCE_MS = 450L
         val artifactPathPattern = Regex(
             """(?i)(?<![\w:])(?:MEDIA:\s*)?(?:~[/\\][^\s`"'<>]+|/(?:[^\s`"'<>/]+/)+[^\s`"'<>/]+)""",
@@ -5950,6 +6059,7 @@ class AppViewModel(
     override fun onCleared() {
         stopTaskPolling()
         stopBackgroundPolling()
+        runRecoveryJob?.cancel()
         container.wsClient.disconnect()
         super.onCleared()
     }
