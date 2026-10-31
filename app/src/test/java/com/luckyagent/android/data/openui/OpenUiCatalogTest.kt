@@ -87,6 +87,21 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun headingAndCaptionPreferTitleThenName() {
+        val json = Json { ignoreUnknownKeys = true }
+        val titled = OpenUiNode(
+            id = "n",
+            type = "Chart",
+            props = json.parseToJsonElement("""{"title":"咖啡因","caption":"每杯"}""").jsonObject,
+        )
+        assertEquals("咖啡因", titled.heading())
+        assertEquals("每杯", titled.caption())
+        val named = OpenUiNode(id = "n", type = "Map", props = json.parseToJsonElement("""{"name":"望京"}""").jsonObject)
+        assertEquals("望京", named.heading())
+        assertNull(named.caption())
+    }
+
+    @Test
     fun chartSeriesReadsNamedValues() {
         val json = Json { ignoreUnknownKeys = true }
         val props = json.parseToJsonElement(
