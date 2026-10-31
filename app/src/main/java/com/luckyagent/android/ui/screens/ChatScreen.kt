@@ -211,6 +211,7 @@ import com.luckyagent.android.data.api.ContextBucketUsage
 import com.luckyagent.android.data.api.ContextInspectResponse
 import com.luckyagent.android.data.api.ContextSection
 import com.luckyagent.android.data.api.TokenUsage
+import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppDestination
 import com.luckyagent.android.ui.AppViewModel
@@ -225,6 +226,8 @@ import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.OpenUiTree
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
+import com.luckyagent.android.ui.components.socketStateLive
+import com.luckyagent.android.ui.components.socketStateLabel
 import com.luckyagent.android.ui.theme.CloverAccent
 import com.luckyagent.android.ui.theme.CloverBg
 import com.luckyagent.android.ui.theme.CloverBgSide
@@ -278,6 +281,56 @@ internal sealed interface ChatTimelineItem {
 
     data class Process(val steps: List<ChatBubble>, override val key: String) : ChatTimelineItem
 }
+
+/** What leads the chat top bar. */
+internal enum class ChatTopBarLead {
+    /** The active model, which is what a connected chat needs. */
+    Model,
+
+    /** The connection itself: before it exists, switching models cannot work. */
+    Connect,
+}
+
+/**
+ * The model switch and the context ring both need the runtime. Until the socket
+ * is live they are dead controls, so the top bar leads with connecting instead.
+ * Standalone chat has no runtime socket, so its model switch stays.
+ */
+internal fun chatTopBarLead(connectionMode: String, socketState: SocketState): ChatTopBarLead =
+    if (connectionMode != "standalone" && !socketStateLive(socketState)) {
+        ChatTopBarLead.Connect
+    } else {
+        ChatTopBarLead.Model
+    }
+
+/**
+ * The context ring reads GET /api/v1/context from the runtime. Standalone chat
+ * and an offline socket have no such reading, so the ring stays hidden.
+ * This is separate from [chatTopBarLead]: standalone still shows the model switch.
+ */
+internal fun showsContextRing(connectionMode: String, socketState: SocketState): Boolean =
+    connectionMode != "standalone" && socketStateLive(socketState)
+
+/** How many approvals sit below the first screen of the pinned list. */
+internal fun approvalsStillHidden(total: Int, visible: Int): Int =
+    (total - visible).coerceAtLeast(0)
+
+/**
+ * Lucky talks to the runtime collector. Standalone chat has no such collector,
+ * so the composer must not offer commands that would be sent to the model.
+ */
+internal fun showsLuckyComposer(connectionMode: String, socketState: SocketState): Boolean =
+    connectionMode != "standalone" && socketStateLive(socketState)
+
+/**
+ * A Lucky button must not replace an unsent draft. The command goes out on its
+ * own, and the draft returns to the composer.
+ */
+internal fun composerAfterLuckyCommand(draft: String): String = draft
+
+/** The collecting state stays visible next to the composer instead of a long-press menu. */
+internal fun luckyCollectingLabel(segments: Int): String =
+    "正在收集 · 已 ${segments.coerceAtLeast(0)} 条"
 
 /**
  * One line for the latest chat fold.
@@ -1226,6 +1279,7 @@ private fun ChatConversation(
             onOpenSettings = onOpenSettings,
             onOpenModel = { showModelSheet = true },
             onOpenCanvas = { vm.navigate(AppDestination.Background) },
+            onConnect = { vm.connectSocket(force = true) },
             onReconnect = { vm.connectSocket(force = true) },
         )
         val workCard = remember(
@@ -1495,14 +1549,6 @@ private fun ChatConversation(
                             )
                         }
                     }
-                    if (state.pendingApprovals.isNotEmpty()) {
-                        item(key = "pending-approvals") {
-                            ApprovalCards(
-                                approvals = state.pendingApprovals,
-                                onDecision = vm::resolveApproval,
-                            )
-                        }
-                    }
                     state.approvalsError?.takeIf { state.pendingApprovals.isEmpty() }?.let { error ->
                         item(key = "approvals-error") {
                             Text(error, color = CloverError, style = MaterialTheme.typography.bodySmall)
@@ -1603,6 +1649,16 @@ private fun ChatConversation(
                     }
                 }
             }
+        }
+
+        if (state.pendingApprovals.isNotEmpty()) {
+            // Pinned just above the composer. The recap card may sit above it,
+            // but a pending decision must never scroll away with the history.
+            ApprovalCards(
+                approvals = state.pendingApprovals,
+                onDecision = vm::resolveApproval,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
         }
         ComposerBar(
             state = state,
@@ -1948,6 +2004,7 @@ private fun ChatTopBar(
     onOpenSettings: () -> Unit,
     onOpenModel: () -> Unit,
     onOpenCanvas: () -> Unit,
+    onConnect: () -> Unit,
     onReconnect: () -> Unit = {},
 ) {
     var moreExpanded by rememberSaveable { mutableStateOf(false) }
@@ -1971,11 +2028,19 @@ private fun ChatTopBar(
                     Icon(Icons.Outlined.Menu, contentDescription = "打开会话", tint = CloverText2)
                 }
             }
-            ModelSwitchButton(
-                state = state,
-                onClick = onOpenModel,
-                modifier = Modifier.weight(1f),
-            )
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                when (chatTopBarLead(state.settings.connectionMode, state.socketState)) {
+                    ChatTopBarLead.Connect -> ConnectLead(
+                        state = state,
+                        onConnect = onConnect,
+                        onOpenSettings = onOpenSettings,
+                    )
+                    ChatTopBarLead.Model -> ModelSwitchButton(
+                        state = state,
+                        onClick = onOpenModel,
+                    )
+                }
+            }
             IconButton(onClick = onNewSession) {
                 Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = CloverText2)
             }
@@ -2571,16 +2636,36 @@ private fun compactTokenCount(tokens: Int): String = TokenFormat.compact(tokens)
 private fun ApprovalCards(
     approvals: List<PendingApproval>,
     onDecision: (PendingApproval, String, String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Column(
-        Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        approvals.forEach { approval ->
-            ApprovalCard(approval = approval, onDecision = onDecision)
+    Column(modifier.fillMaxWidth()) {
+        val hidden = approvalsStillHidden(approvals.size, APPROVALS_VISIBLE_WITHOUT_SCROLL)
+        if (hidden > 0) {
+            Text(
+                "共 ${approvals.size} 条待审批，还有 $hidden 条在下面",
+                color = CloverAccent,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+        }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                // Pinned above the composer, so several approvals must scroll here
+                // instead of pushing the input off screen.
+                .heightIn(max = 240.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            approvals.forEach { approval ->
+                ApprovalCard(approval = approval, onDecision = onDecision)
+            }
         }
     }
 }
+
+/** Cards that fit in the 240 dp pin before the rest must be scrolled to. */
+private const val APPROVALS_VISIBLE_WITHOUT_SCROLL = 2
 
 @Composable
 private fun ApprovalCard(
@@ -3201,11 +3286,10 @@ private fun ComposerBar(
                 )
             }
         }
-        if (state.luckyPending.any { it.error != null } || state.luckyActive) {
-            LuckyStatusLine(
-                active = state.luckyActive,
-                segments = state.luckySegments,
-                pending = state.luckyPending,
+        if (showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
+            LuckyComposerControl(
+                state = state,
+                onCommand = { command -> vm.runLuckyCommand(command) },
                 onRetry = vm::retryLuckySegment,
             )
         }
@@ -3248,7 +3332,7 @@ private fun ComposerBar(
                     if (state.composer.isEmpty()) {
                         Text(
                             when {
-                                state.luckyActive -> "继续添加，/lucky off 一次发送"
+                                state.luckyActive -> "继续添加，提交时一起发给电脑"
                                 state.settings.connectionMode == "standalone" -> "直接问模型，/search 搜索"
                                 else -> "问 LuckyAgent"
                             },
@@ -3261,10 +3345,12 @@ private fun ComposerBar(
                     inner()
                 },
             )
-            ContextUsageButton(
-                state = state,
-                onClick = { showContextSheet = true },
-            )
+            if (showsContextRing(state.settings.connectionMode, state.socketState)) {
+                ContextUsageButton(
+                    state = state,
+                    onClick = { showContextSheet = true },
+                )
+            }
             IconButton(
                 onClick = onVoiceCapture,
                 modifier = Modifier.size(42.dp),
@@ -3280,12 +3366,11 @@ private fun ComposerBar(
                 .size(44.dp),
             contentAlignment = Alignment.Center,
         ) {
-            if (showLuckyCommands) {
+            if (showLuckyCommands && showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
                 LuckyClover(
                     modifier = Modifier.wrapContentSize(unbounded = true),
                     onCommand = { action ->
-                        onChange(action)
-                        onSend()
+                        vm.runLuckyCommand(action)
                         showLuckyCommands = false
                     },
                     onDismiss = { showLuckyCommands = false },
@@ -3303,9 +3388,17 @@ private fun ComposerBar(
             } else {
                 SendButton(
                     enabled = hasInput || chatWorking && isStopCommand,
-                    contentDescription = if (isStopCommand) "发送 /stop" else "发送，长按打开 Lucky",
+                    contentDescription = when {
+                        isStopCommand -> "发送 /stop"
+                        showsLuckyComposer(state.settings.connectionMode, state.socketState) -> "发送，长按打开 Lucky"
+                        else -> "发送"
+                    },
                     onClick = onSend,
-                    onLongClick = { showLuckyCommands = !showLuckyCommands },
+                    onLongClick = {
+                        if (showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
+                            showLuckyCommands = !showLuckyCommands
+                        }
+                    },
                 )
             }
         }
@@ -3355,29 +3448,85 @@ private fun LuckyClover(
     }
 }
 
+/**
+ * Lucky lives next to the composer: a visible entry while it is off, and the
+ * collecting state with 查看 / 提交 / 放弃 while it is on. The long-press menu on
+ * the send button stays a shortcut, never the only way in.
+ */
 @Composable
-private fun LuckyStatusLine(
-    active: Boolean,
-    segments: Int,
-    pending: List<com.luckyagent.android.ui.LuckyPendingSegment>,
+private fun LuckyComposerControl(
+    state: AppUiState,
+    onCommand: (String) -> Unit,
     onRetry: (String) -> Unit,
 ) {
-    val failed = pending.filter { it.error != null }
-    val waiting = pending.count { it.error == null }
-    val text = when {
-        failed.isNotEmpty() -> "${failed.size} 段没送进"
-        waiting > 0 -> "$waiting 段发送中"
-        active -> "收集中 $segments 段"
-        else -> return
+    val failed = state.luckyPending.filter { it.error != null }
+    val waiting = state.luckyPending.count { it.error == null }
+    if (!state.luckyActive && state.luckyPending.isEmpty()) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Surface(
+                onClick = { onCommand("/lucky on") },
+                shape = RoundedCornerShape(999.dp),
+                color = CloverSurface2,
+                border = BorderStroke(1.dp, CloverLine),
+            ) {
+                Row(
+                    Modifier.padding(start = 8.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.Add,
+                        contentDescription = null,
+                        tint = CloverAccent,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text("开始收集", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
+                }
+            }
+        }
+        return
     }
-    Row(
-        Modifier.fillMaxWidth().padding(bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text, style = MaterialTheme.typography.labelSmall, color = if (failed.isNotEmpty()) CloverError else CloverText3, modifier = Modifier.weight(1f))
-        failed.firstOrNull()?.let { segment ->
-            TextButton(onClick = { onRetry(segment.id) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-                Text("重试", style = MaterialTheme.typography.labelSmall)
+    val tint = if (failed.isNotEmpty()) CloverError else CloverAccent
+    Column(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                when {
+                    failed.isNotEmpty() -> "${failed.size} 段没送进"
+                    waiting > 0 -> "${luckyCollectingLabel(state.luckySegments)} · $waiting 段发送中"
+                    else -> luckyCollectingLabel(state.luckySegments)
+                },
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelSmall,
+                color = tint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            failed.firstOrNull()?.let { segment ->
+                TextButton(
+                    onClick = { onRetry(segment.id) },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) { Text("重试", style = MaterialTheme.typography.labelSmall) }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            listOf(
+                "/lucky status" to "查看",
+                "/lucky off" to "提交",
+                "/lucky cancel" to "放弃",
+            ).forEach { (command, label) ->
+                TextButton(
+                    onClick = { onCommand(command) },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text(label, style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
     }
@@ -3407,108 +3556,6 @@ private fun SendButton(
             contentDescription = contentDescription,
             tint = if (enabled) MaterialTheme.colorScheme.onPrimary else CloverText3,
         )
-    }
-}
-
-@Composable
-private fun LuckyCommandRow(
-    active: Boolean,
-    segments: Int,
-    attachments: Int,
-    pending: List<com.luckyagent.android.ui.LuckyPendingSegment>,
-    onCommand: (String) -> Unit,
-    onRetry: (String) -> Unit,
-) {
-    val waiting = pending.count { it.error == null }
-    val failed = pending.count { it.error != null }
-    var expanded by rememberSaveable { mutableStateOf(true) }
-    val summary = when {
-        failed > 0 -> "Lucky · $failed 段未送进"
-        waiting > 0 -> "Lucky · $waiting 段发送中"
-        active -> "Lucky · 收集中 $segments 段"
-        else -> "Lucky"
-    }
-    val tint = when {
-        failed > 0 -> CloverError
-        active || waiting > 0 -> CloverAccent
-        else -> CloverText3
-    }
-    Column(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 7.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Surface(
-                onClick = { expanded = !expanded },
-                shape = RoundedCornerShape(999.dp),
-                color = if (active || failed > 0) tint.copy(alpha = 0.12f) else CloverSurface2,
-                border = BorderStroke(1.dp, if (active || failed > 0) tint.copy(alpha = 0.45f) else CloverLine),
-            ) {
-                Row(
-                    Modifier.padding(start = 10.dp, end = 6.dp, top = 3.dp, bottom = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text(summary, style = MaterialTheme.typography.labelSmall, color = tint)
-                    Icon(
-                        if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                        contentDescription = if (expanded) "收起 Lucky" else "展开 Lucky",
-                        tint = tint,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
-            }
-            if (!expanded && active) {
-                TextButton(
-                    onClick = { onCommand("/lucky off") },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                ) {
-                    Text("提交", style = MaterialTheme.typography.labelSmall)
-                }
-            }
-        }
-        AnimatedVisibility(visible = expanded) {
-            Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                if (pending.isNotEmpty()) {
-                    pending.forEach { segment ->
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                segment.error ?: "发送中 · ${segment.preview}",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (segment.error != null) CloverError else CloverText3,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            if (segment.error != null) {
-                                TextButton(
-                                    onClick = { onRetry(segment.id) },
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                                ) { Text("重试") }
-                            }
-                        }
-                    }
-                }
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    listOf(
-                        "/lucky on" to "开始",
-                        "/lucky off" to "提交",
-                        "/lucky status" to "状态",
-                        "/lucky cancel" to "放弃",
-                    ).forEach { (command, label) ->
-                        TextButton(
-                            onClick = { onCommand(command) },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -3804,6 +3851,71 @@ private fun contextSectionLabel(label: String): String = when (label) {
     "tool_result" -> "工具结果"
     "user" -> "用户"
     else -> label.ifBlank { "其他" }
+}
+
+/**
+ * The top bar's primary action while the runtime is not reachable.
+ * Without an address there is nothing to retry, so it opens Settings instead.
+ */
+@Composable
+private fun ConnectLead(
+    state: AppUiState,
+    onConnect: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val needsSetup = state.settings.apiBase.isBlank()
+    val connecting = state.socketState == SocketState.Connecting ||
+        state.socketState == SocketState.Reconnecting
+    val failed = state.socketState == SocketState.Error
+    Row(
+        modifier = Modifier
+            .widthIn(max = 210.dp)
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(role = Role.Button) {
+                if (needsSetup) onOpenSettings() else onConnect()
+            }
+            .semantics { contentDescription = if (needsSetup) "设置电脑连接" else "连接电脑" }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        when {
+            connecting -> CircularProgressIndicator(
+                modifier = Modifier.size(15.dp),
+                strokeWidth = 1.6.dp,
+                color = CloverWarning,
+            )
+            failed -> Icon(
+                Icons.Outlined.ErrorOutline,
+                contentDescription = null,
+                tint = CloverError,
+                modifier = Modifier.size(17.dp),
+            )
+            else -> Icon(
+                Icons.Outlined.Refresh,
+                contentDescription = null,
+                tint = CloverAccent,
+                modifier = Modifier.size(17.dp),
+            )
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(
+                if (needsSetup) "设置电脑" else "连接电脑",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = CloverText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                socketStateLabel(state.socketState),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (failed) CloverError else CloverText3,
+                maxLines = 1,
+            )
+        }
+    }
 }
 
 @Composable

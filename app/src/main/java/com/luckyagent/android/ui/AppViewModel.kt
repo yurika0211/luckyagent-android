@@ -62,6 +62,7 @@ import com.luckyagent.android.data.api.PendingApproval
 import com.luckyagent.android.data.api.LuckyAction
 import com.luckyagent.android.data.api.LuckyCommand
 import com.luckyagent.android.data.api.parseLuckyCommand
+import com.luckyagent.android.ui.screens.composerAfterLuckyCommand
 import com.luckyagent.android.data.api.RuntimeCommand
 import com.luckyagent.android.data.api.RuntimeSession
 import com.luckyagent.android.data.api.SessionPatchRequest
@@ -4376,6 +4377,24 @@ class AppViewModel(
         container.settingsRepository.saveScrollAnchor(sessionId, index, offset)
     }
 
+    /**
+     * A Lucky button sends the command without using the composer. An unsent
+     * draft, its attachments, and its quote stay where the user left them.
+     */
+    fun runLuckyCommand(rawText: String) {
+        if (_ui.value.settings.connectionMode == "standalone") return
+        val command = parseLuckyCommand(rawText) ?: return
+        val draft = _ui.value
+        handleLuckyCommand(rawText.trim(), command)
+        _ui.update {
+            it.copy(
+                composer = composerAfterLuckyCommand(draft.composer),
+                pendingMedia = draft.pendingMedia,
+                pendingQuote = draft.pendingQuote,
+            )
+        }
+    }
+
     fun sendComposer() {
         if (_ui.value.settings.connectionMode == "standalone") {
             if (_ui.value.composer.trim().equals("/stop", ignoreCase = true)) {
@@ -4859,6 +4878,7 @@ class AppViewModel(
     private fun handleLuckyCommand(rawText: String, command: LuckyCommand) {
         val now = System.currentTimeMillis()
         val sessionId = currentSessionId()
+        val previousLuckyActive = _ui.value.luckyActive
         pushBubble(ChatBubble(id = "u-$now", role = "user", content = rawText, createdAt = nowIsoTimestamp()))
         _ui.update { it.copy(composer = "", pendingMedia = emptyList(), pendingQuote = null) }
         val action = luckyWireAction(command.action)
@@ -4888,7 +4908,16 @@ class AppViewModel(
                     val notice = "Lucky 命令没有发出，请检查连接"
                     if (currentSessionId() == sessionId) {
                         pushBubble(ChatBubble(id = "lucky-err-$now", role = "assistant", content = notice, createdAt = nowIsoTimestamp()))
-                        _ui.update { it.copy(activityLine = notice) }
+                        // The local "on" state is optimistic. If neither the
+                        // immediate send nor the reconnect retry accepts it,
+                        // ordinary messages must not be trapped in a collector
+                        // that the runtime never received.
+                        _ui.update {
+                            it.copy(
+                                luckyActive = if (action == "on") previousLuckyActive else it.luckyActive,
+                                activityLine = notice,
+                            )
+                        }
                     }
                 }
             }
