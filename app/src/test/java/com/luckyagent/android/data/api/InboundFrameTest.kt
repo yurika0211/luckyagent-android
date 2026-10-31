@@ -2,6 +2,7 @@ package com.luckyagent.android.data.api
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -43,5 +44,58 @@ class InboundFrameTest {
         assertEquals(8_000_000, LuckyAgentWsClient.MAX_INBOUND_MESSAGE_CHARS)
         assertEquals(64_000, LuckyAgentWsClient.MAX_RAW_MESSAGE_CHARS)
         assertTrue(LuckyAgentWsClient.MAX_RAW_MESSAGE_CHARS < LuckyAgentWsClient.MAX_INBOUND_MESSAGE_CHARS)
+    }
+
+    @Test
+    fun cursorNamespaceIsStableButSeparatesRuntimeAccountsAndSessions() {
+        val base = LuckyAgentWsClient.eventCursorKey(
+            apiBase = "https://runtime.example/",
+            wsUrl = "wss://runtime.example/api/v1/ws",
+            apiKey = "key-a",
+            useBearer = true,
+            sessionId = "android-main",
+        )
+
+        assertEquals(
+            base,
+            LuckyAgentWsClient.eventCursorKey(
+                apiBase = "https://runtime.example/",
+                wsUrl = "wss://runtime.example/api/v1/ws",
+                apiKey = " key-a ",
+                useBearer = true,
+                sessionId = "android-main",
+            ),
+        )
+        assertNotEquals(
+            base,
+            LuckyAgentWsClient.eventCursorKey(
+                apiBase = "https://other-runtime.example/",
+                wsUrl = "wss://other-runtime.example/api/v1/ws",
+                apiKey = "key-a",
+                useBearer = true,
+                sessionId = "android-main",
+            ),
+        )
+        assertNotEquals(
+            base,
+            LuckyAgentWsClient.eventCursorKey(
+                apiBase = "https://runtime.example/",
+                wsUrl = "wss://runtime.example/api/v1/ws",
+                apiKey = "key-b",
+                useBearer = true,
+                sessionId = "android-main",
+            ),
+        )
+        assertNotEquals(
+            base,
+            LuckyAgentWsClient.eventCursorKey(
+                apiBase = "https://runtime.example/",
+                wsUrl = "wss://runtime.example/api/v1/ws",
+                apiKey = "key-a",
+                useBearer = true,
+                sessionId = "other-session",
+            ),
+        )
+        assertFalse(base.contains("key-a"))
     }
 }
