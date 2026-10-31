@@ -18,6 +18,17 @@ enum class OutboundQueueStatus {
     Failed,
 }
 
+internal fun OutboundQueueStatus.isInFlight(): Boolean = when (this) {
+    OutboundQueueStatus.Sending,
+    OutboundQueueStatus.Accepted,
+    OutboundQueueStatus.ServerQueued,
+    OutboundQueueStatus.Running,
+    -> true
+    OutboundQueueStatus.Queued,
+    OutboundQueueStatus.Failed,
+    -> false
+}
+
 data class OutboundQueueItem(
     val id: String,
     val sessionId: String,
@@ -71,6 +82,11 @@ class OutboundChatQueue {
     @Synchronized
     fun findByRequest(sessionId: String, requestId: String): OutboundQueueItem? =
         items.values.firstOrNull { it.sessionId == sessionId && it.requestId == requestId }
+
+    /** Oldest request that reached the socket and can be closed by a frame without an id. */
+    @Synchronized
+    fun firstInFlight(sessionId: String): OutboundQueueItem? =
+        items.values.firstOrNull { it.sessionId == sessionId && it.status.isInFlight() }
 
     /**
      * Next frame that has not reached the WebSocket yet. Multiple frames may be

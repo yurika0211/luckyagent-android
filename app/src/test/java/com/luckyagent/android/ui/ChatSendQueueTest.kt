@@ -38,6 +38,16 @@ class ChatSendQueueTest {
     }
 
     @Test
+    fun firstInFlightFindsTheOldestRowWhenTerminalFrameHasNoRequestId() {
+        val queue = OutboundChatQueue()
+        queue.add(item("queued", status = OutboundQueueStatus.Queued))
+        queue.add(item("sending", status = OutboundQueueStatus.Sending))
+        queue.add(item("running", status = OutboundQueueStatus.Running))
+
+        assertEquals("sending", queue.firstInFlight("s1")!!.id)
+    }
+
+    @Test
     fun firstQueuedSkipsFailedAndAllowsTheRuntimeQueueToFill() {
         val queue = OutboundChatQueue()
         queue.add(item("failed", status = OutboundQueueStatus.Failed))
