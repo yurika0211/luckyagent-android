@@ -1,6 +1,5 @@
 package com.luckyagent.android.ui
 
-import android.app.DownloadManager
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
@@ -115,7 +114,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -134,6 +132,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import com.luckyagent.android.ui.util.artifactDownloadUrl
+import com.luckyagent.android.ui.util.cleanArtifactPath
 import java.io.File
 import java.util.UUID
 
@@ -2035,9 +2034,6 @@ class AppViewModel(
             seen.add(key)
         }
     }
-
-    private fun cleanArtifactPath(value: String): String =
-        value.trim().trim('`', '"', '\'', ',', '.', ';', ':', ')', ']', '}')
 
     private fun JsonObject.stringValue(key: String): String? =
         this[key].textOrNull()?.takeIf { it.isNotBlank() }
@@ -4242,20 +4238,24 @@ class AppViewModel(
             return
         }
         val downloadDescriptor = if (descriptor.fileUrl == downloadUrl) descriptor else descriptor.copy(fileUrl = downloadUrl)
+        val appContext = context.applicationContext
         publishAttachmentNotice("准备下载 · $fileName")
-        container.api.enqueueAttachmentDownload(context, downloadDescriptor)
-            .onSuccess { downloadId ->
-                publishAttachmentNotice("下载中 · $fileName")
-                viewModelScope.launch {
-                    monitorAttachmentDownload(
-                        context = context.applicationContext,
-                        downloadId = downloadId,
-                        fileName = fileName,
+        viewModelScope.launch {
+            publishAttachmentNotice("下载中 · $fileName")
+            container.api.downloadAttachment(appContext, downloadDescriptor)
+                .onSuccess { saved ->
+                    publishAttachmentNotice(
+                        text = "下载完成 · ${saved.displayName} · ${attachmentDownloadLocation(appContext, saved.displayName)}",
+                        isComplete = true,
+                        openUri = saved.uri.toString(),
                         mimeType = descriptor.mimeType,
                     )
                 }
-            }
-            .onFailure { error -> publishAttachmentNotice("下载失败 · ${error.message ?: "未知错误"}", isError = true) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    publishAttachmentNotice("下载失败 · ${error.message ?: "未知错误"}", isError = true)
+                }
+        }
     }
 
     private fun publishAttachmentNotice(
@@ -4289,52 +4289,6 @@ class AppViewModel(
         }
     }
 
-    private suspend fun monitorAttachmentDownload(
-        context: Context,
-        downloadId: Long,
-        fileName: String,
-        mimeType: String?,
-    ) {
-        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
-            ?: run {
-                publishAttachmentNotice("下载失败 · 系统下载服务不可用", isError = true)
-                return
-            }
-        while (currentCoroutineContext().isActive) {
-            var status = -1
-            var reason = 0
-            manager.query(DownloadManager.Query().setFilterById(downloadId))?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                    reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-                }
-            }
-            when (status) {
-                DownloadManager.STATUS_SUCCESSFUL -> {
-                    val uri = runCatching { manager.getUriForDownloadedFile(downloadId) }
-                        .getOrNull()
-                        ?.toString()
-                    publishAttachmentNotice(
-                        text = "下载完成 · $fileName · ${attachmentDownloadLocation(context, fileName)}",
-                        isComplete = true,
-                        openUri = uri,
-                        mimeType = mimeType,
-                    )
-                    return
-                }
-                DownloadManager.STATUS_FAILED -> {
-                    publishAttachmentNotice("下载失败 · ${downloadFailureReason(reason)}", isError = true)
-                    return
-                }
-                -1 -> {
-                    publishAttachmentNotice("下载失败 · 找不到下载任务", isError = true)
-                    return
-                }
-            }
-            delay(500)
-        }
-    }
-
     private fun attachmentDownloadLocation(context: Context, fileName: String): String =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             "Downloads/$fileName"
@@ -4355,19 +4309,6 @@ class AppViewModel(
         }.onFailure { error ->
             publishAttachmentNotice("打开失败 · ${error.message ?: "没有可用的查看应用"}", isError = true)
         }
-    }
-
-    private fun downloadFailureReason(reason: Int): String = when (reason) {
-        DownloadManager.ERROR_CANNOT_RESUME -> "无法继续下载"
-        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "存储设备不可用"
-        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "文件已存在"
-        DownloadManager.ERROR_FILE_ERROR -> "文件写入失败"
-        DownloadManager.ERROR_HTTP_DATA_ERROR -> "网络数据错误"
-        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "存储空间不足"
-        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "重定向次数过多"
-        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "服务器返回异常"
-        DownloadManager.ERROR_UNKNOWN -> "未知错误"
-        else -> "系统错误 $reason"
     }
 
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = container.settingsRepository.scrollAnchor(sessionId)

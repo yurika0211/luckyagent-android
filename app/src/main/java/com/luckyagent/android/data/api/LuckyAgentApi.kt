@@ -1,17 +1,21 @@
 package com.luckyagent.android.data.api
 
-import android.app.DownloadManager
 import android.content.ContentResolver
+import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.data.settings.SettingsRepository
 import com.luckyagent.android.data.settings.ClientSettings
+import com.luckyagent.android.ui.util.resolveAttachmentDownloadUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -26,8 +30,15 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
 import okio.BufferedSink
+import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
+
+/** Saved chat attachment. [uri] is a MediaStore content Uri on API 29+, otherwise a file Uri. */
+data class AttachmentDownload(
+    val uri: Uri,
+    val displayName: String,
+)
 
 private data class PluginConnectionSnapshot(val settings: ClientSettings)
 
@@ -200,71 +211,132 @@ class LuckyAgentApi(
         const val MaxUploadBytes = 31L * 1024L * 1024L
     }
 
-    fun enqueueAttachmentDownload(context: Context, attachment: MediaAttachment): Result<Long> = runCatching {
-        val rawUrl = attachment.fileUrl?.trim().orEmpty()
-        require(rawUrl.isNotBlank()) { "附件没有可下载的 URL" }
-        val downloadUrl = absoluteUrl(rawUrl)
-        require(downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
-            "附件 URL 无效"
-        }
-        val fileName = attachment.fileName
-            ?.trim()
-            ?.replace('/', '_')
-            ?.replace('\\', '_')
-            ?.takeIf { it.isNotBlank() }
-            ?: "luckyagent-attachment"
-        val destinationName = uniqueDownloadName(context, fileName)
-        val request = DownloadManager.Request(Uri.parse(downloadUrl))
-            .setTitle(destinationName)
-            .setDescription("LuckyAgent attachment")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(true)
-        attachment.mimeType?.takeIf { it.isNotBlank() }?.let(request::setMimeType)
-        if (isApiUrl(downloadUrl)) {
-            val snap = settingsRepository.snapshot()
-            if (snap.apiKey.isNotBlank()) {
-                if (snap.useBearer) request.addRequestHeader("Authorization", "Bearer ${snap.apiKey}")
-                else request.addRequestHeader("X-API-Key", snap.apiKey)
+    /**
+     * Downloads a chat attachment with the authenticated OkHttp client.
+     * The auth interceptor always attaches the API key; system DownloadManager
+     * does not, and it also ignores the app cleartext network config.
+     */
+    suspend fun downloadAttachment(context: Context, attachment: MediaAttachment): Result<AttachmentDownload> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val rawUrl = attachment.fileUrl?.trim().orEmpty()
+                require(rawUrl.isNotBlank()) { "附件没有可下载的 URL" }
+                val downloadUrl = resolveAttachmentDownloadUrl(rawUrl, baseUrl())
+                    ?: error("附件 URL 无效")
+                val fileName = attachment.fileName
+                    ?.trim()
+                    ?.replace('/', '_')
+                    ?.replace('\\', '_')
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "luckyagent-attachment"
+                val destinationName = uniqueDownloadName(context, fileName)
+                val mime = attachment.mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+                val request = Request.Builder().url(downloadUrl).get().build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val snippet = response.body?.string().orEmpty()
+                            .replace(Regex("\\s+"), " ")
+                            .trim()
+                            .take(180)
+                        error(
+                            if (snippet.isEmpty()) "HTTP ${response.code}"
+                            else "HTTP ${response.code}: $snippet",
+                        )
+                    }
+                    val body = response.body ?: error("服务器返回了空文件")
+                    body.byteStream().use { source ->
+                        streamAttachmentBody(context, source, destinationName, mime)
+                    }
+                }
             }
         }
+
+    private suspend fun streamAttachmentBody(
+        context: Context,
+        source: java.io.InputStream,
+        displayName: String,
+        mime: String,
+    ): AttachmentDownload {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 10+ allows DownloadManager to write the public Downloads
-            // directory without broad storage permission. This makes the file
-            // visible to the user's file manager and share sheet.
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, destinationName)
-        } else {
-            // Older Android versions keep the permission-free app-specific
-            // fallback; the completion notification still exposes the file.
-            request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, destinationName)
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, displayName)
+                put(MediaStore.Downloads.MIME_TYPE, mime)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val uri = context.contentResolver.insert(collection, values)
+                ?: error("无法写入系统下载目录")
+            try {
+                val output = context.contentResolver.openOutputStream(uri)
+                    ?: error("无法写入系统下载目录")
+                output.use { copyDownloadStream(source, it) }
+                val published = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
+                context.contentResolver.update(uri, published, null, null)
+                return AttachmentDownload(uri, displayName)
+            } catch (cancelled: CancellationException) {
+                context.contentResolver.delete(uri, null, null)
+                throw cancelled
+            } catch (error: Throwable) {
+                context.contentResolver.delete(uri, null, null)
+                throw error
+            }
         }
-        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
-            ?: error("系统下载服务不可用")
-        manager.enqueue(request)
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: error("应用下载目录不可用")
+        dir.mkdirs()
+        val target = File(dir, displayName)
+        val partial = File(dir, "$displayName.part")
+        try {
+            partial.outputStream().use { copyDownloadStream(source, it) }
+            if (target.exists()) target.delete()
+            check(partial.renameTo(target)) { "无法保存下载文件" }
+            return AttachmentDownload(Uri.fromFile(target), displayName)
+        } catch (cancelled: CancellationException) {
+            partial.delete()
+            throw cancelled
+        } catch (error: Throwable) {
+            partial.delete()
+            throw error
+        }
+    }
+
+    private suspend fun copyDownloadStream(input: java.io.InputStream, output: java.io.OutputStream) {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val count = input.read(buffer)
+            if (count < 0) break
+            output.write(buffer, 0, count)
+        }
     }
 
     private fun baseUrl(): String =
         settingsRepository.snapshot().apiBase.trim().trimEnd('/')
 
     private fun uniqueDownloadName(context: Context, requested: String): String {
-        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?: return requested
-        if (!java.io.File(dir, requested).exists()) return requested
+        val taken = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            mediaStoreDownloadExists(context, requested)
+        } else {
+            val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            dir != null && File(dir, requested).exists()
+        }
+        if (!taken) return requested
         val dot = requested.lastIndexOf('.')
         val stem = if (dot > 0) requested.substring(0, dot) else requested
         val ext = if (dot > 0) requested.substring(dot) else ""
         return "$stem-${System.currentTimeMillis()}$ext"
     }
 
-    private fun absoluteUrl(raw: String): String = when {
-        raw.startsWith("http://") || raw.startsWith("https://") -> raw
-        else -> baseUrl() + "/" + raw.trimStart('/')
-    }
-
-    private fun isApiUrl(raw: String): Boolean {
-        val target = raw.toHttpUrlOrNull() ?: return false
-        val base = baseUrl().toHttpUrlOrNull() ?: return false
-        return target.scheme == base.scheme && target.host == base.host && target.port == base.port
+    private fun mediaStoreDownloadExists(context: Context, displayName: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        return context.contentResolver.query(
+            collection,
+            arrayOf(MediaStore.Downloads._ID),
+            "${MediaStore.Downloads.DISPLAY_NAME} = ?",
+            arrayOf(displayName),
+            null,
+        )?.use { it.moveToFirst() } ?: false
     }
 
     private fun url(path: String, query: Map<String, String> = emptyMap()): String {

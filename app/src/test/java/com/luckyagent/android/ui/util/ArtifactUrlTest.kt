@@ -36,4 +36,33 @@ class ArtifactUrlTest {
         val url = artifactDownloadUrl("~/Downloads/report.pdf", "https://example.test")!!
         assertEquals("~/Downloads/report.pdf", url.toHttpUrl().queryParameter("path"))
     }
+
+    @Test fun mediaPrefixIsStrippedBeforeTheArtifactRoute() {
+        val apiBase = "https://example.test"
+        val absolute = "/home/x/.luckyagent/workspace/a.png"
+        val tilde = "~/.luckyagent/uploads/a.bin"
+        assertEquals(artifactDownloadUrl(absolute, apiBase), artifactDownloadUrl("MEDIA:$absolute", apiBase))
+        assertEquals(artifactDownloadUrl(absolute, apiBase), artifactDownloadUrl("media: $absolute", apiBase))
+        assertEquals(cleanArtifactPath("MEDIA:$absolute"), absolute)
+        assertEquals(artifactDownloadUrl(tilde, apiBase), artifactDownloadUrl("MEDIA: $tilde", apiBase))
+        assertEquals(cleanArtifactPath("MEDIA: $tilde"), tilde)
+        assertEquals("workspace/a.png", artifactDownloadUrl("MEDIA:$absolute", apiBase)!!.toHttpUrl().queryParameter("path"))
+        assertEquals("uploads/a.bin", artifactDownloadUrl("MEDIA: $tilde", apiBase)!!.toHttpUrl().queryParameter("path"))
+    }
+
+    @Test fun attachmentUrlResolveKeepsHttpAndDropsOtherSchemes() {
+        val apiBase = "http://10.0.2.2:8080"
+        assertEquals(
+            "http://10.0.2.2:8080/api/v1/artifacts?path=uploads/a.bin",
+            resolveAttachmentDownloadUrl("/api/v1/artifacts?path=uploads/a.bin", apiBase),
+        )
+        assertEquals(
+            "https://example.test/api/v1/artifacts?path=uploads/a.bin",
+            resolveAttachmentDownloadUrl("https://example.test/api/v1/artifacts?path=uploads/a.bin", "http://ignored"),
+        )
+        assertNull(resolveAttachmentDownloadUrl("ftp://files.example/a.bin", apiBase))
+        assertNull(resolveAttachmentDownloadUrl("file:///tmp/a.bin", apiBase))
+        assertFalse(canDownloadAttachment("ftp://files.example/a.bin", null, apiBase))
+        assertTrue(canDownloadAttachment("/api/v1/artifacts?path=uploads/a.bin", null, apiBase))
+    }
 }

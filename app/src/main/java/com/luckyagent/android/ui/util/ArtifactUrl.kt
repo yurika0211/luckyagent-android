@@ -12,19 +12,46 @@ internal fun validatedArtifactPath(path: String): String? {
 }
 
 /**
+ * Strip chat punctuation and a leading `MEDIA:` marker from a matched path.
+ * The marker is optional and case-insensitive; a space after the colon is optional.
+ * The marker must be removed before [artifactDownloadUrl], which otherwise treats
+ * `MEDIA:/home/...` as an unrecognized relative path and returns null.
+ */
+internal fun cleanArtifactPath(value: String): String {
+    val stripped = value.trim().replaceFirst(Regex("(?i)^MEDIA:\\s*"), "")
+    return stripped.trim('`', '"', '\'', ',', '.', ';', ':', ')', ']', '}')
+}
+
+/**
+ * Same absolute-URL rules as attachment download: http(s) as-is, otherwise
+ * resolve a relative path against [apiBase]. Returns null when the result is
+ * not http(s), including ftp, file, and content schemes.
+ */
+internal fun resolveAttachmentDownloadUrl(rawUrl: String, apiBase: String): String? {
+    val raw = rawUrl.trim()
+    if (raw.isEmpty()) return null
+    val resolved = when {
+        raw.startsWith("http://") || raw.startsWith("https://") -> raw
+        else -> {
+            val scheme = raw.substringBefore(':', "").lowercase()
+            val hasScheme = scheme.isNotEmpty() && scheme.all { it.isLetter() } && raw.contains(':')
+            if (hasScheme) return null
+            val base = apiBase.trim().trimEnd('/')
+            if (base.isEmpty()) return null
+            base + "/" + raw.trimStart('/')
+        }
+    }
+    return resolved.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+}
+
+/**
  * Same gate as a successful download enqueue: an http(s) URL, a relative URL
  * that [apiBase] can turn into one, or a [filePath] that [artifactDownloadUrl] accepts.
  * Non-http schemes (ftp, file, content) and paths the artifact helper rejects stay hidden.
  */
 internal fun canDownloadAttachment(fileUrl: String?, filePath: String?, apiBase: String): Boolean {
     val rawUrl = fileUrl?.trim().orEmpty()
-    if (rawUrl.isNotEmpty()) {
-        if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) return true
-        val scheme = rawUrl.substringBefore(':', "").lowercase()
-        val hasScheme = scheme.isNotEmpty() && scheme.all { it.isLetter() } && rawUrl.contains(':')
-        if (!hasScheme && apiBase.isNotBlank()) return true
-        return false
-    }
+    if (rawUrl.isNotEmpty()) return resolveAttachmentDownloadUrl(rawUrl, apiBase) != null
     val path = filePath?.trim().orEmpty()
     if (path.isEmpty()) return false
     return artifactDownloadUrl(path, apiBase) != null
@@ -33,7 +60,8 @@ internal fun canDownloadAttachment(fileUrl: String?, filePath: String?, apiBase:
 /** Canonical artifact route shared by attachment downloads and previews. */
 internal fun artifactDownloadUrl(path: String, apiBase: String): String? {
     if (apiBase.isBlank()) return null
-    val normalized = path.replace('\\', '/')
+    val normalized = cleanArtifactPath(path).replace('\\', '/')
+    if (normalized.isEmpty()) return null
     val relative = when {
         normalized.startsWith("~/.luckyagent/workspace/") -> "workspace/" + normalized.removePrefix("~/.luckyagent/workspace/")
         normalized.startsWith("~/.luckyagent/uploads/") -> "uploads/" + normalized.removePrefix("~/.luckyagent/uploads/")
