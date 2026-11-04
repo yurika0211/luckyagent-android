@@ -17,10 +17,17 @@ internal fun formatTransferSize(bytes: Long): String {
     }
 }
 
-/** `2.1 MB / 8.0 MB · 1.2 MB/s`, or copied size plus speed when length is unknown. */
+/** Whole percent when [bytesTotal] is known, otherwise null so the bar stays indeterminate. */
+internal fun downloadPercent(bytesCopied: Long, bytesTotal: Long?): Int? {
+    val total = bytesTotal?.takeIf { it > 0L } ?: return null
+    return ((bytesCopied.coerceAtLeast(0L) * 100L) / total).toInt().coerceIn(0, 100)
+}
+
+/** `26% · 2.1 MB / 8.0 MB · 1.2 MB/s`, or copied size plus speed when length is unknown. */
 internal fun downloadProgressLabel(bytesCopied: Long, bytesTotal: Long?, bytesPerSecond: Long): String {
     val copied = formatTransferSize(bytesCopied)
     val speed = formatTransferSize(bytesPerSecond) + "/s"
     val total = bytesTotal?.takeIf { it > 0L } ?: return "$copied · $speed"
-    return "$copied / ${formatTransferSize(total)} · $speed"
+    val percent = downloadPercent(bytesCopied, total) ?: return "$copied / ${formatTransferSize(total)} · $speed"
+    return "$percent% · $copied / ${formatTransferSize(total)} · $speed"
 }

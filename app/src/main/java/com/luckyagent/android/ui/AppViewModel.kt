@@ -132,6 +132,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import com.luckyagent.android.ui.util.artifactDownloadUrl
+import com.luckyagent.android.ui.util.downloadPercent
 import com.luckyagent.android.ui.util.downloadProgressLabel
 import com.luckyagent.android.ui.util.downloadSpeedBytesPerSecond
 import com.luckyagent.android.ui.util.extractArtifactPaths
@@ -246,11 +247,7 @@ data class AttachmentDownloadUi(
     val error: String? = null,
 ) {
     val percent: Int?
-        get() {
-            val total = bytesTotal ?: return null
-            if (total <= 0L) return null
-            return ((bytesCopied * 100L) / total).toInt().coerceIn(0, 100)
-        }
+        get() = downloadPercent(bytesCopied, bytesTotal)
 
     val label: String
         get() = downloadProgressLabel(bytesCopied, bytesTotal, bytesPerSecond)

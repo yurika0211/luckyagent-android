@@ -13,9 +13,14 @@ class DownloadProgressTest {
 
     @Test fun labelShowsTotalWhenKnownAndCopiedSizeOtherwise() {
         val speed = 1_200L * 1024L
+        val copied = (2.1 * 1024 * 1024).toLong()
+        val total = (8.0 * 1024 * 1024).toLong()
+        assertEquals(26, downloadPercent(copied, total))
+        assertEquals(null, downloadPercent(copied, null))
+        assertEquals(null, downloadPercent(copied, 0L))
         assertEquals(
-            "2.1 MB / 8.0 MB · 1.2 MB/s",
-            downloadProgressLabel((2.1 * 1024 * 1024).toLong(), (8.0 * 1024 * 1024).toLong(), speed),
+            "26% · 2.1 MB / 8.0 MB · 1.2 MB/s",
+            downloadProgressLabel(copied, total, speed),
         )
         assertEquals(
             "2.1 MB · 1.2 MB/s",
