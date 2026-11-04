@@ -132,7 +132,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import com.luckyagent.android.ui.util.artifactDownloadUrl
-import com.luckyagent.android.ui.util.cleanArtifactPath
+import com.luckyagent.android.ui.util.downloadProgressLabel
+import com.luckyagent.android.ui.util.downloadSpeedBytesPerSecond
+import com.luckyagent.android.ui.util.extractArtifactPaths
 import java.io.File
 import java.util.UUID
 
@@ -233,6 +235,27 @@ data class AttachmentNotice(
     val mimeType: String? = null,
 )
 
+enum class AttachmentDownloadPhase { Idle, Running, Done, Failed }
+
+/** In-card download process. The bottom notice still announces 完成 / 失败. */
+data class AttachmentDownloadUi(
+    val phase: AttachmentDownloadPhase = AttachmentDownloadPhase.Idle,
+    val bytesCopied: Long = 0L,
+    val bytesTotal: Long? = null,
+    val bytesPerSecond: Long = 0L,
+    val error: String? = null,
+) {
+    val percent: Int?
+        get() {
+            val total = bytesTotal ?: return null
+            if (total <= 0L) return null
+            return ((bytesCopied * 100L) / total).toInt().coerceIn(0, 100)
+        }
+
+    val label: String
+        get() = downloadProgressLabel(bytesCopied, bytesTotal, bytesPerSecond)
+}
+
 data class AppUiState(
     val destination: AppDestination = AppDestination.Chat,
     val settings: ClientSettings = ClientSettings(),
@@ -321,6 +344,9 @@ data class AppUiState(
     /** Terminal fold label after cancel or failure. Null while a turn is running. */
     val processNotice: String? = null,
     val attachmentNotice: AttachmentNotice? = null,
+    /** One download at a time. Key is [attachmentDownloadKey]. */
+    val attachmentDownloadKey: String? = null,
+    val attachmentDownload: AttachmentDownloadUi = AttachmentDownloadUi(),
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
     val drawerOpenHint: Boolean = false,
@@ -2005,11 +2031,9 @@ class AppViewModel(
 
     private fun extractArtifactAttachments(text: String): List<ChatMedia> {
         if (text.isBlank()) return emptyList()
-        val result = mutableListOf<ChatMedia>()
-        artifactPathPattern.findAll(text).forEach { match ->
-            artifactDescriptor(cleanArtifactPath(match.value))?.let { result += ChatMedia(it) }
-        }
-        return distinctMedia(result)
+        return distinctMedia(extractArtifactPaths(text).mapNotNull { path ->
+            artifactDescriptor(path)?.let(::ChatMedia)
+        })
     }
 
     private fun artifactDescriptor(path: String): MediaAttachment? {
@@ -4229,6 +4253,7 @@ class AppViewModel(
     }
 
     fun downloadAttachment(context: Context, media: ChatMedia) {
+        if (_ui.value.attachmentDownload.phase == AttachmentDownloadPhase.Running) return
         val descriptor = media.descriptor
         val fileName = descriptor.fileName ?: "附件"
         val downloadUrl = descriptor.fileUrl?.takeIf { it.isNotBlank() }
@@ -4238,12 +4263,42 @@ class AppViewModel(
             return
         }
         val downloadDescriptor = if (descriptor.fileUrl == downloadUrl) descriptor else descriptor.copy(fileUrl = downloadUrl)
+        val key = attachmentDownloadKey(media)
         val appContext = context.applicationContext
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        _ui.update {
+            it.copy(
+                attachmentDownloadKey = key,
+                attachmentDownload = AttachmentDownloadUi(phase = AttachmentDownloadPhase.Running),
+            )
+        }
         publishAttachmentNotice("准备下载 · $fileName")
         viewModelScope.launch {
             publishAttachmentNotice("下载中 · $fileName")
-            container.api.downloadAttachment(appContext, downloadDescriptor)
+            container.api.downloadAttachment(appContext, downloadDescriptor) { copied, total ->
+                val elapsed = (android.os.SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1L)
+                val progress = AttachmentDownloadUi(
+                    phase = AttachmentDownloadPhase.Running,
+                    bytesCopied = copied,
+                    bytesTotal = total,
+                    bytesPerSecond = downloadSpeedBytesPerSecond(copied, elapsed),
+                )
+                _ui.update { state ->
+                    if (state.attachmentDownloadKey != key) state
+                    else state.copy(attachmentDownload = progress)
+                }
+            }
                 .onSuccess { saved ->
+                    _ui.update { state ->
+                        if (state.attachmentDownloadKey != key) state
+                        else state.copy(
+                            attachmentDownload = state.attachmentDownload.copy(
+                                phase = AttachmentDownloadPhase.Done,
+                                bytesPerSecond = 0L,
+                                error = null,
+                            ),
+                        )
+                    }
                     publishAttachmentNotice(
                         text = "下载完成 · ${saved.displayName} · ${attachmentDownloadLocation(appContext, saved.displayName)}",
                         isComplete = true,
@@ -4253,9 +4308,34 @@ class AppViewModel(
                 }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
-                    publishAttachmentNotice("下载失败 · ${error.message ?: "未知错误"}", isError = true)
+                    val message = error.message ?: "未知错误"
+                    _ui.update { state ->
+                        if (state.attachmentDownloadKey != key) state
+                        else state.copy(
+                            attachmentDownload = state.attachmentDownload.copy(
+                                phase = AttachmentDownloadPhase.Failed,
+                                bytesPerSecond = 0L,
+                                error = message,
+                            ),
+                        )
+                    }
+                    publishAttachmentNotice("下载失败 · $message", isError = true)
                 }
         }
+    }
+
+    fun downloadUiFor(media: ChatMedia): AttachmentDownloadUi? {
+        val state = _ui.value
+        if (state.attachmentDownload.phase == AttachmentDownloadPhase.Idle) return null
+        if (state.attachmentDownloadKey != attachmentDownloadKey(media)) return null
+        return state.attachmentDownload
+    }
+
+    /** Stable id for the card that owns the current download. */
+    fun attachmentDownloadKey(media: ChatMedia): String {
+        val fromMedia = mediaKey(media)
+        if (fromMedia.isNotBlank()) return fromMedia
+        return media.localUri?.trim().orEmpty().ifBlank { media.descriptor.fileName.orEmpty() }
     }
 
     private fun publishAttachmentNotice(
@@ -5883,9 +5963,6 @@ class AppViewModel(
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
         const val SETTINGS_RECONNECT_DEBOUNCE_MS = 450L
-        val artifactPathPattern = Regex(
-            """(?i)(?<![\w:])(?:MEDIA:\s*)?(?:~[/\\][^\s`"'<>]+|/(?:[^\s`"'<>/]+/)+[^\s`"'<>/]+)""",
-        )
     }
 
     override fun onCleared() {

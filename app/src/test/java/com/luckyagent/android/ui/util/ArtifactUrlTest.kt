@@ -37,6 +37,32 @@ class ArtifactUrlTest {
         assertEquals("~/Downloads/report.pdf", url.toHttpUrl().queryParameter("path"))
     }
 
+    @Test fun live2dUrlsProduceNoArtifactCards() {
+        val reply = """
+            https://www.live2d.com/zh-CHS/cubism/download/editor/
+            https://docs.live2d.com/zh-CHS/cubism-editor-tutorials/top/
+            https://www.youtube.com/watch?v=XEJvtNV1aK0
+            See /www.live2d.com/zh-CHS/cubism/download/editor/ and ~/.luckyagent/workspace/foo.png
+        """.trimIndent()
+        assertTrue(extractArtifactPaths(reply).isEmpty())
+    }
+
+    @Test fun mediaDirectiveStillResolvesWorkspaceAndUploads() {
+        val apiBase = "https://example.test"
+        val workspace = "MEDIA:/home/spotlight064/.luckyagent/workspace/foo.png"
+        val uploads = "MEDIA: ~/.luckyagent/uploads/a.bin"
+        val paths = extractArtifactPaths("$workspace\n$uploads\nhttps://www.live2d.com/zh-CHS/cubism/download/editor/")
+        assertEquals(
+            listOf(
+                "/home/spotlight064/.luckyagent/workspace/foo.png",
+                "~/.luckyagent/uploads/a.bin",
+            ),
+            paths,
+        )
+        assertEquals("workspace/foo.png", artifactDownloadUrl(paths[0], apiBase)!!.toHttpUrl().queryParameter("path"))
+        assertEquals("uploads/a.bin", artifactDownloadUrl(paths[1], apiBase)!!.toHttpUrl().queryParameter("path"))
+    }
+
     @Test fun mediaPrefixIsStrippedBeforeTheArtifactRoute() {
         val apiBase = "https://example.test"
         val absolute = "/home/x/.luckyagent/workspace/a.png"

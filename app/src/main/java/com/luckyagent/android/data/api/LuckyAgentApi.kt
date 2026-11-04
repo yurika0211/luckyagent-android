@@ -209,6 +209,7 @@ class LuckyAgentApi(
 
     private companion object {
         const val MaxUploadBytes = 31L * 1024L * 1024L
+        const val MaxDownloadBytes = 31L * 1024L * 1024L
     }
 
     /**
@@ -216,7 +217,11 @@ class LuckyAgentApi(
      * The auth interceptor always attaches the API key; system DownloadManager
      * does not, and it also ignores the app cleartext network config.
      */
-    suspend fun downloadAttachment(context: Context, attachment: MediaAttachment): Result<AttachmentDownload> =
+    suspend fun downloadAttachment(
+        context: Context,
+        attachment: MediaAttachment,
+        onProgress: (bytesCopied: Long, contentLength: Long?) -> Unit = { _, _ -> },
+    ): Result<AttachmentDownload> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val rawUrl = attachment.fileUrl?.trim().orEmpty()
@@ -244,8 +249,12 @@ class LuckyAgentApi(
                         )
                     }
                     val body = response.body ?: error("服务器返回了空文件")
+                    val contentLength = body.contentLength().takeIf { it >= 0L }
+                    if (contentLength != null && contentLength > MaxDownloadBytes) {
+                        error("文件不能超过 31 MB")
+                    }
                     body.byteStream().use { source ->
-                        streamAttachmentBody(context, source, destinationName, mime)
+                        streamAttachmentBody(context, source, destinationName, mime, contentLength, onProgress)
                     }
                 }
             }
@@ -256,6 +265,8 @@ class LuckyAgentApi(
         source: java.io.InputStream,
         displayName: String,
         mime: String,
+        contentLength: Long?,
+        onProgress: (bytesCopied: Long, contentLength: Long?) -> Unit,
     ): AttachmentDownload {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
@@ -269,7 +280,7 @@ class LuckyAgentApi(
             try {
                 val output = context.contentResolver.openOutputStream(uri)
                     ?: error("无法写入系统下载目录")
-                output.use { copyDownloadStream(source, it) }
+                output.use { copyDownloadStream(source, it, contentLength, onProgress) }
                 val published = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
                 context.contentResolver.update(uri, published, null, null)
                 return AttachmentDownload(uri, displayName)
@@ -287,7 +298,7 @@ class LuckyAgentApi(
         val target = File(dir, displayName)
         val partial = File(dir, "$displayName.part")
         try {
-            partial.outputStream().use { copyDownloadStream(source, it) }
+            partial.outputStream().use { copyDownloadStream(source, it, contentLength, onProgress) }
             if (target.exists()) target.delete()
             check(partial.renameTo(target)) { "无法保存下载文件" }
             return AttachmentDownload(Uri.fromFile(target), displayName)
@@ -300,14 +311,30 @@ class LuckyAgentApi(
         }
     }
 
-    private suspend fun copyDownloadStream(input: java.io.InputStream, output: java.io.OutputStream) {
+    private suspend fun copyDownloadStream(
+        input: java.io.InputStream,
+        output: java.io.OutputStream,
+        contentLength: Long?,
+        onProgress: (bytesCopied: Long, contentLength: Long?) -> Unit,
+    ) {
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var copied = 0L
+        var lastEmitMs = 0L
         while (true) {
             currentCoroutineContext().ensureActive()
             val count = input.read(buffer)
             if (count < 0) break
             output.write(buffer, 0, count)
+            copied += count
+            if (copied > MaxDownloadBytes) error("文件不能超过 31 MB")
+            val now = android.os.SystemClock.elapsedRealtime()
+            val finished = contentLength != null && copied >= contentLength
+            if (lastEmitMs == 0L || now - lastEmitMs >= 100L || finished) {
+                lastEmitMs = now
+                onProgress(copied, contentLength)
+            }
         }
+        onProgress(copied, contentLength)
     }
 
     private fun baseUrl(): String =
