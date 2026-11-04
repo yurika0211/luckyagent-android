@@ -1,6 +1,5 @@
 package com.luckyagent.android.ui
 
-import android.app.DownloadManager
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
@@ -115,7 +114,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -134,6 +132,10 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import com.luckyagent.android.ui.util.artifactDownloadUrl
+import com.luckyagent.android.ui.util.chatMediaFromAttachmentJson
+import com.luckyagent.android.ui.util.downloadPercent
+import com.luckyagent.android.ui.util.downloadProgressLabel
+import com.luckyagent.android.ui.util.downloadSpeedBytesPerSecond
 import java.io.File
 import java.util.UUID
 
@@ -234,6 +236,23 @@ data class AttachmentNotice(
     val mimeType: String? = null,
 )
 
+enum class AttachmentDownloadPhase { Idle, Running, Done, Failed }
+
+/** In-card download process. The bottom notice still announces 完成 / 失败. */
+data class AttachmentDownloadUi(
+    val phase: AttachmentDownloadPhase = AttachmentDownloadPhase.Idle,
+    val bytesCopied: Long = 0L,
+    val bytesTotal: Long? = null,
+    val bytesPerSecond: Long = 0L,
+    val error: String? = null,
+) {
+    val percent: Int?
+        get() = downloadPercent(bytesCopied, bytesTotal)
+
+    val label: String
+        get() = downloadProgressLabel(bytesCopied, bytesTotal, bytesPerSecond)
+}
+
 data class AppUiState(
     val destination: AppDestination = AppDestination.Chat,
     val settings: ClientSettings = ClientSettings(),
@@ -322,6 +341,9 @@ data class AppUiState(
     /** Terminal fold label after cancel or failure. Null while a turn is running. */
     val processNotice: String? = null,
     val attachmentNotice: AttachmentNotice? = null,
+    /** One download at a time. Key is [attachmentDownloadKey]. */
+    val attachmentDownloadKey: String? = null,
+    val attachmentDownload: AttachmentDownloadUi = AttachmentDownloadUi(),
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
     val drawerOpenHint: Boolean = false,
@@ -791,9 +813,7 @@ class AppViewModel(
                             if (!completeRun(event)) return@collect
                             finishOutboundRequest(event.sessionId, requestId, success = true)
                             val piece = extractFullResponse(env.data) ?: extractText(env.data)
-                            val attachments = distinctMedia(
-                                extractAttachments(env.data) + extractArtifactAttachments(piece.orEmpty()),
-                            )
+                            val attachments = distinctMedia(extractAttachments(env.data))
                             if (foreground) {
                                 finishAssistant(
                                     full = piece,
@@ -1705,7 +1725,7 @@ class AppViewModel(
             }
             else -> true
         }
-        val attachments = distinctMedia(extractAttachments(data) + extractArtifactAttachments(output))
+        val attachments = distinctMedia(extractAttachments(data))
         val stepKey = "$currentTurnId:$stepId"
         val id = when {
             stepId.isNotBlank() -> toolStepIndex[stepKey] ?: "tool-$stepKey".also { toolStepIndex[stepKey] = it }
@@ -1982,36 +2002,10 @@ class AppViewModel(
         return o[key].textOrNull()
     }
 
-    private fun extractAttachments(data: kotlinx.serialization.json.JsonElement?): List<ChatMedia> {
-        val obj = data as? JsonObject ?: return emptyList()
-        val raw = obj["attachments"] ?: obj["files"] ?: obj["media"] ?: return emptyList()
-        val items = raw as? JsonArray ?: return emptyList()
-        return items.mapNotNull { item ->
-            val attachment = item as? JsonObject ?: return@mapNotNull null
-            val descriptor = MediaAttachment(
-                type = attachment.stringValue("type")?.let(::normalizeMediaType) ?: "document",
-                fileId = attachment.stringValue("file_id"),
-                fileUrl = attachment.stringValue("file_url")
-                    ?: attachment.stringValue("url")
-                    ?: attachment.stringValue("download_url"),
-                filePath = attachment.stringValue("file_path"),
-                fileName = attachment.stringValue("file_name") ?: attachment.stringValue("name"),
-                mimeType = attachment.stringValue("mime_type") ?: attachment.stringValue("content_type"),
-                fileSize = attachment.longValue("file_size") ?: attachment.longValue("size"),
-            )
-            if (descriptor.fileUrl.isNullOrBlank() && descriptor.filePath.isNullOrBlank()) null
-            else ChatMedia(descriptor)
+    private fun extractAttachments(data: kotlinx.serialization.json.JsonElement?): List<ChatMedia> =
+        data?.let { chatMediaFromAttachmentJson(it.toString()) }.orEmpty().map { media ->
+            media.copy(descriptor = media.descriptor.copy(type = normalizeMediaType(media.descriptor.type)))
         }
-    }
-
-    private fun extractArtifactAttachments(text: String): List<ChatMedia> {
-        if (text.isBlank()) return emptyList()
-        val result = mutableListOf<ChatMedia>()
-        artifactPathPattern.findAll(text).forEach { match ->
-            artifactDescriptor(cleanArtifactPath(match.value))?.let { result += ChatMedia(it) }
-        }
-        return distinctMedia(result)
-    }
 
     private fun artifactDescriptor(path: String): MediaAttachment? {
         val downloadUrl = artifactDownloadUrl(path, container.settingsRepository.snapshot().apiBase) ?: return null
@@ -2035,15 +2029,6 @@ class AppViewModel(
             seen.add(key)
         }
     }
-
-    private fun cleanArtifactPath(value: String): String =
-        value.trim().trim('`', '"', '\'', ',', '.', ';', ':', ')', ']', '}')
-
-    private fun JsonObject.stringValue(key: String): String? =
-        this[key].textOrNull()?.takeIf { it.isNotBlank() }
-
-    private fun JsonObject.longValue(key: String): Long? =
-        this[key].longOrNullSafe()
 
     private fun normalizeMediaType(type: String): String = when {
         type.equals("image", ignoreCase = true) || type.startsWith("image/", ignoreCase = true) -> "image"
@@ -4194,7 +4179,7 @@ class AppViewModel(
                     mimeType = image.mimeType,
                 ),
             )
-        } + extractArtifactAttachments(base)).take(MAX_UI_ATTACHMENTS)
+        }).take(MAX_UI_ATTACHMENTS)
         return toHistoryBubbles(
             idx = idx,
             messageAttachments = messageAttachments,
@@ -4233,6 +4218,7 @@ class AppViewModel(
     }
 
     fun downloadAttachment(context: Context, media: ChatMedia) {
+        if (_ui.value.attachmentDownload.phase == AttachmentDownloadPhase.Running) return
         val descriptor = media.descriptor
         val fileName = descriptor.fileName ?: "附件"
         val downloadUrl = descriptor.fileUrl?.takeIf { it.isNotBlank() }
@@ -4242,20 +4228,79 @@ class AppViewModel(
             return
         }
         val downloadDescriptor = if (descriptor.fileUrl == downloadUrl) descriptor else descriptor.copy(fileUrl = downloadUrl)
+        val key = attachmentDownloadKey(media)
+        val appContext = context.applicationContext
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        _ui.update {
+            it.copy(
+                attachmentDownloadKey = key,
+                attachmentDownload = AttachmentDownloadUi(phase = AttachmentDownloadPhase.Running),
+            )
+        }
         publishAttachmentNotice("准备下载 · $fileName")
-        container.api.enqueueAttachmentDownload(context, downloadDescriptor)
-            .onSuccess { downloadId ->
-                publishAttachmentNotice("下载中 · $fileName")
-                viewModelScope.launch {
-                    monitorAttachmentDownload(
-                        context = context.applicationContext,
-                        downloadId = downloadId,
-                        fileName = fileName,
+        viewModelScope.launch {
+            publishAttachmentNotice("下载中 · $fileName")
+            container.api.downloadAttachment(appContext, downloadDescriptor) { copied, total ->
+                val elapsed = (android.os.SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1L)
+                val progress = AttachmentDownloadUi(
+                    phase = AttachmentDownloadPhase.Running,
+                    bytesCopied = copied,
+                    bytesTotal = total,
+                    bytesPerSecond = downloadSpeedBytesPerSecond(copied, elapsed),
+                )
+                _ui.update { state ->
+                    if (state.attachmentDownloadKey != key) state
+                    else state.copy(attachmentDownload = progress)
+                }
+            }
+                .onSuccess { saved ->
+                    _ui.update { state ->
+                        if (state.attachmentDownloadKey != key) state
+                        else state.copy(
+                            attachmentDownload = state.attachmentDownload.copy(
+                                phase = AttachmentDownloadPhase.Done,
+                                bytesPerSecond = 0L,
+                                error = null,
+                            ),
+                        )
+                    }
+                    publishAttachmentNotice(
+                        text = "下载完成 · ${saved.displayName} · ${attachmentDownloadLocation(appContext, saved.displayName)}",
+                        isComplete = true,
+                        openUri = saved.uri.toString(),
                         mimeType = descriptor.mimeType,
                     )
                 }
-            }
-            .onFailure { error -> publishAttachmentNotice("下载失败 · ${error.message ?: "未知错误"}", isError = true) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    val message = error.message ?: "未知错误"
+                    _ui.update { state ->
+                        if (state.attachmentDownloadKey != key) state
+                        else state.copy(
+                            attachmentDownload = state.attachmentDownload.copy(
+                                phase = AttachmentDownloadPhase.Failed,
+                                bytesPerSecond = 0L,
+                                error = message,
+                            ),
+                        )
+                    }
+                    publishAttachmentNotice("下载失败 · $message", isError = true)
+                }
+        }
+    }
+
+    fun downloadUiFor(media: ChatMedia): AttachmentDownloadUi? {
+        val state = _ui.value
+        if (state.attachmentDownload.phase == AttachmentDownloadPhase.Idle) return null
+        if (state.attachmentDownloadKey != attachmentDownloadKey(media)) return null
+        return state.attachmentDownload
+    }
+
+    /** Stable id for the card that owns the current download. */
+    fun attachmentDownloadKey(media: ChatMedia): String {
+        val fromMedia = mediaKey(media)
+        if (fromMedia.isNotBlank()) return fromMedia
+        return media.localUri?.trim().orEmpty().ifBlank { media.descriptor.fileName.orEmpty() }
     }
 
     private fun publishAttachmentNotice(
@@ -4289,52 +4334,6 @@ class AppViewModel(
         }
     }
 
-    private suspend fun monitorAttachmentDownload(
-        context: Context,
-        downloadId: Long,
-        fileName: String,
-        mimeType: String?,
-    ) {
-        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
-            ?: run {
-                publishAttachmentNotice("下载失败 · 系统下载服务不可用", isError = true)
-                return
-            }
-        while (currentCoroutineContext().isActive) {
-            var status = -1
-            var reason = 0
-            manager.query(DownloadManager.Query().setFilterById(downloadId))?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                    reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-                }
-            }
-            when (status) {
-                DownloadManager.STATUS_SUCCESSFUL -> {
-                    val uri = runCatching { manager.getUriForDownloadedFile(downloadId) }
-                        .getOrNull()
-                        ?.toString()
-                    publishAttachmentNotice(
-                        text = "下载完成 · $fileName · ${attachmentDownloadLocation(context, fileName)}",
-                        isComplete = true,
-                        openUri = uri,
-                        mimeType = mimeType,
-                    )
-                    return
-                }
-                DownloadManager.STATUS_FAILED -> {
-                    publishAttachmentNotice("下载失败 · ${downloadFailureReason(reason)}", isError = true)
-                    return
-                }
-                -1 -> {
-                    publishAttachmentNotice("下载失败 · 找不到下载任务", isError = true)
-                    return
-                }
-            }
-            delay(500)
-        }
-    }
-
     private fun attachmentDownloadLocation(context: Context, fileName: String): String =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             "Downloads/$fileName"
@@ -4355,19 +4354,6 @@ class AppViewModel(
         }.onFailure { error ->
             publishAttachmentNotice("打开失败 · ${error.message ?: "没有可用的查看应用"}", isError = true)
         }
-    }
-
-    private fun downloadFailureReason(reason: Int): String = when (reason) {
-        DownloadManager.ERROR_CANNOT_RESUME -> "无法继续下载"
-        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "存储设备不可用"
-        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "文件已存在"
-        DownloadManager.ERROR_FILE_ERROR -> "文件写入失败"
-        DownloadManager.ERROR_HTTP_DATA_ERROR -> "网络数据错误"
-        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "存储空间不足"
-        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "重定向次数过多"
-        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "服务器返回异常"
-        DownloadManager.ERROR_UNKNOWN -> "未知错误"
-        else -> "系统错误 $reason"
     }
 
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = container.settingsRepository.scrollAnchor(sessionId)
@@ -5942,9 +5928,6 @@ class AppViewModel(
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
         const val SETTINGS_RECONNECT_DEBOUNCE_MS = 450L
-        val artifactPathPattern = Regex(
-            """(?i)(?<![\w:])(?:MEDIA:\s*)?(?:~[/\\][^\s`"'<>]+|/(?:[^\s`"'<>/]+/)+[^\s`"'<>/]+)""",
-        )
     }
 
     override fun onCleared() {

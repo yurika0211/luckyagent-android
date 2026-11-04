@@ -27,13 +27,66 @@ class ArtifactUrlTest {
         assertEquals("cwd/build/app.apk", validatedArtifactPath("cwd/build/app.apk"))
     }
 
-    @Test fun absoluteServicePathsAreEncodedForTheServerRootCheck() {
-        val url = artifactDownloadUrl("/srv/luckyagent/build/app-debug.apk", "https://example.test")!!
-        assertEquals("/srv/luckyagent/build/app-debug.apk", url.toHttpUrl().queryParameter("path"))
+    @Test fun pathsOutsideArtifactRootsAreRejected() {
+        // These used to be forwarded verbatim and the server answered 403
+        // unsupported artifact root. Only workspace and uploads are deliverable.
+        listOf(
+            "/srv/luckyagent/build/app-debug.apk",
+            "/tmp/x.png",
+            "~/Downloads/report.pdf",
+            "C:/Users/user/report.pdf",
+        ).forEach { path ->
+            assertNull(path, artifactDownloadUrl(path, "https://example.test"))
+        }
     }
 
-    @Test fun arbitraryTildePathsArePassedToTheServer() {
-        val url = artifactDownloadUrl("~/Downloads/report.pdf", "https://example.test")!!
-        assertEquals("~/Downloads/report.pdf", url.toHttpUrl().queryParameter("path"))
+    @Test fun bodyTextIsNotScrapedIntoCards() {
+        val reply = """
+            https://www.live2d.com/zh-CHS/cubism/download/editor/
+            https://docs.live2d.com/zh-CHS/cubism-editor-tutorials/top/
+            https://www.youtube.com/watch?v=XEJvtNV1aK0
+            MEDIA:/tmp/x.png
+            MEDIA:~/.luckyagent/workspace/foo.png
+            MEDIA: ~/.luckyagent/workspace/foo.png
+        """.trimIndent()
+        assertTrue(chatMediaFromAssistantText(reply).isEmpty())
+    }
+
+    @Test fun attachmentJsonStillBecomesCards() {
+        val media = chatMediaFromAttachmentJson(
+            """{"attachments":[{"file_name":"report.pdf","file_path":"/home/x/.luckyagent/workspace/deliverables/ab12.pdf","file_url":"/api/v1/artifacts?path=workspace/deliverables/ab12.pdf","mime_type":"application/pdf","file_size":9}]}""",
+        )
+        assertEquals(1, media.size)
+        assertEquals("report.pdf", media[0].descriptor.fileName)
+        assertEquals("/api/v1/artifacts?path=workspace/deliverables/ab12.pdf", media[0].descriptor.fileUrl)
+    }
+
+    @Test fun mediaPrefixIsStrippedBeforeTheArtifactRoute() {
+        val apiBase = "https://example.test"
+        val absolute = "/home/x/.luckyagent/workspace/a.png"
+        val tilde = "~/.luckyagent/uploads/a.bin"
+        assertEquals(artifactDownloadUrl(absolute, apiBase), artifactDownloadUrl("MEDIA:$absolute", apiBase))
+        assertEquals(artifactDownloadUrl(absolute, apiBase), artifactDownloadUrl("media: $absolute", apiBase))
+        assertEquals(cleanArtifactPath("MEDIA:$absolute"), absolute)
+        assertEquals(artifactDownloadUrl(tilde, apiBase), artifactDownloadUrl("MEDIA: $tilde", apiBase))
+        assertEquals(cleanArtifactPath("MEDIA: $tilde"), tilde)
+        assertEquals("workspace/a.png", artifactDownloadUrl("MEDIA:$absolute", apiBase)!!.toHttpUrl().queryParameter("path"))
+        assertEquals("uploads/a.bin", artifactDownloadUrl("MEDIA: $tilde", apiBase)!!.toHttpUrl().queryParameter("path"))
+    }
+
+    @Test fun attachmentUrlResolveKeepsHttpAndDropsOtherSchemes() {
+        val apiBase = "http://10.0.2.2:8080"
+        assertEquals(
+            "http://10.0.2.2:8080/api/v1/artifacts?path=uploads/a.bin",
+            resolveAttachmentDownloadUrl("/api/v1/artifacts?path=uploads/a.bin", apiBase),
+        )
+        assertEquals(
+            "https://example.test/api/v1/artifacts?path=uploads/a.bin",
+            resolveAttachmentDownloadUrl("https://example.test/api/v1/artifacts?path=uploads/a.bin", "http://ignored"),
+        )
+        assertNull(resolveAttachmentDownloadUrl("ftp://files.example/a.bin", apiBase))
+        assertNull(resolveAttachmentDownloadUrl("file:///tmp/a.bin", apiBase))
+        assertFalse(canDownloadAttachment("ftp://files.example/a.bin", null, apiBase))
+        assertTrue(canDownloadAttachment("/api/v1/artifacts?path=uploads/a.bin", null, apiBase))
     }
 }

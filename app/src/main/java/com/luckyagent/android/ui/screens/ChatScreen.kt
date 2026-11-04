@@ -220,6 +220,8 @@ import com.luckyagent.android.ui.OutboundQueueItem
 import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
+import com.luckyagent.android.ui.AttachmentDownloadPhase
+import com.luckyagent.android.ui.AttachmentDownloadUi
 import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
@@ -266,6 +268,7 @@ import androidx.compose.material3.Surface
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
 import com.luckyagent.android.ui.util.artifactDownloadUrl
+import com.luckyagent.android.ui.util.canDownloadAttachment
 import com.luckyagent.android.ui.components.HtmlPreviewDialog
 import com.luckyagent.android.ui.components.isHtmlAttachment
 import com.luckyagent.android.ui.util.quoteRoleLabel
@@ -1445,6 +1448,7 @@ private fun ChatConversation(
                                 imageBaseUrl = state.settings.apiBase,
                                 surfaceActive = bubbleSurfaceActive(listState, item.key),
                                 onDownload = { media -> vm.downloadAttachment(context, media) },
+                                downloadFor = { media -> vm.downloadUiFor(media) },
                                 onQuote = { vm.quoteMessage(it) },
                                 onCopy = { bubble ->
                                     val copied = vm.copyBubbleText(bubble)
@@ -1475,6 +1479,7 @@ private fun ChatConversation(
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
                                 onDownload = { media -> vm.downloadAttachment(context, media) },
+                                downloadFor = { media -> vm.downloadUiFor(media) },
                                 onQuote = { vm.quoteMessage(it) },
                                 onCopy = { bubble ->
                                     val copied = vm.copyBubbleText(bubble)
@@ -1665,6 +1670,7 @@ private fun ChatConversation(
                 imageBaseUrl = state.settings.apiBase,
                 onDismiss = { showThinkingSheet = false },
                 onDownload = { media -> vm.downloadAttachment(context, media) },
+                downloadFor = { media -> vm.downloadUiFor(media) },
                 onQuote = { vm.quoteMessage(it) },
                 onCopy = { bubble ->
                     val copied = vm.copyBubbleText(bubble)
@@ -2105,6 +2111,7 @@ private fun BubbleRow(
     imageBaseUrl: String,
     surfaceActive: Boolean = true,
     onDownload: (ChatMedia) -> Unit,
+    downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
     showActions: Boolean = false,
@@ -2211,7 +2218,7 @@ private fun BubbleRow(
                             val images = bubble.attachments.filter { attachmentKind(it.descriptor) == "image" }
                             val otherMedia = bubble.attachments.filter { attachmentKind(it.descriptor) != "image" }
                             if (images.size > 1) {
-                                ImageAttachmentGrid(images, imageHeaders, imageBaseUrl, onDownload)
+                                ImageAttachmentGrid(images, imageHeaders, imageBaseUrl, onDownload, downloadFor)
                             } else {
                                 images.forEach { media ->
                                     ChatMediaPreview(
@@ -2219,6 +2226,7 @@ private fun BubbleRow(
                                         imageHeaders = imageHeaders,
                                         imageBaseUrl = imageBaseUrl,
                                         onDownload = onDownload,
+                                        download = downloadFor(media),
                                     )
                                 }
                             }
@@ -2228,6 +2236,7 @@ private fun BubbleRow(
                                     imageHeaders = imageHeaders,
                                     imageBaseUrl = imageBaseUrl,
                                     onDownload = onDownload,
+                                    download = downloadFor(media),
                                 )
                             }
                         }
@@ -2462,6 +2471,7 @@ private fun ImageAttachmentGrid(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
+    downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         media.chunked(3).forEach { rowMedia ->
@@ -2476,6 +2486,7 @@ private fun ImageAttachmentGrid(
                             imageHeaders = imageHeaders,
                             imageBaseUrl = imageBaseUrl,
                             onDownload = onDownload,
+                            download = downloadFor(item),
                             compact = true,
                         )
                     }
@@ -2718,6 +2729,7 @@ private fun ProcessTimeline(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
+    downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
     onExpand: (ChatBubble) -> Unit = {},
@@ -2773,6 +2785,7 @@ private fun ThinkingSheet(
     imageBaseUrl: String,
     onDismiss: () -> Unit,
     onDownload: (ChatMedia) -> Unit,
+    downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
     onExpand: (ChatBubble) -> Unit = {},
@@ -2842,6 +2855,7 @@ private fun ThinkingSheet(
                         imageHeaders,
                         imageBaseUrl,
                         onDownload,
+                        downloadFor,
                         onQuote,
                         onCopy,
                         onExpand,
@@ -2887,6 +2901,7 @@ private fun ToolPart(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
+    downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
     onExpand: (ChatBubble) -> Unit = {},
@@ -2965,7 +2980,7 @@ private fun ToolPart(
                 }
             }
             bubble.attachments.forEach { media ->
-                ChatMediaPreview(media, imageHeaders, imageBaseUrl, onDownload)
+                ChatMediaPreview(media, imageHeaders, imageBaseUrl, onDownload, downloadFor(media))
             }
         }
     }
@@ -4365,6 +4380,7 @@ internal fun ChatMediaPreview(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
+    download: AttachmentDownloadUi? = null,
     compact: Boolean = false,
 ) {
     val descriptor = media.descriptor
@@ -4449,22 +4465,22 @@ internal fun ChatMediaPreview(
 
     when {
         kind == "image" && sourceUri != null && imageModel != null -> {
-            ImageAttachmentCard(media, imageModel, compact, { showImageViewer = true }, onDownload)
+            ImageAttachmentCard(media, imageModel, compact, imageBaseUrl, { showImageViewer = true }, onDownload, download)
         }
         kind == "image" && sourceUri != null && media.localUri != null -> {
-            ImageAttachmentCard(media, sourceUri, compact, { showImageViewer = true }, onDownload)
+            ImageAttachmentCard(media, sourceUri, compact, imageBaseUrl, { showImageViewer = true }, onDownload, download)
         }
         kind == "audio" && player != null -> {
-            AudioAttachmentCard(media, player, isPlaying, positionMs, durationMs, onDownload)
+            AudioAttachmentCard(media, imageBaseUrl, player, isPlaying, positionMs, durationMs, onDownload, download)
         }
         kind == "video" && player != null -> {
-            VideoAttachmentCard(media, player, onDownload)
+            VideoAttachmentCard(media, imageBaseUrl, player, onDownload, download)
         }
         kind == "html" -> Column {
-            AttachmentFileCard(media, kind, onDownload)
+            AttachmentFileCard(media, kind, imageBaseUrl, onDownload, download)
             TextButton(enabled = sourceUri != null, onClick = { showHtmlViewer = true }) { Text("预览 HTML") }
         }
-        else -> AttachmentFileCard(media, kind, onDownload)
+        else -> AttachmentFileCard(media, kind, imageBaseUrl, onDownload, download)
     }
 
     if (showImageViewer && sourceUri != null) {
@@ -4472,7 +4488,7 @@ internal fun ChatMediaPreview(
             model = imageModel ?: sourceUri,
             name = descriptor.fileName ?: "图片附件",
             onDismiss = { showImageViewer = false },
-            onDownload = if (!descriptor.fileUrl.isNullOrBlank() || !descriptor.filePath.isNullOrBlank()) {
+            onDownload = if (canDownload(media, imageBaseUrl)) {
                 {
                     onDownload(media)
                     showImageViewer = false
@@ -4488,7 +4504,11 @@ internal fun ChatMediaPreview(
             title = descriptor.fileName ?: "HTML 预览",
             baseUrl = imageBaseUrl,
             headers = imageHeaders,
-            onDownload = { onDownload(media) },
+            onDownload = if (canDownload(media, imageBaseUrl)) {
+                { onDownload(media) }
+            } else {
+                null
+            },
             onDismiss = { showHtmlViewer = false },
         )
     }
@@ -4499,8 +4519,10 @@ private fun ImageAttachmentCard(
     media: ChatMedia,
     model: Any,
     compact: Boolean,
+    imageBaseUrl: String,
     onOpen: () -> Unit,
     onDownload: (ChatMedia) -> Unit,
+    download: AttachmentDownloadUi? = null,
 ) {
     val descriptor = media.descriptor
     Column(Modifier.widthIn(max = 420.dp).fillMaxWidth()) {
@@ -4535,19 +4557,22 @@ private fun ImageAttachmentCard(
                     Text(formatMediaSize(it), color = CloverText3, style = MaterialTheme.typography.labelSmall)
                 }
             }
-            AttachmentDownloadButton(media, onDownload, tint = CloverText2)
+            AttachmentDownloadButton(media, imageBaseUrl, onDownload, download, tint = CloverText2)
         }
+        AttachmentDownloadStatus(download)
     }
 }
 
 @Composable
 private fun AudioAttachmentCard(
     media: ChatMedia,
+    imageBaseUrl: String,
     player: ExoPlayer,
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
     onDownload: (ChatMedia) -> Unit,
+    download: AttachmentDownloadUi? = null,
 ) {
     val descriptor = media.descriptor
     val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
@@ -4589,8 +4614,9 @@ private fun AudioAttachmentCard(
                     color = CloverText3,
                 )
             }
-            AttachmentDownloadButton(media, onDownload)
+            AttachmentDownloadButton(media, imageBaseUrl, onDownload, download)
         }
+        AttachmentDownloadStatus(download)
         Spacer(Modifier.height(8.dp))
         LinearProgressIndicator(
             progress = { progress },
@@ -4604,8 +4630,10 @@ private fun AudioAttachmentCard(
 @Composable
 private fun VideoAttachmentCard(
     media: ChatMedia,
+    imageBaseUrl: String,
     player: ExoPlayer,
     onDownload: (ChatMedia) -> Unit,
+    download: AttachmentDownloadUi? = null,
 ) {
     val descriptor = media.descriptor
     Column(
@@ -4646,9 +4674,10 @@ private fun VideoAttachmentCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                AttachmentDownloadButton(media, onDownload, tint = Color.White)
+                AttachmentDownloadButton(media, imageBaseUrl, onDownload, download, tint = Color.White)
             }
         }
+        AttachmentDownloadStatus(download, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
         Text(
             text = "视频 · ${descriptor.fileName ?: "附件"}",
             style = MaterialTheme.typography.labelMedium,
@@ -4733,37 +4762,95 @@ private fun FullscreenImagePreview(
     }
 }
 
+/** Hide the control unless enqueue would accept this attachment. No disabled icon. */
+internal fun canDownload(media: ChatMedia, apiBase: String): Boolean =
+    canDownloadAttachment(media.descriptor.fileUrl, media.descriptor.filePath, apiBase)
+
 @Composable
-private fun AttachmentDownloadButton(media: ChatMedia, onDownload: (ChatMedia) -> Unit, tint: Color = CloverText2) {
-    if (!media.descriptor.fileUrl.isNullOrBlank() || !media.descriptor.filePath.isNullOrBlank()) {
-        IconButton(onClick = { onDownload(media) }, modifier = Modifier.size(36.dp)) {
+private fun AttachmentDownloadButton(
+    media: ChatMedia,
+    apiBase: String,
+    onDownload: (ChatMedia) -> Unit,
+    download: AttachmentDownloadUi? = null,
+    tint: Color = CloverText2,
+) {
+    if (!canDownload(media, apiBase)) return
+    val running = download?.phase == AttachmentDownloadPhase.Running
+    IconButton(
+        onClick = { if (!running) onDownload(media) },
+        enabled = !running,
+        modifier = Modifier.size(36.dp),
+    ) {
+        if (running) {
+            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = tint)
+        } else {
             Icon(Icons.Outlined.Download, contentDescription = "下载附件", tint = tint)
         }
     }
 }
 
 @Composable
-private fun AttachmentFileCard(media: ChatMedia, kind: String, onDownload: (ChatMedia) -> Unit) {
+private fun AttachmentDownloadStatus(
+    download: AttachmentDownloadUi?,
+    modifier: Modifier = Modifier,
+) {
+    if (download == null || download.phase == AttachmentDownloadPhase.Idle) return
+    val fraction = download.percent?.let { it / 100f }
+    val tint = if (download.phase == AttachmentDownloadPhase.Failed) CloverError else CloverText3
+    val caption = when (download.phase) {
+        AttachmentDownloadPhase.Failed -> download.error ?: "下载失败"
+        AttachmentDownloadPhase.Done -> "已下载 · ${download.label}"
+        else -> download.label
+    }
+    Column(modifier.fillMaxWidth().padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        if (fraction == null) {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(3.dp)),
+                color = CloverAccent,
+                trackColor = CloverLine,
+            )
+        } else {
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(3.dp)),
+                color = CloverAccent,
+                trackColor = CloverLine,
+            )
+        }
+        Text(caption, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun AttachmentFileCard(
+    media: ChatMedia,
+    kind: String,
+    imageBaseUrl: String,
+    onDownload: (ChatMedia) -> Unit,
+    download: AttachmentDownloadUi? = null,
+) {
     val descriptor = media.descriptor
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(CloverSurface2)
             .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
     ) {
-        Text(
-            text = descriptor.fileName ?: "附件",
-            style = MaterialTheme.typography.bodyMedium,
-            color = CloverText2,
-            modifier = Modifier.weight(1f),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Column(horizontalAlignment = Alignment.End) {
-            Text(mediaTypeLabel(kind), style = MaterialTheme.typography.labelSmall, color = CloverText3)
-            AttachmentDownloadButton(media, onDownload)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = descriptor.fileName ?: "附件",
+                style = MaterialTheme.typography.bodyMedium,
+                color = CloverText2,
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Column(horizontalAlignment = Alignment.End) {
+                Text(mediaTypeLabel(kind), style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                AttachmentDownloadButton(media, imageBaseUrl, onDownload, download)
+            }
         }
+        AttachmentDownloadStatus(download, modifier = Modifier.padding(end = 8.dp))
     }
 }
 
