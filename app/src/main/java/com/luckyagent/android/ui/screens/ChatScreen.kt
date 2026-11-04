@@ -266,6 +266,7 @@ import androidx.compose.material3.Surface
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
 import com.luckyagent.android.ui.util.artifactDownloadUrl
+import com.luckyagent.android.ui.util.canDownloadAttachment
 import com.luckyagent.android.ui.components.HtmlPreviewDialog
 import com.luckyagent.android.ui.components.isHtmlAttachment
 import com.luckyagent.android.ui.util.quoteRoleLabel
@@ -4449,22 +4450,22 @@ internal fun ChatMediaPreview(
 
     when {
         kind == "image" && sourceUri != null && imageModel != null -> {
-            ImageAttachmentCard(media, imageModel, compact, { showImageViewer = true }, onDownload)
+            ImageAttachmentCard(media, imageModel, compact, imageBaseUrl, { showImageViewer = true }, onDownload)
         }
         kind == "image" && sourceUri != null && media.localUri != null -> {
-            ImageAttachmentCard(media, sourceUri, compact, { showImageViewer = true }, onDownload)
+            ImageAttachmentCard(media, sourceUri, compact, imageBaseUrl, { showImageViewer = true }, onDownload)
         }
         kind == "audio" && player != null -> {
-            AudioAttachmentCard(media, player, isPlaying, positionMs, durationMs, onDownload)
+            AudioAttachmentCard(media, imageBaseUrl, player, isPlaying, positionMs, durationMs, onDownload)
         }
         kind == "video" && player != null -> {
-            VideoAttachmentCard(media, player, onDownload)
+            VideoAttachmentCard(media, imageBaseUrl, player, onDownload)
         }
         kind == "html" -> Column {
-            AttachmentFileCard(media, kind, onDownload)
+            AttachmentFileCard(media, kind, imageBaseUrl, onDownload)
             TextButton(enabled = sourceUri != null, onClick = { showHtmlViewer = true }) { Text("预览 HTML") }
         }
-        else -> AttachmentFileCard(media, kind, onDownload)
+        else -> AttachmentFileCard(media, kind, imageBaseUrl, onDownload)
     }
 
     if (showImageViewer && sourceUri != null) {
@@ -4472,7 +4473,7 @@ internal fun ChatMediaPreview(
             model = imageModel ?: sourceUri,
             name = descriptor.fileName ?: "图片附件",
             onDismiss = { showImageViewer = false },
-            onDownload = if (!descriptor.fileUrl.isNullOrBlank() || !descriptor.filePath.isNullOrBlank()) {
+            onDownload = if (canDownload(media, imageBaseUrl)) {
                 {
                     onDownload(media)
                     showImageViewer = false
@@ -4488,7 +4489,11 @@ internal fun ChatMediaPreview(
             title = descriptor.fileName ?: "HTML 预览",
             baseUrl = imageBaseUrl,
             headers = imageHeaders,
-            onDownload = { onDownload(media) },
+            onDownload = if (canDownload(media, imageBaseUrl)) {
+                { onDownload(media) }
+            } else {
+                null
+            },
             onDismiss = { showHtmlViewer = false },
         )
     }
@@ -4499,6 +4504,7 @@ private fun ImageAttachmentCard(
     media: ChatMedia,
     model: Any,
     compact: Boolean,
+    imageBaseUrl: String,
     onOpen: () -> Unit,
     onDownload: (ChatMedia) -> Unit,
 ) {
@@ -4535,7 +4541,7 @@ private fun ImageAttachmentCard(
                     Text(formatMediaSize(it), color = CloverText3, style = MaterialTheme.typography.labelSmall)
                 }
             }
-            AttachmentDownloadButton(media, onDownload, tint = CloverText2)
+            AttachmentDownloadButton(media, imageBaseUrl, onDownload, tint = CloverText2)
         }
     }
 }
@@ -4543,6 +4549,7 @@ private fun ImageAttachmentCard(
 @Composable
 private fun AudioAttachmentCard(
     media: ChatMedia,
+    imageBaseUrl: String,
     player: ExoPlayer,
     isPlaying: Boolean,
     positionMs: Long,
@@ -4589,7 +4596,7 @@ private fun AudioAttachmentCard(
                     color = CloverText3,
                 )
             }
-            AttachmentDownloadButton(media, onDownload)
+            AttachmentDownloadButton(media, imageBaseUrl, onDownload)
         }
         Spacer(Modifier.height(8.dp))
         LinearProgressIndicator(
@@ -4604,6 +4611,7 @@ private fun AudioAttachmentCard(
 @Composable
 private fun VideoAttachmentCard(
     media: ChatMedia,
+    imageBaseUrl: String,
     player: ExoPlayer,
     onDownload: (ChatMedia) -> Unit,
 ) {
@@ -4646,7 +4654,7 @@ private fun VideoAttachmentCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                AttachmentDownloadButton(media, onDownload, tint = Color.White)
+                AttachmentDownloadButton(media, imageBaseUrl, onDownload, tint = Color.White)
             }
         }
         Text(
@@ -4733,9 +4741,18 @@ private fun FullscreenImagePreview(
     }
 }
 
+/** Hide the control unless enqueue would accept this attachment. No disabled icon. */
+internal fun canDownload(media: ChatMedia, apiBase: String): Boolean =
+    canDownloadAttachment(media.descriptor.fileUrl, media.descriptor.filePath, apiBase)
+
 @Composable
-private fun AttachmentDownloadButton(media: ChatMedia, onDownload: (ChatMedia) -> Unit, tint: Color = CloverText2) {
-    if (!media.descriptor.fileUrl.isNullOrBlank() || !media.descriptor.filePath.isNullOrBlank()) {
+private fun AttachmentDownloadButton(
+    media: ChatMedia,
+    apiBase: String,
+    onDownload: (ChatMedia) -> Unit,
+    tint: Color = CloverText2,
+) {
+    if (canDownload(media, apiBase)) {
         IconButton(onClick = { onDownload(media) }, modifier = Modifier.size(36.dp)) {
             Icon(Icons.Outlined.Download, contentDescription = "下载附件", tint = tint)
         }
@@ -4743,7 +4760,12 @@ private fun AttachmentDownloadButton(media: ChatMedia, onDownload: (ChatMedia) -
 }
 
 @Composable
-private fun AttachmentFileCard(media: ChatMedia, kind: String, onDownload: (ChatMedia) -> Unit) {
+private fun AttachmentFileCard(
+    media: ChatMedia,
+    kind: String,
+    imageBaseUrl: String,
+    onDownload: (ChatMedia) -> Unit,
+) {
     val descriptor = media.descriptor
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -4762,7 +4784,7 @@ private fun AttachmentFileCard(media: ChatMedia, kind: String, onDownload: (Chat
         )
         Column(horizontalAlignment = Alignment.End) {
             Text(mediaTypeLabel(kind), style = MaterialTheme.typography.labelSmall, color = CloverText3)
-            AttachmentDownloadButton(media, onDownload)
+            AttachmentDownloadButton(media, imageBaseUrl, onDownload)
         }
     }
 }

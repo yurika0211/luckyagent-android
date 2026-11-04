@@ -11,6 +11,25 @@ internal fun validatedArtifactPath(path: String): String? {
     return path.takeIf { segments.none { it.isBlank() || it.trimEnd(' ').all { c -> c == '.' } } }
 }
 
+/**
+ * Same gate as a successful download enqueue: an http(s) URL, a relative URL
+ * that [apiBase] can turn into one, or a [filePath] that [artifactDownloadUrl] accepts.
+ * Non-http schemes (ftp, file, content) and paths the artifact helper rejects stay hidden.
+ */
+internal fun canDownloadAttachment(fileUrl: String?, filePath: String?, apiBase: String): Boolean {
+    val rawUrl = fileUrl?.trim().orEmpty()
+    if (rawUrl.isNotEmpty()) {
+        if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) return true
+        val scheme = rawUrl.substringBefore(':', "").lowercase()
+        val hasScheme = scheme.isNotEmpty() && scheme.all { it.isLetter() } && rawUrl.contains(':')
+        if (!hasScheme && apiBase.isNotBlank()) return true
+        return false
+    }
+    val path = filePath?.trim().orEmpty()
+    if (path.isEmpty()) return false
+    return artifactDownloadUrl(path, apiBase) != null
+}
+
 /** Canonical artifact route shared by attachment downloads and previews. */
 internal fun artifactDownloadUrl(path: String, apiBase: String): String? {
     if (apiBase.isBlank()) return null
