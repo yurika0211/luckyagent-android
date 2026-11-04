@@ -37,9 +37,10 @@ class AttachmentDownloadGateTest {
         assertFalse(canDownload(media(filePath = "~/.luckyagent/workspace/报告 1.html"), ""))
     }
 
-    @Test fun absoluteAndTildePathsWithApiBaseCanDownload() {
-        assertTrue(canDownload(media(filePath = "/srv/luckyagent/build/app-debug.apk"), apiBase))
-        assertTrue(canDownload(media(filePath = "~/Downloads/report.pdf"), apiBase))
+    @Test fun pathsOutsideArtifactRootsCannotDownload() {
+        assertFalse(canDownload(media(filePath = "/srv/luckyagent/build/app-debug.apk"), apiBase))
+        assertFalse(canDownload(media(filePath = "/tmp/x.png"), apiBase))
+        assertFalse(canDownload(media(filePath = "~/Downloads/report.pdf"), apiBase))
     }
 
     @Test fun rejectedArtifactPathsCannotDownload() {

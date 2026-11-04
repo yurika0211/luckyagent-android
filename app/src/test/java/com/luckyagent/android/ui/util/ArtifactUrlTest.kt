@@ -27,14 +27,17 @@ class ArtifactUrlTest {
         assertEquals("cwd/build/app.apk", validatedArtifactPath("cwd/build/app.apk"))
     }
 
-    @Test fun absoluteServicePathsAreEncodedForTheServerRootCheck() {
-        val url = artifactDownloadUrl("/srv/luckyagent/build/app-debug.apk", "https://example.test")!!
-        assertEquals("/srv/luckyagent/build/app-debug.apk", url.toHttpUrl().queryParameter("path"))
-    }
-
-    @Test fun arbitraryTildePathsArePassedToTheServer() {
-        val url = artifactDownloadUrl("~/Downloads/report.pdf", "https://example.test")!!
-        assertEquals("~/Downloads/report.pdf", url.toHttpUrl().queryParameter("path"))
+    @Test fun pathsOutsideArtifactRootsAreRejected() {
+        // These used to be forwarded verbatim and the server answered 403
+        // unsupported artifact root. Only workspace and uploads are deliverable.
+        listOf(
+            "/srv/luckyagent/build/app-debug.apk",
+            "/tmp/x.png",
+            "~/Downloads/report.pdf",
+            "C:/Users/user/report.pdf",
+        ).forEach { path ->
+            assertNull(path, artifactDownloadUrl(path, "https://example.test"))
+        }
     }
 
     @Test fun bodyTextIsNotScrapedIntoCards() {
