@@ -132,10 +132,10 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import com.luckyagent.android.ui.util.artifactDownloadUrl
+import com.luckyagent.android.ui.util.chatMediaFromAttachmentJson
 import com.luckyagent.android.ui.util.downloadPercent
 import com.luckyagent.android.ui.util.downloadProgressLabel
 import com.luckyagent.android.ui.util.downloadSpeedBytesPerSecond
-import com.luckyagent.android.ui.util.extractArtifactPaths
 import java.io.File
 import java.util.UUID
 
@@ -813,9 +813,7 @@ class AppViewModel(
                             if (!completeRun(event)) return@collect
                             finishOutboundRequest(event.sessionId, requestId, success = true)
                             val piece = extractFullResponse(env.data) ?: extractText(env.data)
-                            val attachments = distinctMedia(
-                                extractAttachments(env.data) + extractArtifactAttachments(piece.orEmpty()),
-                            )
+                            val attachments = distinctMedia(extractAttachments(env.data))
                             if (foreground) {
                                 finishAssistant(
                                     full = piece,
@@ -1727,7 +1725,7 @@ class AppViewModel(
             }
             else -> true
         }
-        val attachments = distinctMedia(extractAttachments(data) + extractArtifactAttachments(output))
+        val attachments = distinctMedia(extractAttachments(data))
         val stepKey = "$currentTurnId:$stepId"
         val id = when {
             stepId.isNotBlank() -> toolStepIndex[stepKey] ?: "tool-$stepKey".also { toolStepIndex[stepKey] = it }
@@ -2004,34 +2002,10 @@ class AppViewModel(
         return o[key].textOrNull()
     }
 
-    private fun extractAttachments(data: kotlinx.serialization.json.JsonElement?): List<ChatMedia> {
-        val obj = data as? JsonObject ?: return emptyList()
-        val raw = obj["attachments"] ?: obj["files"] ?: obj["media"] ?: return emptyList()
-        val items = raw as? JsonArray ?: return emptyList()
-        return items.mapNotNull { item ->
-            val attachment = item as? JsonObject ?: return@mapNotNull null
-            val descriptor = MediaAttachment(
-                type = attachment.stringValue("type")?.let(::normalizeMediaType) ?: "document",
-                fileId = attachment.stringValue("file_id"),
-                fileUrl = attachment.stringValue("file_url")
-                    ?: attachment.stringValue("url")
-                    ?: attachment.stringValue("download_url"),
-                filePath = attachment.stringValue("file_path"),
-                fileName = attachment.stringValue("file_name") ?: attachment.stringValue("name"),
-                mimeType = attachment.stringValue("mime_type") ?: attachment.stringValue("content_type"),
-                fileSize = attachment.longValue("file_size") ?: attachment.longValue("size"),
-            )
-            if (descriptor.fileUrl.isNullOrBlank() && descriptor.filePath.isNullOrBlank()) null
-            else ChatMedia(descriptor)
+    private fun extractAttachments(data: kotlinx.serialization.json.JsonElement?): List<ChatMedia> =
+        data?.let { chatMediaFromAttachmentJson(it.toString()) }.orEmpty().map { media ->
+            media.copy(descriptor = media.descriptor.copy(type = normalizeMediaType(media.descriptor.type)))
         }
-    }
-
-    private fun extractArtifactAttachments(text: String): List<ChatMedia> {
-        if (text.isBlank()) return emptyList()
-        return distinctMedia(extractArtifactPaths(text).mapNotNull { path ->
-            artifactDescriptor(path)?.let(::ChatMedia)
-        })
-    }
 
     private fun artifactDescriptor(path: String): MediaAttachment? {
         val downloadUrl = artifactDownloadUrl(path, container.settingsRepository.snapshot().apiBase) ?: return null
@@ -2055,12 +2029,6 @@ class AppViewModel(
             seen.add(key)
         }
     }
-
-    private fun JsonObject.stringValue(key: String): String? =
-        this[key].textOrNull()?.takeIf { it.isNotBlank() }
-
-    private fun JsonObject.longValue(key: String): Long? =
-        this[key].longOrNullSafe()
 
     private fun normalizeMediaType(type: String): String = when {
         type.equals("image", ignoreCase = true) || type.startsWith("image/", ignoreCase = true) -> "image"
@@ -4211,7 +4179,7 @@ class AppViewModel(
                     mimeType = image.mimeType,
                 ),
             )
-        } + extractArtifactAttachments(base)).take(MAX_UI_ATTACHMENTS)
+        }).take(MAX_UI_ATTACHMENTS)
         return toHistoryBubbles(
             idx = idx,
             messageAttachments = messageAttachments,

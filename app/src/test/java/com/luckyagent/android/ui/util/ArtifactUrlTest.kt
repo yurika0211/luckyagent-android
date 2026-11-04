@@ -37,30 +37,25 @@ class ArtifactUrlTest {
         assertEquals("~/Downloads/report.pdf", url.toHttpUrl().queryParameter("path"))
     }
 
-    @Test fun live2dUrlsProduceNoArtifactCards() {
+    @Test fun bodyTextIsNotScrapedIntoCards() {
         val reply = """
             https://www.live2d.com/zh-CHS/cubism/download/editor/
             https://docs.live2d.com/zh-CHS/cubism-editor-tutorials/top/
             https://www.youtube.com/watch?v=XEJvtNV1aK0
-            See /www.live2d.com/zh-CHS/cubism/download/editor/ and ~/.luckyagent/workspace/foo.png
+            MEDIA:/tmp/x.png
+            MEDIA:~/.luckyagent/workspace/foo.png
+            MEDIA: ~/.luckyagent/workspace/foo.png
         """.trimIndent()
-        assertTrue(extractArtifactPaths(reply).isEmpty())
+        assertTrue(chatMediaFromAssistantText(reply).isEmpty())
     }
 
-    @Test fun mediaDirectiveStillResolvesWorkspaceAndUploads() {
-        val apiBase = "https://example.test"
-        val workspace = "MEDIA:/home/spotlight064/.luckyagent/workspace/foo.png"
-        val uploads = "MEDIA: ~/.luckyagent/uploads/a.bin"
-        val paths = extractArtifactPaths("$workspace\n$uploads\nhttps://www.live2d.com/zh-CHS/cubism/download/editor/")
-        assertEquals(
-            listOf(
-                "/home/spotlight064/.luckyagent/workspace/foo.png",
-                "~/.luckyagent/uploads/a.bin",
-            ),
-            paths,
+    @Test fun attachmentJsonStillBecomesCards() {
+        val media = chatMediaFromAttachmentJson(
+            """{"attachments":[{"file_name":"report.pdf","file_path":"/home/x/.luckyagent/workspace/deliverables/ab12.pdf","file_url":"/api/v1/artifacts?path=workspace/deliverables/ab12.pdf","mime_type":"application/pdf","file_size":9}]}""",
         )
-        assertEquals("workspace/foo.png", artifactDownloadUrl(paths[0], apiBase)!!.toHttpUrl().queryParameter("path"))
-        assertEquals("uploads/a.bin", artifactDownloadUrl(paths[1], apiBase)!!.toHttpUrl().queryParameter("path"))
+        assertEquals(1, media.size)
+        assertEquals("report.pdf", media[0].descriptor.fileName)
+        assertEquals("/api/v1/artifacts?path=workspace/deliverables/ab12.pdf", media[0].descriptor.fileUrl)
     }
 
     @Test fun mediaPrefixIsStrippedBeforeTheArtifactRoute() {

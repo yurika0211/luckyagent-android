@@ -12,25 +12,6 @@ internal fun validatedArtifactPath(path: String): String? {
 }
 
 /**
- * Chat cards come only from an explicit `MEDIA:` directive.
- * `https://host/a/b/` used to match the `/a/b/` tail and become a fake file card.
- * A bare `/…` or `~/…` token in prose is left as text.
- */
-internal val mediaDirectivePattern = Regex(
-    """(?i)(?<![\w])MEDIA:\s*(?:~/[^\s`"'<>]+|/[^\s`"'<>]+)""",
-)
-
-/** Paths named by `MEDIA:`, in order, with the marker and trailing punctuation removed. */
-internal fun extractArtifactPaths(text: String): List<String> {
-    if (text.isBlank()) return emptyList()
-    return mediaDirectivePattern.findAll(text)
-        .map { cleanArtifactPath(it.value) }
-        .filter { it.isNotEmpty() }
-        .distinct()
-        .toList()
-}
-
-/**
  * Strip chat punctuation and a leading `MEDIA:` marker from a matched path.
  * The marker is optional and case-insensitive; a space after the colon is optional.
  * The marker must be removed before [artifactDownloadUrl], which otherwise treats
