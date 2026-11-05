@@ -88,14 +88,15 @@ internal fun ProviderMessage.toHistoryBubbles(
     compactLabel: String? = null,
 ): List<ChatBubble> {
     val role = role ?: "assistant"
-    val base = capUiText(content.orEmpty(), MAX_UI_MESSAGE_CHARS)
+    val raw = content.orEmpty()
+    val base = if (role == "tool") raw else capUiText(raw, MAX_UI_MESSAGE_CHARS)
     val bubbleBase = clientMessageId?.trim()?.takeIf { it.isNotEmpty() } ?: "h-$idx"
     val result = mutableListOf<ChatBubble>()
     reasoningContent?.takeIf { it.isNotBlank() }?.let { reasoning ->
         result += ChatBubble(
             id = "$bubbleBase-reasoning",
             role = "reasoning",
-            content = capUiText(reasoning, MAX_UI_REASONING_CHARS),
+            content = reasoning,
             reasoningHasContent = true,
             serverOrdinal = idx,
         )
@@ -111,13 +112,13 @@ internal fun ProviderMessage.toHistoryBubbles(
             role = "tool",
             content = buildToolContent(
                 name = tool.name ?: "tool",
-                args = capUiText(tool.arguments.orEmpty(), MAX_UI_TOOL_ARGS_CHARS),
+                args = tool.arguments.orEmpty(),
                 output = null,
                 done = true,
                 success = null,
             ),
             toolName = tool.name,
-            toolArgs = capUiText(tool.arguments.orEmpty(), MAX_UI_TOOL_ARGS_CHARS).takeIf { tool.arguments != null },
+            toolArgs = tool.arguments?.takeIf { it.isNotEmpty() },
             toolDone = true,
             stepId = tool.id,
             attachments = messageAttachments,
@@ -130,9 +131,9 @@ internal fun ProviderMessage.toHistoryBubbles(
         result += ChatBubble(
             id = "$bubbleBase-tool-result",
             role = "tool",
-            content = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS),
+            content = base,
             toolName = name ?: "tool",
-            toolOutput = capUiText(base, MAX_UI_TOOL_OUTPUT_CHARS).takeIf { it.isNotBlank() },
+            toolOutput = base.takeIf { it.isNotBlank() },
             toolDone = true,
             stepId = toolCallId,
             attachments = messageAttachments,

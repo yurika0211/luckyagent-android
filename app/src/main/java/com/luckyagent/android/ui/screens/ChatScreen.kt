@@ -3151,7 +3151,7 @@ private fun ToolPart(
             bubble.toolOutput?.takeIf { it.isNotBlank() }?.let {
                 Text(if (bubble.toolSuccess == false) "错误" else "结果", style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 MarkdownText(
-                    markdown = truncateToolOutput(it),
+                    markdown = it,
                     color = CloverText2,
                     imageHeaders = imageHeaders,
                     imageBaseUrl = imageBaseUrl,
@@ -3175,16 +3175,7 @@ private fun MonoBlock(text: String) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 2.dp, vertical = 4.dp),
-        maxLines = 12,
-        overflow = TextOverflow.Ellipsis,
     )
-}
-
-/** Keep the existing compact tool preview while letting complete GFM tables render. */
-private fun truncateToolOutput(text: String, maxLines: Int = 12): String {
-    val lines = text.replace("\r\n", "\n").split('\n')
-    if (lines.size <= maxLines) return text
-    return lines.take(maxLines).joinToString("\n") + "\n…"
 }
 
 @Composable

@@ -151,6 +151,36 @@ class ChatHistoryProjectionTest {
         return bubbles
     }
 
+    @Test
+    fun longReasoningAndToolOutputStayComplete() {
+        val reasoning = "r".repeat(16_001) + "TAIL"
+        val args = "a".repeat(8_001) + "ARGS"
+        val output = (1..13).joinToString("\n") { "line-$it" } + "\n" + "o".repeat(16_001) + "OUT"
+        val message = ProviderMessage(
+            role = "assistant",
+            reasoningContent = reasoning,
+            toolCalls = listOf(HistoryToolCall(id = "call-1", name = "file_read", arguments = args)),
+        )
+        val tool = ProviderMessage(role = "tool", toolCallId = "call-1", name = "file_read", content = output)
+
+        val bubbles = projectHistoryBubbles(listOf(message, tool))
+        val thought = bubbles.single { it.role == "reasoning" }
+        val step = bubbles.single { it.role == "tool" }
+
+        assertEquals(reasoning, thought.content)
+        assertFalse(thought.content.contains("内容已截断"))
+        assertTrue(thought.content.endsWith("TAIL"))
+        assertEquals(args, step.toolArgs)
+        assertEquals(output, step.toolOutput)
+        assertEquals(output, step.content)
+        assertFalse(step.toolOutput.orEmpty().contains("内容已截断"))
+        assertTrue(step.toolOutput.orEmpty().endsWith("OUT"))
+        assertTrue(step.content.lines().size > 12)
+        val summary = buildToolContent("file_read", args, output, done = true, success = true)
+        assertTrue(summary.length < args.length)
+        assertTrue(summary.startsWith("file_read · done"))
+    }
+
     private fun call(id: String) = ProviderMessage(
         role = "assistant",
         toolCalls = listOf(HistoryToolCall(id = id, name = "file_read", arguments = "{}")),
