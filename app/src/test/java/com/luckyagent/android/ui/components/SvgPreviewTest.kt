@@ -29,6 +29,7 @@ class SvgPreviewTest {
         val frame = SvgFrame(100f, 2000f)
         val height = svgCardHeight(frame, widthDp = 300f, viewportDp = 800f)
         assertEquals(576f, height)
+        assertTrue(height > 480f)
         assertTrue(height < 300f * 20f)
         assertTrue(svgCardScrolls(frame, widthDp = 300f, viewportDp = 800f))
     }

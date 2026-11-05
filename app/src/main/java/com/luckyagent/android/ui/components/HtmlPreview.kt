@@ -87,7 +87,22 @@ private class HtmlHeightBridge(
     }
 }
 
-private const val INLINE_HTML_MAX_HEIGHT = 480
+/**
+ * Card height for measured HTML. Same idea as [svgCardHeight]: the card is at
+ * most 72% of the viewport, and a taller page scrolls inside the card.
+ * There is no 480dp hard crop.
+ */
+internal fun inlineHtmlCardHeight(measuredPx: Int, viewportDp: Float): Float {
+    val natural = measuredPx.toFloat().coerceAtLeast(0f)
+    val cap = viewportDp.coerceAtLeast(160f) * 0.72f
+    if (natural <= 0f) return 48f
+    return natural.coerceIn(24f, cap)
+}
+
+internal fun inlineHtmlCardScrolls(measuredPx: Int, viewportDp: Float): Boolean {
+    if (measuredPx <= 0) return false
+    return measuredPx.toFloat() > inlineHtmlCardHeight(measuredPx, viewportDp) + 1f
+}
 
 /** Heavy pages stay as source until the user asks. A light page can render inline. */
 internal const val INLINE_HTML_ACTIVE_LIMIT = 48_000
@@ -109,27 +124,30 @@ internal fun InlineHtmlPreview(source: String, baseUrl: String, headers: Map<Str
     var crashed by remember(source) { mutableStateOf(false) }
     var contentHeight by remember(source) { mutableIntStateOf(0) }
     val render = inlineHtmlShouldRender(source) && !crashed
+    val viewport = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.toFloat()
     // JS offsetHeight is a CSS pixel. With width=device-width that matches 1 dp, so do not divide by density again.
     val height = if (!render) {
         96.dp
-    } else if (contentHeight > 0) {
-        contentHeight.dp.coerceIn(24.dp, INLINE_HTML_MAX_HEIGHT.dp)
     } else {
-        48.dp
+        inlineHtmlCardHeight(contentHeight, viewport).dp
     }
+    val scrolls = render && inlineHtmlCardScrolls(contentHeight, viewport)
     val loader = remember(headers, baseUrl, source) { HtmlResourceLoader(headers, baseUrl) }
     DisposableEffect(loader) { onDispose { loader.close() } }
     Box(
         Modifier
             .fillMaxWidth()
-            .height(height),
+            .height(height)
+            .then(if (scrolls) Modifier.verticalScroll(rememberScrollState()) else Modifier),
     ) {
         if (render && !show) {
             HtmlPageView(
                 source = source,
                 baseUrl = baseUrl,
                 loader = loader,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (scrolls) Modifier.height(contentHeight.dp) else Modifier.fillMaxHeight()),
                 visible = true,
                 zoomable = false,
                 onContentHeight = { contentHeight = it },
@@ -392,13 +410,10 @@ private fun HtmlPageView(
 
 internal fun blockedHtmlResource() = WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
 
-/** Source shown in the viewer. A fenced message is already bounded; an attachment is not. */
-internal const val HTML_SOURCE_PREVIEW_LIMIT = 32_000
+/** Full source in the preview tab. The card no longer cuts the text at 32_000. */
+internal fun htmlSourceText(content: String): String = content
 
 @Composable
-internal fun HtmlSourceText(content: String, complete: Boolean) {
-    if (!complete && content.length > HTML_SOURCE_PREVIEW_LIMIT) {
-        Text("源码较长，此处显示前 ${HTML_SOURCE_PREVIEW_LIMIT} 字符；下载可保存完整文件")
-    }
-    CodeText(if (complete) content else content.take(HTML_SOURCE_PREVIEW_LIMIT))
+internal fun HtmlSourceText(content: String, @Suppress("UNUSED_PARAMETER") complete: Boolean) {
+    CodeText(htmlSourceText(content))
 }
