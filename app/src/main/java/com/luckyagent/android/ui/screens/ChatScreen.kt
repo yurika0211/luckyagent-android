@@ -630,6 +630,30 @@ internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): Str
     return if (done) "$body · 完成" else body
 }
 
+/**
+ * Reasoning body shown outside the fold. Only the latest round of an open
+ * turn qualifies. A final assistant answer makes the outer body yield.
+ * The sheet still receives every round.
+ */
+internal fun exposedReasoning(steps: List<ChatBubble>, yielded: Boolean): ChatBubble? {
+    if (yielded) return null
+    val latest = steps.lastOrNull { bubble ->
+        bubble.role == "reasoning" && bubble.reasoningHasContent && bubble.content.isNotBlank()
+    } ?: return null
+    val round = latest.reasoningRound
+    val earlier = steps.any { bubble ->
+        bubble.role == "reasoning" &&
+            bubble.id != latest.id &&
+            bubble.reasoningHasContent &&
+            bubble.content.isNotBlank() &&
+            bubble.reasoningRound != null &&
+            round != null &&
+            bubble.reasoningRound > round
+    }
+    if (earlier) return null
+    return latest
+}
+
 internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
     val result = mutableListOf<ChatTimelineItem>()
     val steps = mutableListOf<ChatBubble>()
@@ -645,10 +669,13 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
         }
         return candidate
     }
-    fun flushSteps() {
+    fun flushSteps(yielded: Boolean) {
         val visible = visibleProcessSteps(steps)
         if (visible.isNotEmpty()) {
             result += ChatTimelineItem.Process(visible, uniqueKey(visible.first().id))
+            exposedReasoning(visible, yielded)?.let { body ->
+                result += ChatTimelineItem.Message(body, uniqueKey("exposed:${body.id}"))
+            }
             steps.clear()
         }
     }
@@ -658,11 +685,12 @@ internal fun buildTimeline(bubbles: List<ChatBubble>): List<ChatTimelineItem> {
             bubble.toolName != null || (bubble.role == "assistant" && bubble.isIntermediate)) {
             steps += bubble
         } else {
-            flushSteps()
+            val answerArrived = bubble.role.equals("assistant", ignoreCase = true) && !bubble.isIntermediate
+            flushSteps(yielded = answerArrived)
             result += ChatTimelineItem.Message(bubble, uniqueKey(bubble.id))
         }
     }
-    flushSteps()
+    flushSteps(yielded = false)
     return result
 }
 
