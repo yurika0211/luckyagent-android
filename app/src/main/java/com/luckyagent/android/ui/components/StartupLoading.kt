@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
@@ -40,6 +41,7 @@ import com.luckyagent.android.ui.theme.CloverLeaf
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
 /** How long a startup wait may stay on the clover before the caller should offer a retry. */
@@ -67,6 +69,55 @@ fun startupTimedOutCopy(phase: String): String = when (phase) {
 
 /** Whether the system asked this view to reduce motion. The clover then stays still. */
 fun startupMotionReduced(animatorScale: Float): Boolean = animatorScale == 0f
+
+/**
+ * One leaf seat. The oval's long axis follows the tangent, so a leaf does not
+ * stand upright on the stem. [stemEnd] is the junction, not a line through a leaf.
+ */
+internal data class CloverLeafSeat(
+    val center: Offset,
+    val size: Size,
+    val rotationDegrees: Float,
+)
+
+internal data class CloverGeometry(
+    val leaves: List<CloverLeafSeat>,
+    val stemEnd: Offset,
+)
+
+internal fun cloverGeometry(canvas: Float): CloverGeometry {
+    val side = canvas.coerceAtLeast(1f)
+    val center = side / 2f
+    val orbit = side * 0.30f
+    val leafW = side * 0.20f
+    val leafH = side * 0.30f
+    val leaves = List(3) { index ->
+        val angle = Math.toRadians(-90.0 + index * 120.0)
+        val cx = center + cos(angle).toFloat() * orbit
+        val cy = center + sin(angle).toFloat() * orbit
+        // Tangent of the orbit: the oval rotates around its own center.
+        val tangent = Math.toDegrees(angle) + 90.0
+        CloverLeafSeat(
+            center = Offset(cx, cy),
+            size = Size(leafW, leafH),
+            rotationDegrees = tangent.toFloat(),
+        )
+    }
+    // Stem stops short of every leaf. The old 1.15×orbit line ran through the
+    // lower pair; the gap is the orbit minus a leaf's long radius.
+    val stem = (orbit - hypot(leafW / 2f, leafH / 2f) * 0.55f).coerceAtLeast(side * 0.06f)
+    return CloverGeometry(leaves = leaves, stemEnd = Offset(center, center + stem))
+}
+
+/** True when two axis-aligned boxes overlap. Callers pass already-rotated bounds. */
+internal fun cloverBoxesOverlap(a: CloverLeafSeat, b: CloverLeafSeat): Boolean {
+    val aw = a.size.width / 2f
+    val ah = a.size.height / 2f
+    val bw = b.size.width / 2f
+    val bh = b.size.height / 2f
+    return kotlin.math.abs(a.center.x - b.center.x) < aw + bw &&
+        kotlin.math.abs(a.center.y - b.center.y) < ah + bh
+}
 
 /** The visible sentence after the wait limit. Timed-out copy replaces the phase, it does not stack on it. */
 fun startupSpokenPhase(phase: String, timedOut: Boolean): String =
@@ -106,23 +157,24 @@ fun CloverMark(
                 else Modifier.semantics { this.contentDescription = contentDescription },
             ),
     ) {
-        val radius = this.size.minDimension * 0.16f
-        val orbit = this.size.minDimension * 0.22f
+        val geometry = cloverGeometry(this.size.minDimension)
         val active = if (still) -1 else step.toInt().mod(3)
-        repeat(3) { index ->
-            val angle = Math.toRadians(-90.0 + index * 120.0)
-            val cx = center.x + cos(angle).toFloat() * orbit
-            val cy = center.y + sin(angle).toFloat() * orbit
-            drawOval(
-                color = if (still || index == active) CloverAccent else CloverLeaf,
-                topLeft = Offset(cx - radius, cy - radius * 1.35f),
-                size = Size(radius * 2f, radius * 2.7f),
-            )
+        geometry.leaves.forEachIndexed { index, leaf ->
+            rotate(degrees = leaf.rotationDegrees, pivot = leaf.center) {
+                drawOval(
+                    color = if (still || index == active) CloverAccent else CloverLeaf,
+                    topLeft = Offset(
+                        leaf.center.x - leaf.size.width / 2f,
+                        leaf.center.y - leaf.size.height / 2f,
+                    ),
+                    size = leaf.size,
+                )
+            }
         }
         drawLine(
             color = CloverAccent,
-            start = Offset(center.x, center.y),
-            end = Offset(center.x, center.y + orbit * 1.15f),
+            start = center,
+            end = geometry.stemEnd,
             strokeWidth = this.size.minDimension * 0.06f,
         )
     }
