@@ -62,16 +62,17 @@ internal fun htmlPreviewDocument(source: String, resourceBaseUrl: String, inline
     return doc.outerHtml()
 }
 
-/** Measure laid-out content, ignoring viewport-sized ancestors such as 100vh. */
+/**
+ * One-shot content height. Reads the body's direct children only.
+ * A full-DOM walk on a timer made every inline cell stutter.
+ */
 internal const val INLINE_HTML_HEIGHT_JS =
     "(function(){var b=document.body;if(!b)return 0;" +
-        "var bottom=0;var nodes=b.querySelectorAll('*');" +
-        "for(var i=0;i<nodes.length;i++){var n=nodes[i];var s=getComputedStyle(n);" +
-        "if(s.position==='fixed'||s.display==='none'||s.visibility==='hidden')continue;" +
-        "if(n.offsetHeight<=0||n.offsetWidth<=0)continue;" +
-        "var h=n.offsetHeight+n.offsetTop;var p=n.offsetParent;" +
-        "while(p&&p!==b){h+=p.offsetTop-(p.scrollTop||0);p=p.offsetParent}" +
-        "bottom=Math.max(bottom,h)}" +
+        "var bottom=0;var nodes=b.children;" +
+        "for(var i=0;i<nodes.length;i++){var n=nodes[i];" +
+        "if(n.offsetHeight<=0)continue;" +
+        "bottom=Math.max(bottom,n.offsetTop+n.offsetHeight)}" +
+        "if(bottom<=0)bottom=b.offsetHeight;" +
         "return Math.ceil(bottom+8)})()"
 
 private class HtmlHeightBridge(
@@ -246,13 +247,13 @@ internal fun HtmlPreviewDialog(
                                 Spacer(Modifier.height(8.dp))
                                 HtmlSourceText(content.orEmpty(), source != null)
                             }
-                        } else {
+                        } else if (!showSource) {
                             HtmlPageView(
                                 content.orEmpty(),
                                 resourceBase,
                                 loader,
                                 Modifier.fillMaxSize(),
-                                visible = !showSource,
+                                visible = true,
                                 onRenderCrashed = {
                                     renderFailed = HTML_RENDER_CRASH_MESSAGE
                                     onRenderCrashed()
@@ -288,11 +289,12 @@ private fun HtmlPageView(
     val currentLoader by rememberUpdatedState(loader)
     val reportHeight by rememberUpdatedState(onContentHeight)
     val reportCrash by rememberUpdatedState(onRenderCrashed)
+    val measureHeight = onContentHeight != null
     val bridge = remember {
         HtmlHeightBridge { height -> reportHeight?.invoke(height) }
     }
     fun WebView.reportContentHeight() {
-        if (reportHeight == null) return
+        if (!measureHeight) return
         evaluateJavascript(
             "LuckyHtmlBridge.report(String($INLINE_HTML_HEIGHT_JS))",
             null,
@@ -301,7 +303,7 @@ private fun HtmlPageView(
     AndroidView(modifier = modifier, factory = { context -> WebView(context).apply {
         setBackgroundColor(0)
         settings.javaScriptEnabled = true
-        addJavascriptInterface(bridge, "LuckyHtmlBridge")
+        if (measureHeight) addJavascriptInterface(bridge, "LuckyHtmlBridge")
         settings.allowFileAccess = false
         settings.allowContentAccess = false
         settings.domStorageEnabled = false
@@ -354,8 +356,9 @@ private fun HtmlPageView(
                 return true
             }
             override fun onPageFinished(view: WebView, url: String) {
+                // Once, after layout. A 250ms full-tree rescan on every cell kept
+                // historical previews busy after they had already settled.
                 view.reportContentHeight()
-                view.postDelayed({ view.reportContentHeight() }, 250)
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
@@ -366,15 +369,25 @@ private fun HtmlPageView(
             }
         }
     } }, update = { view ->
-        view.visibility = if (visible) android.view.View.VISIBLE else android.view.View.INVISIBLE
+        // Hidden means the fullscreen viewer owns this page. Pause the inline
+        // instance so two WebViews are not running the same document.
+        if (visible) {
+            view.onResume()
+            view.visibility = android.view.View.VISIBLE
+        } else {
+            view.onPause()
+            view.visibility = android.view.View.INVISIBLE
+        }
         val loaded = view.tag as? String
         if (loaded != document) {
             view.tag = document
             view.loadDataWithBaseURL(HTML_PREVIEW_ORIGIN, document, "text/html", null, null)
-        } else {
-            view.reportContentHeight()
         }
-    }, onRelease = { it.stopLoading(); it.destroy() })
+    }, onRelease = { view ->
+        view.stopLoading()
+        view.onPause()
+        view.destroy()
+    })
 }
 
 internal fun blockedHtmlResource() = WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
