@@ -25,6 +25,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -38,8 +39,8 @@ enum class SocketState {
 
 internal interface WsSettings {
     fun snapshot(): ClientSettings
-    fun eventCursor(sessionId: String): String
-    fun saveEventCursor(sessionId: String, cursor: String)
+    fun eventCursor(cursorKey: String): String
+    fun saveEventCursor(cursorKey: String, cursor: String)
 }
 
 class LuckyAgentWsClient internal constructor(
@@ -52,8 +53,8 @@ class LuckyAgentWsClient internal constructor(
 ) {
     constructor(repository: SettingsRepository) : this(object : WsSettings {
         override fun snapshot() = repository.snapshot()
-        override fun eventCursor(sessionId: String) = repository.eventCursor(sessionId)
-        override fun saveEventCursor(sessionId: String, cursor: String) = repository.saveEventCursor(sessionId, cursor)
+        override fun eventCursor(cursorKey: String) = repository.eventCursor(cursorKey)
+        override fun saveEventCursor(cursorKey: String, cursor: String) = repository.saveEventCursor(cursorKey, cursor)
     })
     private val json = Json {
         ignoreUnknownKeys = true
@@ -73,6 +74,13 @@ class LuckyAgentWsClient internal constructor(
         val id: String,
         val config: ConnectionConfig,
     ) {
+        val cursorKey: String = eventCursorKey(
+            apiBase = config.apiBase,
+            wsUrl = config.wsUrl,
+            apiKey = config.apiKey,
+            useBearer = config.useBearer,
+            sessionId = config.sessionId,
+        )
         val socketRef = AtomicReference<WebSocket?>(null)
         // A non-null OkHttp WebSocket may still be waiting for its HTTP upgrade.
         val readiness = MutableStateFlow(SocketState.Connecting)
@@ -192,7 +200,7 @@ class LuckyAgentWsClient internal constructor(
             ReconnectOutbound.serializer(),
             ReconnectOutbound(
                 data = ReconnectOutboundData(
-                    lastMessageId = settingsRepository.eventCursor(connection.config.sessionId),
+                    lastMessageId = settingsRepository.eventCursor(connection.cursorKey),
                 ),
             ),
         )
@@ -350,7 +358,7 @@ class LuckyAgentWsClient internal constructor(
         if (text.length > MAX_INBOUND_MESSAGE_CHARS) {
             val cursor = inboundEventCursor(text)
             if (cursor.isNotEmpty()) {
-                settingsRepository.saveEventCursor(connection.config.sessionId, cursor)
+                settingsRepository.saveEventCursor(connection.cursorKey, cursor)
             }
             _raw.tryEmit(oversizedFrameNotice(text.length))
             if (isCurrent(connection)) {
@@ -374,7 +382,7 @@ class LuckyAgentWsClient internal constructor(
         val parsed = runCatching {
             val env = json.decodeFromString(WsEnvelope.serializer(), text)
             settingsRepository.saveEventCursor(
-                connection.config.sessionId,
+                connection.cursorKey,
                 env.eventId ?: env.id.orEmpty(),
             )
             if (isCurrent(connection)) {
@@ -630,6 +638,30 @@ class LuckyAgentWsClient internal constructor(
 
         /** Diagnostic raw channel cap. Full frames at or under this size pass through. */
         internal const val MAX_RAW_MESSAGE_CHARS = 64_000
+
+        /**
+         * A session id is only unique inside one runtime/account. Hash the full
+         * connection identity before using it as a preference key so a runtime
+         * switch cannot resume from another runtime's event stream.
+         */
+        internal fun eventCursorKey(
+            apiBase: String,
+            wsUrl: String,
+            apiKey: String,
+            useBearer: Boolean,
+            sessionId: String,
+        ): String {
+            val identity = listOf(
+                apiBase.trim().trimEnd('/'),
+                wsUrl.trim(),
+                apiKey.trim(),
+                useBearer.toString(),
+                sessionId.ifBlank { "android-main" },
+            ).joinToString("\u0000")
+            return MessageDigest.getInstance("SHA-256")
+                .digest(identity.toByteArray(Charsets.UTF_8))
+                .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        }
 
         internal fun oversizedFrameNotice(length: Int): String =
             "{\"type\":\"error\",\"error\":\"frame truncated for display\",\"chars\":$length}"

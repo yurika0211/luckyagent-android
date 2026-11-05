@@ -268,20 +268,20 @@ class SettingsRepository(context: Context) {
         }
     }
 
-    fun eventCursor(sessionId: String): String = synchronized(prefs) {
-        val raw = prefs.getString(KEY_EVENT_CURSORS, null) ?: return@synchronized ""
-        runCatching { json.decodeFromString<Map<String, String>>(raw)[sessionId].orEmpty() }.getOrDefault("")
+    /** Reads the cursor for one hashed runtime/account/session namespace. */
+    fun eventCursor(cursorKey: String): String = synchronized(prefs) {
+        if (cursorKey.isBlank()) return@synchronized ""
+        prefs.getString(KEY_EVENT_CURSOR_PREFIX + cursorKey, "").orEmpty()
     }
 
-    fun saveEventCursor(sessionId: String, cursor: String) {
-        if (sessionId.isBlank() || cursor.isBlank()) return
+    /**
+     * Store one cursor without decoding and rewriting every other session's
+     * cursor. [cursorKey] is a SHA-256 digest produced by the WebSocket client.
+     */
+    fun saveEventCursor(cursorKey: String, cursor: String) {
+        if (cursorKey.isBlank() || cursor.isBlank()) return
         synchronized(prefs) {
-            val current = prefs.getString(KEY_EVENT_CURSORS, null)
-                ?.let { runCatching { json.decodeFromString<Map<String, String>>(it) }.getOrDefault(emptyMap()) }
-                .orEmpty()
-                .toMutableMap()
-            current[sessionId] = cursor
-            prefs.edit().putString(KEY_EVENT_CURSORS, json.encodeToString(current)).apply()
+            prefs.edit().putString(KEY_EVENT_CURSOR_PREFIX + cursorKey, cursor).apply()
         }
     }
 
@@ -293,7 +293,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_WS_URL = "ws_url"
         private const val KEY_ENDPOINTS = "runtime_endpoints"
         private const val KEY_ACTIVE_ENDPOINT = "active_runtime_endpoint"
-        private const val KEY_EVENT_CURSORS = "event_cursors"
+        private const val KEY_EVENT_CURSOR_PREFIX = "event_cursor_v2_"
         private const val KEY_SCROLL_ANCHORS = "scroll_anchors"
         private const val KEY_NOTIFY_ON_CHAT_COMPLETED = "notify_on_chat_completed"
         private const val KEY_NOTIFY_ON_CRON = "notify_on_cron"
