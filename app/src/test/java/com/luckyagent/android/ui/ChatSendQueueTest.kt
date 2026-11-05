@@ -9,6 +9,16 @@ import org.junit.Test
 
 class ChatSendQueueTest {
     @Test
+    fun outboundStatusLabelIsSilentUntilFailure() {
+        assertEquals("", outboundStatusLabel(OutboundQueueStatus.Queued))
+        assertEquals("", outboundStatusLabel(OutboundQueueStatus.Sending))
+        assertEquals("", outboundStatusLabel(OutboundQueueStatus.Accepted))
+        assertEquals("", outboundStatusLabel(OutboundQueueStatus.ServerQueued))
+        assertEquals("", outboundStatusLabel(OutboundQueueStatus.Running))
+        assertEquals("未送达", outboundStatusLabel(OutboundQueueStatus.Failed))
+    }
+
+    @Test
     fun itemsKeepInsertionOrderAndAreIsolatedBySession() {
         val queue = OutboundChatQueue()
         queue.add(item("first", sessionId = "s1"))

@@ -229,6 +229,7 @@ import com.luckyagent.android.ui.ChatBubble
 import com.luckyagent.android.ui.ReplacedBubbleList
 import com.luckyagent.android.ui.OutboundQueueItem
 import com.luckyagent.android.ui.OutboundQueueStatus
+import com.luckyagent.android.ui.outboundStatusLabel
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.AttachmentDownloadPhase
@@ -2343,14 +2344,8 @@ private fun BubbleRow(
                             }
                         }
                         bubble.outboundStatus?.let { status ->
-                            val (label, tint) = when (status) {
-                                OutboundQueueStatus.Queued -> "等待发送" to CloverText3
-                                OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
-                                OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
-                                OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
-                                OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
-                                OutboundQueueStatus.Failed -> "未送达" to CloverError
-                            }
+                            val label = outboundStatusLabel(status)
+                            if (label.isEmpty()) return@let
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -2359,7 +2354,7 @@ private fun BubbleRow(
                                 Text(
                                     bubble.outboundError?.let { "$label · $it" } ?: label,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = tint,
+                                    color = CloverError,
                                 )
                                 if (status == OutboundQueueStatus.Failed && bubble.outboundId != null) {
                                     TextButton(
@@ -3630,25 +3625,19 @@ private fun OutboundQueueChip(
     item: OutboundQueueItem,
     onRetry: () -> Unit,
 ) {
-    val (label, tint) = when (item.status) {
-        OutboundQueueStatus.Queued -> "等待发送" to CloverText3
-        OutboundQueueStatus.Sending -> "正在提交" to CloverAccent
-        OutboundQueueStatus.Accepted -> "电脑已收下" to CloverAccent
-        OutboundQueueStatus.ServerQueued -> "电脑已收下，等上一轮结束" to CloverWarning
-        OutboundQueueStatus.Running -> "电脑正在处理" to CloverAccent
-        OutboundQueueStatus.Failed -> "未送达" to CloverError
-    }
+    val label = outboundStatusLabel(item.status)
+    if (label.isEmpty()) return
     Surface(
         shape = RoundedCornerShape(999.dp),
         color = CloverSurface2,
-        border = BorderStroke(1.dp, tint.copy(alpha = .4f)),
+        border = BorderStroke(1.dp, CloverError.copy(alpha = .4f)),
     ) {
         Row(
             modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = tint)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = CloverError)
             Text(
                 item.preview,
                 style = MaterialTheme.typography.labelSmall,

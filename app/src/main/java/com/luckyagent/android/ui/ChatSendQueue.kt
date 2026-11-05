@@ -18,6 +18,17 @@ enum class OutboundQueueStatus {
     Failed,
 }
 
+/** Spoken copy for an outbound item. In-progress states stay silent; failure stays visible. */
+fun outboundStatusLabel(status: OutboundQueueStatus): String = when (status) {
+    OutboundQueueStatus.Failed -> "未送达"
+    OutboundQueueStatus.Queued,
+    OutboundQueueStatus.Sending,
+    OutboundQueueStatus.Accepted,
+    OutboundQueueStatus.ServerQueued,
+    OutboundQueueStatus.Running,
+    -> ""
+}
+
 internal fun OutboundQueueStatus.isInFlight(): Boolean = when (this) {
     OutboundQueueStatus.Sending,
     OutboundQueueStatus.Accepted,
