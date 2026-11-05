@@ -252,6 +252,26 @@ class SettingsRepository(context: Context) {
         }
     }
 
+    /**
+     * Messages hidden on this phone. The computer still has the record.
+     * Keys are `sessionId\u001f bubbleId` so a refresh of the same chat stays hidden.
+     */
+    fun hiddenMessageIds(): Set<String> = synchronized(prefs) {
+        prefs.getStringSet(KEY_HIDDEN_MESSAGES, emptySet()).orEmpty()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
+
+    fun hideMessage(sessionId: String, bubbleId: String) {
+        val key = hiddenMessageKey(sessionId, bubbleId)
+        if (key.isEmpty()) return
+        synchronized(prefs) {
+            val next = hiddenMessageIds() + key
+            prefs.edit().putStringSet(KEY_HIDDEN_MESSAGES, next).apply()
+        }
+    }
+
     /** Last visible chat position, keyed by session so switching chats keeps context. */
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = synchronized(prefs) {
         if (sessionId.isBlank()) return@synchronized null
@@ -322,8 +342,16 @@ class SettingsRepository(context: Context) {
         private const val KEY_STANDALONE_SESSION = "standalone_session_id"
         private const val KEY_DISMISSED_WORK_CARDS = "dismissed_work_cards"
         private const val KEY_HIDDEN_SESSION_CARDS = "hidden_session_cards"
+        private const val KEY_HIDDEN_MESSAGES = "hidden_messages"
         private const val KEY_SHOW_SESSION_CARD = "show_session_card"
     }
+}
+
+internal fun hiddenMessageKey(sessionId: String, bubbleId: String): String {
+    val session = sessionId.trim()
+    val bubble = bubbleId.trim()
+    if (session.isEmpty() || bubble.isEmpty()) return ""
+    return "$session\u001f$bubble"
 }
 
 fun Int.opacityFraction(): Float = coerceIn(0, 100) / 100f

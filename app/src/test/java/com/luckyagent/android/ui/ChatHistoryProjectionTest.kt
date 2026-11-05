@@ -5,6 +5,7 @@ import com.luckyagent.android.data.api.MediaAttachment
 import com.luckyagent.android.data.api.ProviderMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -108,6 +109,21 @@ class ChatHistoryProjectionTest {
         assertEquals((0 until count).map { "result $it" }, bubbles.take(count).map { it.toolOutput })
         assertEquals((0 until count).map { "orphan $it" }, bubbles.drop(count).map { it.toolOutput })
         assertEquals(count + 100, bubbles.first().historyIndex)
+    }
+
+    @Test
+    fun retryOnEarlierAssistantSendsThatUserTurn() {
+        val bubbles = listOf(
+            ChatBubble(id = "user-a", role = "user", content = "sentence A"),
+            ChatBubble(id = "assistant-a", role = "assistant", content = "answer A"),
+            ChatBubble(id = "user-b", role = "user", content = "sentence B"),
+            ChatBubble(id = "assistant-b", role = "assistant", content = "answer B"),
+        )
+
+        assertEquals("sentence A", retrySourceForAssistant(bubbles, "assistant-a")?.content)
+        assertEquals("sentence B", retrySourceForAssistant(bubbles, "assistant-b")?.content)
+        assertNull(retrySourceForAssistant(bubbles, "missing"))
+        assertNull(retrySourceForAssistant(bubbles, "user-a"))
     }
 
     /** Reference implementation before the indexed join; used only on small fixtures. */
