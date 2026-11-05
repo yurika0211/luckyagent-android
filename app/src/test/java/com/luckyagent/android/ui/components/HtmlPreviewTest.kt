@@ -5,6 +5,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.jsoup.Jsoup
 import org.junit.Assert.*
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
@@ -64,6 +65,17 @@ class HtmlPreviewTest {
         assertFalse(INLINE_HTML_HEIGHT_JS.contains("scrollHeight"))
         assertFalse(INLINE_HTML_HEIGHT_JS.contains("querySelectorAll"))
         assertTrue(INLINE_HTML_HEIGHT_JS.contains("b.children"))
+    }
+
+    @Test fun measuredHtmlTallerThan480ScrollsInsideTheCardInsteadOfCropping() {
+        val viewport = 800f
+        val measured = 1200
+        val card = inlineHtmlCardHeight(measured, viewport)
+        assertTrue(card > 480f)
+        assertEquals(viewport * 0.72f, card, 0.01f)
+        assertTrue(inlineHtmlCardScrolls(measured, viewport))
+        assertFalse(inlineHtmlCardScrolls(200, viewport))
+        assertEquals("x".repeat(40_000), htmlSourceText("x".repeat(40_000)))
     }
 
     @Test fun absoluteThirdPartyUrlsAreNotProxied() {
