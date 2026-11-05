@@ -76,6 +76,10 @@ class ChatNavigationTest {
         assertFalse(hiddenSessionCard(hidden, "chat", SessionCardKind.Task, SESSION_PANEL_CARD_ID))
     }
 
+    @Test fun sessionCardStartsHiddenUntilTheComposerSwitchTurnsItOn() {
+        assertFalse(com.luckyagent.android.data.settings.ClientSettings().showSessionCard)
+    }
+
     @Test fun navigationKeepsSessionProgressOffTheModuleList() {
         assertEquals(
             listOf(
