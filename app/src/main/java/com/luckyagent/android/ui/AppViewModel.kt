@@ -387,6 +387,8 @@ data class AppUiState(
     val dismissedWorkCardIds: Set<String> = emptySet(),
     /** Session cards hidden on this phone. The computer still has the records. */
     val hiddenSessionCards: Set<String> = emptySet(),
+    /** Chat bubbles hidden on this phone. The computer still has the messages. */
+    val hiddenMessageIds: Set<String> = emptySet(),
     val backgroundLoading: Boolean = false,
     val backgroundError: String? = null,
     val backgroundFilter: BackgroundFilter = BackgroundFilter.All,
@@ -448,6 +450,7 @@ class AppViewModel(
             settings = container.settingsRepository.snapshot(),
             dismissedWorkCardIds = container.settingsRepository.dismissedWorkCardIds(),
             hiddenSessionCards = container.settingsRepository.hiddenSessionCards(),
+            hiddenMessageIds = container.settingsRepository.hiddenMessageIds(),
         ),
     )
     val ui: StateFlow<AppUiState> = _ui.asStateFlow()
@@ -2702,21 +2705,33 @@ class AppViewModel(
         _ui.update { it.copy(snackbarMessage = "已复制") }
     }
 
-    /** Removes a message from the current local transcript after confirmation. */
+    /**
+     * Hides one bubble on this phone and remembers it. A later history refresh
+     * still drops the same id. The server copy is left in place.
+     */
     fun deleteBubble(id: String) {
         if (id.isBlank()) return
-        _ui.update { state -> state.copy(bubbles = state.bubbles.filterNot { it.id == id }) }
+        val sessionId = currentSessionId()
+        container.settingsRepository.hideMessage(sessionId, id)
+        val key = com.luckyagent.android.data.settings.hiddenMessageKey(sessionId, id)
+        _ui.update { state ->
+            state.copy(
+                bubbles = state.bubbles.filterNot { it.id == id },
+                hiddenMessageIds = if (key.isEmpty()) state.hiddenMessageIds else state.hiddenMessageIds + key,
+            )
+        }
     }
 
-    /** Re-sends the latest user turn so the last assistant answer can be regenerated. */
-    fun retryLastResponse() {
-        val text = _ui.value.bubbles
-            .lastOrNull { it.role.equals("user", ignoreCase = true) }
-            ?.content
-            ?.trim()
-            .orEmpty()
+    /**
+     * Re-sends the user message that produced [assistantId]. A later user turn
+     * in the same thread is not this reply, so it is not sent. No matching
+     * user message means nothing is sent.
+     */
+    fun retryAssistantResponse(assistantId: String) {
+        val source = com.luckyagent.android.ui.retrySourceForAssistant(_ui.value.bubbles, assistantId) ?: return
+        val text = source.content.trim()
         if (text.isBlank()) return
-        _ui.update { it.copy(composer = text, pendingQuote = null, snackbarMessage = null) }
+        _ui.update { it.copy(composer = text, pendingQuote = source.quote, snackbarMessage = null) }
         sendComposer()
     }
 
@@ -4113,7 +4128,11 @@ class AppViewModel(
             // A stored row and its still-pending outbox copy are one message.
             // Appending the copy put it under its own answer.
             val stored = (bubbles + live).distinctBy { it.id }
-            val shown = interleavePendingOutbound(stored, pendingBubbles).distinctBy { it.id }
+            val hidden = current.hiddenMessageIds
+            val visible = stored.filterNot { bubble ->
+                com.luckyagent.android.data.settings.hiddenMessageKey(sessionId, bubble.id) in hidden
+            }
+            val shown = interleavePendingOutbound(visible, pendingBubbles).distinctBy { it.id }
             current.copy(
                 bubbles = shown,
                 outboundQueue = pendingItems,

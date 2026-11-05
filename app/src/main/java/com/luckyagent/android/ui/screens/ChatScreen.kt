@@ -199,6 +199,7 @@ import com.luckyagent.android.ui.recapLabel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.luckyagent.android.ui.retrySourceForAssistant
 import com.luckyagent.android.ui.canCreateSessionInGroup
 import com.luckyagent.android.ui.isFixedRoleSession
 import com.luckyagent.android.ui.projectForNewSession
@@ -1247,6 +1248,10 @@ private fun ChatConversation(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val messageSpeaker = remember { MessageSpeaker(context) }
+    DisposableEffect(messageSpeaker) {
+        onDispose { messageSpeaker.release() }
+    }
     val recap = state.sessionRecap?.takeIf {
         it.sessionId == state.settings.sessionId && it.endpoint == state.settings.apiBase
     }?.text?.takeIf { it.isNotBlank() }
@@ -1544,9 +1549,10 @@ private fun ChatConversation(
                                 },
                                 showActions = item.bubble.id == latestAssistantId,
                                 onDelete = vm::deleteBubble,
-                                onRetry = vm::retryLastResponse,
+                                onRetry = { vm.retryAssistantResponse(item.bubble.id) },
+                                canRetry = retrySourceForAssistant(state.bubbles, item.bubble.id) != null,
                                 onRetryOutbound = vm::retryOutboundMessage,
-                                onSpeak = { bubble -> speakText(context, bubble.content) },
+                                onSpeak = { bubble -> messageSpeaker.speak(bubble.content) },
                                 onExpand = vm::expandTruncatedMessage,
                                 expanding = state.expandingHistoryIndex >= 0 &&
                                     state.expandingHistoryIndex == item.bubble.historyIndex,
@@ -2233,6 +2239,7 @@ private fun BubbleRow(
     showActions: Boolean = false,
     onDelete: (String) -> Unit = {},
     onRetry: () -> Unit = {},
+    canRetry: Boolean = false,
     onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
     onExpand: (ChatBubble) -> Unit = {},
@@ -2284,12 +2291,7 @@ private fun BubbleRow(
                         )
                         Spacer(Modifier.height(4.dp))
                     }
-                    Column(
-                        Modifier
-                            .pointerInput(bubble.id) {
-                                detectTapGestures(onLongPress = { menuExpanded = true })
-                            },
-                    ) {
+                    Column {
                         bubble.quote?.let { quote ->
                             QuoteCard(quote = quote, compact = true)
                             Spacer(Modifier.height(8.dp))
@@ -2306,7 +2308,11 @@ private fun BubbleRow(
                                         Modifier.padding(vertical = 2.dp)
                                     },
                                 )
-                            Box(textModifier) {
+                            Box(
+                                textModifier.pointerInput(bubble.id) {
+                                    detectTapGestures(onLongPress = { menuExpanded = true })
+                                },
+                            ) {
                                 MarkdownText(
                                     markdown = bubble.content,
                                     imageHeaders = imageHeaders,
@@ -2384,21 +2390,26 @@ private fun BubbleRow(
                                 onCopy = { onCopy(bubble) },
                                 onSpeak = { onSpeak(bubble) },
                                 onRetry = onRetry,
-                                onMore = { menuExpanded = true },
+                                showRetry = canRetry,
+                                onQuote = { onQuote(bubble) },
+                                onInfo = { infoExpanded = true },
+                                onDelete = { deleteConfirm = true },
                             )
                         }
                         if (bubble.createdAt != null || bubble.usage != null) {
                             MessageMetadata(bubble)
                         }
                     }
-                    MessageActionMenu(
-                        expanded = menuExpanded,
-                        onDismiss = { menuExpanded = false },
-                        onQuote = { onQuote(bubble) },
-                        onCopy = { onCopy(bubble) },
-                        onInfo = { infoExpanded = true },
-                        onDelete = { deleteConfirm = true },
-                    )
+                    if (!showActions) {
+                        MessageActionMenu(
+                            expanded = menuExpanded,
+                            onDismiss = { menuExpanded = false },
+                            onQuote = { onQuote(bubble) },
+                            onCopy = { onCopy(bubble) },
+                            onInfo = { infoExpanded = true },
+                            onDelete = { deleteConfirm = true },
+                        )
+                    }
                 }
             }
         }
@@ -2426,7 +2437,7 @@ private fun BubbleRow(
         AlertDialog(
             onDismissRequest = { deleteConfirm = false },
             title = { Text("删除消息？") },
-            text = { Text("这条消息会从当前设备的聊天视图中移除。") },
+            text = { Text("这条消息会从这台手机的聊天里隐藏，刷新后也不会再出现。电脑上的记录还在。") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -2445,7 +2456,10 @@ private fun MessageActionRow(
     onCopy: () -> Unit,
     onSpeak: () -> Unit,
     onRetry: () -> Unit,
-    onMore: () -> Unit,
+    showRetry: Boolean,
+    onQuote: () -> Unit,
+    onInfo: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     Row(
         Modifier.padding(top = 4.dp),
@@ -2457,11 +2471,19 @@ private fun MessageActionRow(
         IconButton(onClick = onSpeak, modifier = Modifier.size(36.dp)) {
             Icon(Icons.Outlined.VolumeUp, contentDescription = "朗读", tint = CloverText2, modifier = Modifier.size(19.dp))
         }
-        IconButton(onClick = onRetry, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Outlined.Replay, contentDescription = "重试", tint = CloverText2, modifier = Modifier.size(19.dp))
+        if (showRetry) {
+            IconButton(onClick = onRetry, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.Replay, contentDescription = "重试", tint = CloverText2, modifier = Modifier.size(19.dp))
+            }
         }
-        IconButton(onClick = onMore, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Outlined.MoreHoriz, contentDescription = "更多", tint = CloverText2, modifier = Modifier.size(20.dp))
+        IconButton(onClick = onQuote, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = "引用", tint = CloverText2, modifier = Modifier.size(19.dp))
+        }
+        IconButton(onClick = onInfo, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Outlined.Info, contentDescription = "信息", tint = CloverText2, modifier = Modifier.size(19.dp))
+        }
+        IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除", tint = CloverError, modifier = Modifier.size(19.dp))
         }
     }
 }
@@ -2671,14 +2693,43 @@ private fun formatMessageTime(raw: String): String {
     }.getOrElse { raw.take(16).replace('T', ' ') }
 }
 
-private fun speakText(context: Context, text: String) {
-    if (text.isBlank()) return
-    var speaker: TextToSpeech? = null
-    speaker = TextToSpeech(context) { status ->
-        if (status == TextToSpeech.SUCCESS) {
-            speaker?.language = Locale.getDefault()
-            speaker?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "luckyagent-message")
+/**
+ * One speaker for the chat page. [release] stops speech and shuts the engine
+ * down when the page leaves, so a new engine is not created per tap.
+ */
+private class MessageSpeaker(context: Context) {
+    private val appContext = context.applicationContext
+    private var speaker: TextToSpeech? = null
+    private var ready = false
+    private var pending: String? = null
+
+    fun speak(text: String) {
+        val spoken = text.trim()
+        if (spoken.isBlank()) return
+        val current = speaker
+        if (current != null && ready) {
+            current.speak(spoken, TextToSpeech.QUEUE_FLUSH, null, "luckyagent-message")
+            return
         }
+        pending = spoken
+        if (current != null) return
+        speaker = TextToSpeech(appContext) { status ->
+            val engine = speaker ?: return@TextToSpeech
+            if (status != TextToSpeech.SUCCESS) return@TextToSpeech
+            ready = true
+            engine.language = Locale.getDefault()
+            val next = pending ?: return@TextToSpeech
+            pending = null
+            engine.speak(next, TextToSpeech.QUEUE_FLUSH, null, "luckyagent-message")
+        }
+    }
+
+    fun release() {
+        pending = null
+        ready = false
+        speaker?.stop()
+        speaker?.shutdown()
+        speaker = null
     }
 }
 

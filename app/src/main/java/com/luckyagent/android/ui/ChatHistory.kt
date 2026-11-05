@@ -61,6 +61,22 @@ internal fun projectHistoryBubbles(
 }
 
 /**
+ * The user message that produced [assistantId]. Later user turns in the same
+ * thread are not this reply. Null when this bubble is missing or no user
+ * message precedes it, so retry must stay hidden.
+ */
+internal fun retrySourceForAssistant(bubbles: List<ChatBubble>, assistantId: String): ChatBubble? {
+    if (assistantId.isBlank()) return null
+    val index = bubbles.indexOfLast { it.id == assistantId }
+    if (index < 0) return null
+    return bubbles.asSequence()
+        .take(index)
+        .lastOrNull { bubble ->
+            bubble.role.equals("user", ignoreCase = true) && bubble.content.isNotBlank()
+        }
+}
+
+/**
  * Shared history projection, kept pure so tool-round commentary and final answers can be regression tested.
  * Every bubble carries [idx], the session-wide oldest-first index of the server
  * message it came from. That index is the identity a live turn is reconciled
