@@ -6,7 +6,37 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+private const val Issue136Table = """
+| 类型 | 进程数 | RSS |
+|---|---|---|
+| claude | 15 | 2271 MB |
+| python（uvicorn 测试服务） | 6 | 844 MB |
+| grok | 9 | 815 MB |
+| gopls | 4 | 393 MB |
+| pi | 3 | 388 MB |
+| fish（各 pane 的 shell） | 26 | 181 MB |
+| codex | 1 | 141 MB |
+| devin | 2 | 93 MB |
+| 其余（mojoreviewer、cloudflared、noema、estuary-rag、herdr 本体等） | — | 约 255 MB |
+"""
+
 class MarkdownParserTest {
+    @Test
+    fun cjkTableColumnIsWiderThanALatinLengthEstimate() {
+        val table = table(Issue136Table.trim())
+        val cell = "其余（mojoreviewer、cloudflared、noema、estuary-rag、herdr 本体等）"
+        val units = markdownTableDisplayUnits(cell)
+        val width = markdownTableColumnWidthDp(table.rows, 0)
+
+        assertEquals(10, table.rows.size)
+        assertTrue(units >= cell.length * 2 - cell.count { it.code in 0x20..0x7E })
+        assertTrue(units > cell.length)
+        assertEquals(units * 8 + 16, width)
+        assertTrue(width > 280)
+        assertTrue(width >= markdownTableDisplayUnits("python（uvicorn 测试服务）") * 8 + 16)
+        assertTrue(width >= markdownTableDisplayUnits("fish（各 pane 的 shell）") * 8 + 16)
+    }
+
     @Test
     fun parsesTwoColumnTableWithHeaderAndBody() {
         val table = table("| Name | Count |\n| --- | --- |\n| apples | 2 |\n| pears | 3 |")
