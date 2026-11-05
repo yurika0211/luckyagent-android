@@ -80,6 +80,12 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.FolderZip
+import androidx.compose.material.icons.outlined.GridOn
+import androidx.compose.material.icons.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Compress
@@ -91,6 +97,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.AudioFile
+import androidx.compose.material.icons.outlined.VideoFile
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
@@ -273,7 +280,10 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.quotePreview
+import com.luckyagent.android.ui.util.FileVisualKind
 import com.luckyagent.android.ui.util.artifactDownloadUrl
+import com.luckyagent.android.ui.util.fileVisualKind
+import com.luckyagent.android.ui.util.fileVisualLabel
 import com.luckyagent.android.ui.util.canDownloadAttachment
 import com.luckyagent.android.ui.components.HtmlPreviewDialog
 import com.luckyagent.android.ui.components.isHtmlAttachment
@@ -2514,20 +2524,20 @@ private fun QuoteCard(quote: MessageQuote, compact: Boolean = false, onClear: ((
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(CloverSurface2)
-            .border(0.5.dp, CloverLine.copy(alpha = .55f), RoundedCornerShape(12.dp))
-            .padding(horizontal = 10.dp, vertical = if (compact) 8.dp else 10.dp),
+            .border(0.5.dp, CloverLine.copy(alpha = .28f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = if (compact) 5.dp else 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             Modifier
-                .width(3.dp)
-                .height(if (compact) 28.dp else 34.dp)
+                .width(2.dp)
+                .height(if (compact) 22.dp else 26.dp)
                 .clip(RoundedCornerShape(999.dp))
-                .background(CloverAccent),
+                .background(CloverAccent.copy(alpha = .72f)),
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(7.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 "回复 ${quoteRoleLabel(quote.role)}",
@@ -5067,6 +5077,13 @@ private fun AttachmentFileCard(
             .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                fileVisualIcon(fileVisualKind(descriptor.fileName, descriptor.mimeType)),
+                contentDescription = null,
+                tint = CloverText2,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(Modifier.width(8.dp))
             Text(
                 text = descriptor.fileName ?: "附件",
                 style = MaterialTheme.typography.bodyMedium,
@@ -5076,7 +5093,7 @@ private fun AttachmentFileCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Column(horizontalAlignment = Alignment.End) {
-                Text(mediaTypeLabel(kind), style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                Text(mediaTypeLabel(kind, descriptor), style = MaterialTheme.typography.labelSmall, color = CloverText3)
                 AttachmentDownloadButton(media, imageBaseUrl, onDownload, download)
             }
         }
@@ -5146,7 +5163,7 @@ private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit, onRetry:
             Spacer(Modifier.width(7.dp))
         } else {
             Icon(
-                if (media.mimeType.startsWith("audio/")) Icons.Outlined.AudioFile else Icons.Outlined.AttachFile,
+                pendingFileIcon(media.mimeType, media.fileName),
                 contentDescription = null,
                 tint = CloverText2,
                 modifier = Modifier.size(22.dp),
@@ -5175,12 +5192,30 @@ private fun PendingMediaChip(media: PendingMedia, onRemove: () -> Unit, onRetry:
     }
 }
 
-private fun mediaTypeLabel(type: String): String = when (type.lowercase()) {
+private fun mediaTypeLabel(
+    type: String,
+    descriptor: com.luckyagent.android.data.api.MediaAttachment? = null,
+): String = when (type.lowercase()) {
     "image" -> "图片"
     "video" -> "视频"
     "audio" -> "音频"
     "html" -> "HTML"
-    else -> "文件"
+    else -> fileVisualLabel(descriptor?.fileName, descriptor?.mimeType)
+}
+
+private fun fileVisualIcon(kind: FileVisualKind) = when (kind) {
+    FileVisualKind.Pdf -> Icons.Outlined.PictureAsPdf
+    FileVisualKind.Archive -> Icons.Outlined.FolderZip
+    FileVisualKind.Code -> Icons.Outlined.Code
+    FileVisualKind.Spreadsheet -> Icons.Outlined.GridOn
+    FileVisualKind.Document -> Icons.Outlined.Description
+    FileVisualKind.Unknown -> Icons.Outlined.InsertDriveFile
+}
+
+private fun pendingFileIcon(mimeType: String, fileName: String) = when {
+    mimeType.startsWith("audio/") -> Icons.Outlined.AudioFile
+    mimeType.startsWith("video/") -> Icons.Outlined.VideoFile
+    else -> fileVisualIcon(fileVisualKind(fileName, mimeType))
 }
 
 @Composable

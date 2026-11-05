@@ -69,9 +69,25 @@ fun buildOutboundMessage(userText: String, quote: MessageQuote?, maxChars: Int =
 }
 
 fun quotePreview(content: String, max: Int = 72): String {
-    val normalized = content.trim().replace(Regex("\\s+"), " ")
+    val normalized = stripQuoteMarkdown(content).replace(Regex("\\s+"), " ").trim()
     if (normalized.length <= max) return normalized
     return normalized.take(max.coerceAtLeast(1)).trimEnd() + "…"
+}
+
+/** Preview text only. The outbound `> [引用-role]` block stays in [formatQuoteBlock]. */
+internal fun stripQuoteMarkdown(content: String): String {
+    var text = content.replace("\r\n", "\n").replace('\r', '\n')
+    text = text.replace(Regex("```[a-zA-Z0-9_-]*\\n?"), "")
+    text = text.replace("`", "")
+    text = text.replace(Regex("!\\[([^\\]]*)\\]\\([^)]*\\)"), "$1")
+    text = text.replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
+    text = text.replace(Regex("(?m)^\\s{0,3}#{1,6}\\s*"), "")
+    text = text.replace(Regex("(?m)^\\s{0,3}>\\s?"), "")
+    text = text.replace(Regex("(?m)^\\s*[-*+]\\s+"), "")
+    text = text.replace(Regex("\\*\\*|__"), "")
+    text = text.replace(Regex("(?<![\\w*])[*_](?![\\w*])"), "")
+    text = text.replace(Regex("~~"), "")
+    return text
 }
 
 fun quoteRoleLabel(role: String): String = when (role.trim().lowercase()) {
