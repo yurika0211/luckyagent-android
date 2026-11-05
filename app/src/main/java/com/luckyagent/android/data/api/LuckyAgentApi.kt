@@ -465,6 +465,17 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun healthDetail(): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url("/api/v1/health/detail")).get().build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("health detail ${resp.code}: $body")
+                body.ifBlank { "{}" }
+            }
+        }
+    }
+
     suspend fun healthLive(): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder().url(url("/api/v1/health/live")).get().build()

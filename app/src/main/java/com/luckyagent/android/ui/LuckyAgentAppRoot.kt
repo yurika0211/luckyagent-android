@@ -527,6 +527,17 @@ private fun NavigationPage(
             )
             computerNavItems.forEach { DrawerNavItem(it, state, onSelect) }
         }
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+            state.hostResourceLines.take(3).forEach { line ->
+                Text(
+                    line,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CloverText3,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+        }
         HorizontalDivider(Modifier.padding(horizontal = 20.dp))
         Box(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
             DrawerNavItem(nav(AppDestination.Settings), state, onSelect)
