@@ -332,6 +332,8 @@ data class AppUiState(
     val reconnectInfo: String? = null,
     val healthText: String? = null,
     val healthOk: Boolean? = null,
+    /** Sidebar host readings. Missing server fields stay as dashes. */
+    val hostResourceLines: List<String> = formatHostResources(null).lines,
     /** Shown by the first-connection step. Null when that step has nothing new to say. */
     val connectionNotice: String? = null,
     /** Ready only after an authenticated request succeeds in this session. */
@@ -478,6 +480,7 @@ class AppViewModel(
     private var taskPollingJob: Job? = null
     private var backgroundPollingJob: Job? = null
     private var cronPollingJob: Job? = null
+    private var hostResourceJob: Job? = null
     private var runRecoveryJob: Job? = null
     private val taskFingerprints = mutableMapOf<String, String>()
     private val backgroundFingerprints = mutableMapOf<String, String>()
@@ -2504,7 +2507,13 @@ class AppViewModel(
 
     fun setAppForeground(value: Boolean) {
         appInForeground = value
-        if (value) ensureRuntimeWatch() else stopRuntimeWatch()
+        if (value) {
+            ensureRuntimeWatch()
+            startHostResourceWatch()
+        } else {
+            stopRuntimeWatch()
+            stopHostResourceWatch()
+        }
     }
 
     fun checkForUpdates() {
@@ -3256,6 +3265,7 @@ class AppViewModel(
             settingsReconnectJob = null
             if (next.connectionMode == "standalone") {
                 stopRuntimeWatch()
+                stopHostResourceWatch()
                 approvalPollingJob?.cancel()
                 approvalPollingJob = null
                 historyJob?.cancel()
@@ -3296,6 +3306,7 @@ class AppViewModel(
                         reconnectInfo = null,
                         healthText = null,
                         healthOk = null,
+                        hostResourceLines = formatHostResources(null).lines,
                         pendingApprovals = emptyList(),
                         approvalsLoading = false,
                         approvalsError = null,
@@ -3355,15 +3366,29 @@ class AppViewModel(
         if (isStandaloneConnection()) return
         viewModelScope.launch {
             val result = container.api.healthLive()
+            val resources = readHostResources()
             if (isStandaloneConnection()) return@launch
             _ui.update {
                 it.copy(
                     healthOk = result.isSuccess,
                     healthText = result.getOrElse { error -> error.message ?: "没能连上这台电脑" },
+                    hostResourceLines = resources.lines,
                     activityLine = if (result.isSuccess) "已连接" else "未连接。重新连接后再试。",
                 )
             }
         }
+    }
+
+    /** Reads optional process RSS, CPU, disk, and Go heap. Missing keys stay as dashes. */
+    private suspend fun readHostResources(): HostResourceLines {
+        val detail = container.api.healthDetail()
+        return detail.getOrNull()?.let { body ->
+            runCatching {
+                hostResourcesFromDetail(
+                    Json { ignoreUnknownKeys = true }.parseToJsonElement(body) as? JsonObject,
+                )
+            }.getOrNull()
+        } ?: formatHostResources(null)
     }
 
     /**
@@ -5371,6 +5396,27 @@ class AppViewModel(
             AppDestination.Cron -> startCronPolling()
             else -> Unit
         }
+        startHostResourceWatch()
+    }
+
+    /** Sidebar host readings. Tens of seconds, not a live graph. */
+    private fun startHostResourceWatch() {
+        if (!appInForeground || isStandaloneConnection()) return
+        if (hostResourceJob?.isActive == true) return
+        hostResourceJob = viewModelScope.launch {
+            while (isActive && appInForeground && !isStandaloneConnection()) {
+                val lines = readHostResources().lines
+                _ui.update { state ->
+                    if (state.hostResourceLines == lines) state else state.copy(hostResourceLines = lines)
+                }
+                delay(HOST_RESOURCE_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopHostResourceWatch() {
+        hostResourceJob?.cancel()
+        hostResourceJob = null
     }
 
     private fun stopRuntimeWatch() {
@@ -6187,6 +6233,7 @@ class AppViewModel(
             return Regex("\\*\\*([^*\\n（(]+)").find(prompt)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         }
 
+        const val HOST_RESOURCE_INTERVAL_MS = 30_000L
         const val TASK_POLL_INTERVAL_MS = 3_000L
         const val BACKGROUND_POLL_INTERVAL_MS = 3_000L
         const val RUN_RECOVERY_POLL_INTERVAL_MS = 10_000L
@@ -6195,6 +6242,7 @@ class AppViewModel(
     }
 
     override fun onCleared() {
+        stopHostResourceWatch()
         stopTaskPolling()
         stopBackgroundPolling()
         runRecoveryJob?.cancel()
