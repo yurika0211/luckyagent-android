@@ -64,9 +64,16 @@ class ChatTimelineTest {
     @Test
     fun unfinishedQueryKeepsCommentaryInTheFoldWithoutInventingAnAnswer() {
         val items = timeline(listOf(ProviderMessage(role = "user", content = "Continue working")) + round(1) + round(2))
+        val fold = items.filterIsInstance<ChatTimelineItem.Process>().single()
+        val outer = items.filterIsInstance<ChatTimelineItem.Message>().filter { it.bubble.role == "reasoning" }
 
-        assertEquals(2, items.size)
-        assertEquals(2, (items.last() as ChatTimelineItem.Process).steps.count { it.isIntermediate })
+        assertEquals(2, fold.steps.count { it.isIntermediate })
+        assertEquals(listOf("Reasoning 2"), outer.map { it.bubble.content })
+        assertTrue(items.none { item ->
+            item is ChatTimelineItem.Message &&
+                item.bubble.role == "assistant" &&
+                !item.bubble.isIntermediate
+        })
     }
 
     @Test
@@ -440,6 +447,55 @@ class ChatTimelineTest {
         assertTrue(processOwnsTurn(folds[1].steps, next))
         assertTrue(folds[1].steps.all(::isTurnStatusPlaceholder))
         assertEquals(null, outerProcessLabel("thinking", null, isResponding = true, isLatestProcess = true, ownsCurrentTurn = false))
+    }
+
+    @Test
+    fun currentRoundReasoningShowsOutsideAndYieldsToTheAnswer() {
+        val round1 = "r".repeat(16_001) + "ROUND1"
+        val round2 = "s".repeat(16_001) + "ROUND2"
+        val open = listOf(
+            ChatBubble("u", "user", "question"),
+            ChatBubble("reasoning-turn-1", "reasoning", round1, reasoningHasContent = true, reasoningRound = 1),
+            ChatBubble("tool-1", "tool", "file_read · done", toolName = "file_read", toolDone = true),
+            ChatBubble("reasoning-turn-2", "reasoning", round2, reasoningHasContent = true, reasoningRound = 2),
+        )
+        val shown = buildTimeline(open)
+        val outer = shown.filterIsInstance<ChatTimelineItem.Message>().filter { it.bubble.role == "reasoning" }
+        val sheet = shown.filterIsInstance<ChatTimelineItem.Process>().single().steps
+
+        assertEquals(listOf(round2), outer.map { it.bubble.content })
+        assertEquals("exposed:reasoning-turn-2", outer.single().key.removePrefix("timeline:"))
+        assertTrue(sheet.any { it.id == "reasoning-turn-1" && it.content == round1 })
+        assertTrue(sheet.any { it.id == "reasoning-turn-2" && it.content == round2 })
+        assertTrue(sheet.any { it.role == "tool" })
+        assertFalse(outer.single().bubble.content.contains("内容已截断"))
+
+        val answered = open + ChatBubble("final", "assistant", "Final answer")
+        val done = buildTimeline(answered)
+        assertTrue(done.filterIsInstance<ChatTimelineItem.Message>().none { it.bubble.role == "reasoning" })
+        assertEquals("Final answer", (done.last() as ChatTimelineItem.Message).bubble.content)
+        val kept = done.filterIsInstance<ChatTimelineItem.Process>().single().steps
+        assertEquals(listOf("reasoning-turn-1", "reasoning-turn-2"), kept.filter { it.role == "reasoning" }.map { it.id })
+    }
+
+    @Test
+    fun sameRoundReasoningReplacesTheOuterBody() {
+        val first = buildTimeline(
+            listOf(
+                ChatBubble("u", "user", "question"),
+                ChatBubble("reasoning-turn-1", "reasoning", "first body", reasoningHasContent = true, reasoningRound = 1),
+            ),
+        )
+        val second = buildTimeline(
+            listOf(
+                ChatBubble("u", "user", "question"),
+                ChatBubble("reasoning-turn-1", "reasoning", "replaced body", reasoningHasContent = true, reasoningRound = 1),
+            ),
+        )
+
+        assertEquals(listOf("first body"), first.filterIsInstance<ChatTimelineItem.Message>().filter { it.bubble.role == "reasoning" }.map { it.bubble.content })
+        assertEquals(listOf("replaced body"), second.filterIsInstance<ChatTimelineItem.Message>().filter { it.bubble.role == "reasoning" }.map { it.bubble.content })
+        assertEquals(1, second.count { it is ChatTimelineItem.Message && it.bubble.role == "reasoning" })
     }
 
     @Test
