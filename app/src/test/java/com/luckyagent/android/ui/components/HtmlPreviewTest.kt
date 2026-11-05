@@ -62,6 +62,8 @@ class HtmlPreviewTest {
         assertFalse(dialog.select("style").last()!!.data().contains("height:auto!important"))
         assertTrue(INLINE_HTML_HEIGHT_JS.contains("offsetHeight"))
         assertFalse(INLINE_HTML_HEIGHT_JS.contains("scrollHeight"))
+        assertFalse(INLINE_HTML_HEIGHT_JS.contains("querySelectorAll"))
+        assertTrue(INLINE_HTML_HEIGHT_JS.contains("b.children"))
     }
 
     @Test fun absoluteThirdPartyUrlsAreNotProxied() {

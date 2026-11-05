@@ -253,6 +253,10 @@ private fun SvgPage(
                 false
             }
         },
-        onRelease = { it.stopLoading(); it.destroy() },
+        onRelease = { view ->
+            view.stopLoading()
+            view.onPause()
+            view.destroy()
+        },
     )
 }

@@ -506,6 +506,9 @@ class ChatTimelineTest {
         val visible = listOf<Any>("a", "b", "c")
 
         assertFalse(surfaceStaysLive(visible, "z", wasLive = true))
+        // A prefetched history row is composed before it is visible. It must
+        // not stay live, or each off-screen SVG keeps a WebView.
+        assertFalse(surfaceStaysLive(visible, "prefetch", wasLive = false))
     }
 
     @Test
