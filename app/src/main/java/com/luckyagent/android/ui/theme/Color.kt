@@ -42,3 +42,31 @@ val CloverDarkAccent = Color(0xFF9FCE53)
 val CloverDarkAccentSoft = Color(0xFF3A4B31)
 val CloverDarkError = Color(0xFFE07B7B)
 val CloverDarkAssistantBubble = Color(0xFF2D2F28)
+
+// OpenUI cards follow the warm paper / clay palette from learn/ion-dist
+// (--cds-gray-*, --cds-clay). Scoped here so the rest of the app stays clover.
+val IonSurface = Color(0xFFFCFCFB)
+val IonSurfaceRaised = Color(0xFFFFFFFF)
+val IonLine = Color(0x1A0B0B0B)
+val IonLineStrong = Color(0x330B0B0B)
+val IonText = Color(0xFF0B0B0B)
+val IonText2 = Color(0xFF52514E)
+val IonText3 = Color(0xFF898781)
+val IonClay = Color(0xFFD97757)
+val IonClayEmphasis = Color(0xFFC6613F)
+val IonOnClay = Color(0xFFFCFCFB)
+val IonHeader = Color(0xFFF6F6F4)
+val IonSeries = listOf(
+    Color(0xFFD97757),
+    Color(0xFF629987),
+    Color(0xFF827DBD),
+)
+
+val IonDarkSurface = Color(0xFF151515)
+val IonDarkSurfaceRaised = Color(0xFF20201F)
+val IonDarkLine = Color(0x1AFCFCFB)
+val IonDarkLineStrong = Color(0x33FCFCFB)
+val IonDarkText = Color(0xFFF0EFEC)
+val IonDarkText2 = Color(0xFFA5A49A)
+val IonDarkText3 = Color(0xFF6D6B67)
+val IonDarkHeader = Color(0xFF1A1A19)
