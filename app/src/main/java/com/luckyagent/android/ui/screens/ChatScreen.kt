@@ -93,6 +93,7 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.EnergySavingsLeaf
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.VideoFile
@@ -349,8 +350,15 @@ internal fun luckyCollectingLabel(segments: Int): String =
     "正在收集 · 已 ${segments.coerceAtLeast(0)} 条"
 
 /**
- * One Lucky set, shared by the row above the composer and a long-press shortcut.
- * Idle is only 开始收集. 查看 / 提交 / 放弃 appear only while collecting.
+ * The row above the composer exists only while a collection is open or a
+ * fragment is still waiting or failed. Idle 「开始收集」 lives in the + menu.
+ */
+internal fun showsLuckyComposerRow(luckyActive: Boolean, pendingCount: Int): Boolean =
+    luckyActive || pendingCount > 0
+
+/**
+ * One Lucky set. Idle is only 开始收集, and it is not drawn above the composer.
+ * 查看 / 提交 / 放弃 appear only while collecting.
  */
 internal fun luckyComposerActions(active: Boolean): List<Pair<String, String>> =
     if (active) {
@@ -3307,6 +3315,12 @@ private fun ComposerBar(
                     onExpandDraft = onExpandDraft,
                     expandingDraft = expandingDraft,
                     expandEnabled = state.composer.isNotBlank() && !expandingDraft,
+                    showLuckyStart = showsLuckyComposer(state.settings.connectionMode, state.socketState) &&
+                        !state.luckyActive,
+                    onLuckyStart = {
+                        vm.runLuckyCommand("/lucky on")
+                        onToggleAttachment()
+                    },
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -3419,7 +3433,9 @@ private fun ComposerBar(
                 )
             }
         }
-        if (showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
+        if (showsLuckyComposer(state.settings.connectionMode, state.socketState) &&
+            showsLuckyComposerRow(state.luckyActive, state.luckyPending.size)
+        ) {
             LuckyComposerControl(
                 state = state,
                 onCommand = { command -> vm.runLuckyCommand(command) },
@@ -3519,8 +3535,8 @@ private fun ComposerBar(
 }
 
 /**
- * One Lucky control above the composer. Idle is only 「开始收集」.
- * While collecting, the same slot is 「正在收集」 plus 查看 / 提交 / 放弃.
+ * Collecting row above the composer. Idle start is not drawn here.
+ * While collecting, the slot is 「正在收集」 plus 查看 / 提交 / 放弃.
  */
 @Composable
 private fun LuckyComposerControl(
@@ -3555,20 +3571,12 @@ private fun LuckyComposerControl(
                 }
             }
         }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            if (!collecting) {
-                TextButton(
-                    onClick = { onCommand("/lucky on") },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                ) {
-                    Text("开始收集", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
-                }
-            }
-            if (collecting) {
+        if (collecting) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 luckyComposerActions(active = true).forEach { (command, label) ->
                     TextButton(
                         onClick = { onCommand(command) },
@@ -4430,6 +4438,8 @@ private fun AttachmentActionRow(
     onExpandDraft: () -> Unit,
     expandingDraft: Boolean,
     expandEnabled: Boolean,
+    showLuckyStart: Boolean = false,
+    onLuckyStart: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
@@ -4447,6 +4457,13 @@ private fun AttachmentActionRow(
                 enabled = expandEnabled,
                 busy = expandingDraft,
             )
+            if (showLuckyStart) {
+                AttachmentAction(
+                    icon = Icons.Outlined.EnergySavingsLeaf,
+                    label = "开始收集",
+                    onClick = onLuckyStart,
+                )
+            }
         }
         SessionCardToggle(showSessionCard, onToggleSessionCard)
     }

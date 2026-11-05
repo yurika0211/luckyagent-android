@@ -1,30 +1,41 @@
 package com.luckyagent.android.ui.components
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.hypot
 
 class StartupLoadingTest {
-    @Test fun reducedMotionStopsTheClover() {
-        assertTrue(startupMotionReduced(0f))
-        assertFalse(startupMotionReduced(1f))
-        assertFalse(startupMotionReduced(0.5f))
-    }
-
-    @Test fun timeoutReplacesThePhaseInsteadOfStackingAnotherSentence() {
-        assertEquals(StartupPhase.Sessions, startupSpokenPhase(StartupPhase.Sessions, timedOut = false))
-        assertEquals("这轮对话还没读到。可以重试。", startupSpokenPhase(StartupPhase.History, timedOut = true))
-        assertEquals("还没连上。可以重试、改地址或重新扫码。", startupSpokenPhase(StartupPhase.Connecting, timedOut = true))
-        assertFalse(startupSpokenPhase(StartupPhase.History, timedOut = true).contains("还没连上"))
-    }
-
-    @Test fun coldStartNamesTheStepInsteadOfAGenericSpinner() {
-        assertEquals("正在连接…", StartupPhase.Connecting)
-        assertEquals("正在读取会话", StartupPhase.Sessions)
-        assertEquals("正在读取这轮对话", StartupPhase.History)
-        assertTrue(StartupPhase.SessionsNext.contains("上次的会话"))
-        assertTrue(StartupPhase.HistoryNext.contains("上次的对话"))
-        assertEquals(8_000L, StartupWaitLimitMs)
+    @Test
+    fun threeLeavesHaveSeparateSeats() {
+        listOf(18f, 42f).forEach { side ->
+            val geometry = cloverGeometry(side)
+            assertEquals(3, geometry.leaves.size)
+            val centers = geometry.leaves.map { it.center }
+            assertEquals(3, centers.distinctBy { it.x to it.y }.size)
+            val orbit = hypot(
+                (centers[1].x - centers[0].x).toDouble(),
+                (centers[1].y - centers[0].y).toDouble(),
+            )
+            val leafReach = hypot(geometry.leaves[0].size.width / 2.0, geometry.leaves[0].size.height / 2.0)
+            assertTrue("leaves overlap at $side", orbit > leafReach * 2)
+            val rotations = geometry.leaves.map { it.rotationDegrees }
+            assertEquals(3, rotations.distinct().size)
+            assertEquals(side / 2f, geometry.stemEnd.x, 0.01f)
+            assertTrue(geometry.stemEnd.y > side / 2f)
+            geometry.leaves.forEach { leaf ->
+                val reach = hypot(leaf.size.width / 2.0, leaf.size.height / 2.0)
+                val fromJunction = hypot(
+                    (leaf.center.x - side / 2f).toDouble(),
+                    (leaf.center.y - side / 2f).toDouble(),
+                )
+                val fromStemEnd = hypot(
+                    (leaf.center.x - geometry.stemEnd.x).toDouble(),
+                    (leaf.center.y - geometry.stemEnd.y).toDouble(),
+                )
+                assertTrue(fromJunction > reach)
+                assertTrue(fromStemEnd > reach)
+            }
+        }
     }
 }

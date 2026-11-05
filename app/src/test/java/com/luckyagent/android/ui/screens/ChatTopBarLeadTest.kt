@@ -81,6 +81,13 @@ class ChatTopBarLeadTest {
     }
 
     @Test
+    fun idleLuckyRowStaysOffTheComposer() {
+        assertEquals(false, showsLuckyComposerRow(luckyActive = false, pendingCount = 0))
+        assertEquals(true, showsLuckyComposerRow(luckyActive = true, pendingCount = 0))
+        assertEquals(true, showsLuckyComposerRow(luckyActive = false, pendingCount = 1))
+    }
+
+    @Test
     fun idleLuckyOffersOnlyStart() {
         assertEquals(listOf("/lucky on" to "开始收集"), luckyComposerActions(active = false))
     }
