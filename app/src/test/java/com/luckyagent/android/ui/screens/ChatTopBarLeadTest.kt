@@ -1,10 +1,23 @@
 package com.luckyagent.android.ui.screens
 
 import com.luckyagent.android.data.api.SocketState
+import com.luckyagent.android.ui.samePolledList
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatTopBarLeadTest {
+    @Test
+    fun sameTaskListSkipsTheNextUiWrite() {
+        val tasks = listOf("task-a", "task-b")
+        assertTrue(samePolledList(tasks, listOf("task-a", "task-b"), previousLoading = false, nextLoading = false, previousError = null, nextError = null))
+        assertTrue(samePolledList(tasks, tasks, previousLoading = false, nextLoading = false, previousError = null, nextError = null))
+        assertFalse(samePolledList(tasks, listOf("task-a"), previousLoading = false, nextLoading = false, previousError = null, nextError = null))
+        assertFalse(samePolledList(listOf("task-a", "task-b"), listOf("task-a", "task-b"), previousLoading = true, nextLoading = false, previousError = null, nextError = null))
+        assertFalse(samePolledList(listOf("task-a", "task-b"), listOf("task-a", "task-b"), previousLoading = false, nextLoading = false, previousError = null, nextError = "tasks: down"))
+    }
+
     @Test
     fun runtimeLeadsWithConnectingUntilTheSocketIsLive() {
         assertEquals(ChatTopBarLead.Connect, chatTopBarLead("runtime", SocketState.Idle))

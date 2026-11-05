@@ -143,9 +143,14 @@ fun MemoryGraphPanel(
         val seeds = positions.filterKeys { it in nodeMap }
         val simulation = withContext(Dispatchers.Default) { ForceSimulation(graph, seeds, forces) }
         if (paused && seeds.isEmpty()) {
-            // System reduced-motion users receive a settled frame, not an animated layout.
+            // System reduced-motion users receive one settled frame, then the layout stops.
             positions = withContext(Dispatchers.Default) {
-                repeat(300) { ensureActive(); simulation.tick() }
+                var steps = 0
+                while (simulation.active && steps < 300) {
+                    ensureActive()
+                    simulation.tick()
+                    steps++
+                }
                 simulation.snapshot()
             }
             return@LaunchedEffect
@@ -161,7 +166,11 @@ fun MemoryGraphPanel(
                 if (time - lastTick < 16_000_000L) continue
                 lastTick = time
                 val pin = dragged
-                val frame = withContext(Dispatchers.Default) { simulation.tick(pin); simulation.snapshot() }
+                val frame = withContext(Dispatchers.Default) {
+                    if (simulation.active || pin != null) simulation.tick(pin)
+                    simulation.snapshot()
+                }
+                if (!simulation.active && pin == null) break
                 positions = positions.filterKeys { it in nodeMap } + frame
                 // A pointer update during a worker tick must not be overwritten by that old pin.
                 dragged?.let { positions = positions + (it.id to it.point) }

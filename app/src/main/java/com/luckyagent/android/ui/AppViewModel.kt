@@ -145,6 +145,23 @@ enum class AppDestination {
     Chat, Tasks, Background, Cron, Trajectory, Gateways, Skills, Plugins, Settings, Memory, RuntimeConfig
 }
 
+/**
+ * A decoded poll that matches the last list must not write [AppUiState].
+ * Loading flags and errors still count as a change.
+ */
+internal fun <T> samePolledList(
+    previous: List<T>,
+    next: List<T>,
+    previousLoading: Boolean,
+    nextLoading: Boolean,
+    previousError: String?,
+    nextError: String?,
+): Boolean =
+    !previousLoading &&
+        !nextLoading &&
+        previousError == nextError &&
+        (previous === next || previous == next)
+
 enum class TrajectoryFilter { All, Success, Failure }
 
 enum class TaskFilter { All, Active, Completed, Failed, Cancelled }
@@ -5317,20 +5334,20 @@ class AppViewModel(
         )
         val hasData = unified.isSuccess || legacy.isSuccess
         val selectedId = _ui.value.selectedTaskId
-        if (hasData) {
-            merged.filter { it.origin == TaskOrigin.Unified }.forEach { task ->
-                if (task.status.lowercase() in setOf("pending", "queued", "running", "in_progress", "in-progress", "blocked")) {
-                    AgentTaskWork.enqueue(container.appContext, task.id, task.executionSession())
-                }
-                else AgentTaskWork.cancel(container.appContext, task.id)
+        val nextTasks = if (hasData) merged else _ui.value.tasks
+        val nextError = errors.takeIf { messages -> messages.isNotEmpty() }?.joinToString(" · ")
+        // The 3s list poll already sees in-flight tasks. Do not also start a 5s
+        // detail worker for each of them from this beat.
+        if (!samePolledList(_ui.value.tasks, nextTasks, _ui.value.tasksLoading, false, _ui.value.tasksError, nextError)) {
+            _ui.update {
+                it.copy(
+                    tasksLoading = false,
+                    tasks = nextTasks,
+                    tasksError = nextError,
+                )
             }
-        }
-        _ui.update {
-            it.copy(
-                tasksLoading = false,
-                tasks = if (hasData) merged else it.tasks,
-                tasksError = errors.takeIf { messages -> messages.isNotEmpty() }?.joinToString(" · "),
-            )
+        } else if (_ui.value.tasksLoading) {
+            _ui.update { it.copy(tasksLoading = false) }
         }
         if (selectedId != null && merged.any { it.id == selectedId }) {
             loadTaskDetailNow(selectedId, showLoading = false)
@@ -5348,9 +5365,12 @@ class AppViewModel(
 
     private fun ensureRuntimeWatch() {
         if (!appInForeground || isStandaloneConnection()) return
-        startTaskPolling()
-        startBackgroundPolling()
-        startCronPolling()
+        when (_ui.value.destination) {
+            AppDestination.Tasks -> startTaskPolling()
+            AppDestination.Background -> startBackgroundPolling()
+            AppDestination.Cron -> startCronPolling()
+            else -> Unit
+        }
     }
 
     private fun stopRuntimeWatch() {
@@ -5366,7 +5386,7 @@ class AppViewModel(
         if (taskPollingJob?.isActive == true) return
         taskPollingJob = viewModelScope.launch {
             _ui.update { it.copy(taskPolling = true) }
-            while (isActive && appInForeground) {
+            while (isActive && appInForeground && _ui.value.destination == AppDestination.Tasks) {
                 refreshTasksNow()
                 delay(TASK_POLL_INTERVAL_MS)
             }
@@ -5570,13 +5590,25 @@ class AppViewModel(
         val payload = result.getOrNull()
         val jobs = payload?.jobs ?: _ui.value.cronJobs
         noteCronProgress(jobs)
+        val current = _ui.value
+        val nextError = result.exceptionOrNull()?.message
+        val nextRunning = payload?.running ?: current.cronRunning
+        val nextCount = payload?.count ?: current.cronCount
+        if (
+            samePolledList(current.cronJobs, jobs, current.cronLoading, false, current.cronError, nextError) &&
+            current.cronRunning == nextRunning &&
+            current.cronCount == nextCount
+        ) {
+            if (current.cronLoading) _ui.update { it.copy(cronLoading = false) }
+            return
+        }
         _ui.update {
             it.copy(
                 cronLoading = false,
                 cronJobs = jobs,
-                cronRunning = payload?.running ?: it.cronRunning,
-                cronCount = payload?.count ?: it.cronCount,
-                cronError = result.exceptionOrNull()?.message,
+                cronRunning = nextRunning,
+                cronCount = nextCount,
+                cronError = nextError,
             )
         }
     }
@@ -5584,7 +5616,7 @@ class AppViewModel(
     private fun startCronPolling() {
         if (cronPollingJob?.isActive == true) return
         cronPollingJob = viewModelScope.launch {
-            while (isActive && appInForeground) {
+            while (isActive && appInForeground && _ui.value.destination == AppDestination.Cron) {
                 refreshCronNow()
                 delay(BACKGROUND_POLL_INTERVAL_MS)
             }
@@ -5600,30 +5632,22 @@ class AppViewModel(
         _ui.update { it.copy(backgroundLoading = true, backgroundError = null) }
         val result = container.api.getAutonomyDashboard()
         val dashboard = result.getOrNull()
-        _ui.update {
-            it.copy(
-                backgroundLoading = false,
-                backgroundDashboard = dashboard ?: it.backgroundDashboard,
-                backgroundTasks = dashboard?.tasks ?: it.backgroundTasks,
-                backgroundError = result.exceptionOrNull()?.message,
-            )
-        }
-        if (result.isSuccess && dashboard != null) {
-            dashboard.tasks.forEach { task ->
-                when (task.state.lowercase()) {
-                    "ready", "in_progress", "blocked" -> AgentTaskWork.enqueue(
-                        container.appContext,
-                        task.id,
-                        task.executionSession(),
-                        AgentTaskWork.ORIGIN_AUTONOMY,
-                    )
-                    else -> AgentTaskWork.cancel(
-                        container.appContext,
-                        task.id,
-                        AgentTaskWork.ORIGIN_AUTONOMY,
-                    )
-                }
+        val current = _ui.value
+        val nextTasks = dashboard?.tasks ?: current.backgroundTasks
+        val nextError = result.exceptionOrNull()?.message
+        if (!samePolledList(current.backgroundTasks, nextTasks, current.backgroundLoading, false, current.backgroundError, nextError) ||
+            (dashboard != null && dashboard != current.backgroundDashboard)
+        ) {
+            _ui.update {
+                it.copy(
+                    backgroundLoading = false,
+                    backgroundDashboard = dashboard ?: it.backgroundDashboard,
+                    backgroundTasks = nextTasks,
+                    backgroundError = nextError,
+                )
             }
+        } else if (current.backgroundLoading) {
+            _ui.update { it.copy(backgroundLoading = false) }
         }
         noteBackgroundProgress(dashboard?.tasks.orEmpty())
         val selectedId = _ui.value.selectedBackgroundTaskId
@@ -5636,7 +5660,7 @@ class AppViewModel(
         if (backgroundPollingJob?.isActive == true) return
         backgroundPollingJob = viewModelScope.launch {
             _ui.update { it.copy(backgroundPolling = true) }
-            while (isActive && appInForeground) {
+            while (isActive && appInForeground && _ui.value.destination == AppDestination.Background) {
                 refreshBackgroundNow()
                 delay(BACKGROUND_POLL_INTERVAL_MS)
             }
