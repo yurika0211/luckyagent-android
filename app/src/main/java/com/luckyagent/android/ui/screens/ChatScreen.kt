@@ -344,6 +344,13 @@ internal fun showsLuckyComposer(connectionMode: String, socketState: SocketState
  */
 internal fun composerAfterLuckyCommand(draft: String): String = draft
 
+/**
+ * Drawer groups start collapsed. Only keys the user tapped are expanded.
+ * The selected session does not add its group. An empty set means every header is closed.
+ */
+internal fun expandedSessionGroups(toggled: Set<String>, keys: Collection<String>): Set<String> =
+    toggled.intersect(keys.toSet())
+
 /** The collecting state stays visible above the composer instead of a long-press menu. */
 internal fun luckyCollectingLabel(segments: Int): String =
     "正在收集 · 已 ${segments.coerceAtLeast(0)} 条"
@@ -936,8 +943,11 @@ fun ChatScreen(
                 (maxWidth - sessionPaneWidth - (if (railOccupied) AppNavRailWidth else 0.dp)) >= MinMainContentWidth
 
         val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
+            val drawerOpen = usePermanentSessionPane && sessionPaneExpanded ||
+                !usePermanentSessionPane && compactPagerState.currentPage == sessionsPage
             SessionDrawer(
                 state = state,
+                drawerOpen = drawerOpen,
                 onClose = {
                     if (usePermanentSessionPane) sessionPaneExpanded = false
                     else compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
@@ -5225,6 +5235,7 @@ private fun SessionWorkingBadge() {
 @Composable
 private fun SessionDrawer(
     state: AppUiState,
+    drawerOpen: Boolean = true,
     onClose: () -> Unit,
     onSelect: (String) -> Unit,
     onCreate: () -> Unit,
@@ -5241,7 +5252,7 @@ private fun SessionDrawer(
     val openNavigation = LocalOpenNavigationDrawer.current
     val query = state.sessionQuery.trim()
     val sessions = state.sessions
-    var collapsedGroups by remember { mutableStateOf(setOf<String>()) }
+    var expandedGroups by remember(drawerOpen) { mutableStateOf(setOf<String>()) }
     val showInitialLoading = state.sessionsLoading && sessions.isEmpty() && state.sessionsError == null
     val showEmpty = !state.sessionsLoading && state.sessionsError == null && sessions.isEmpty()
 
@@ -5432,15 +5443,17 @@ private fun SessionDrawer(
                             )
                         }
                     }
-                    sessionGroups(sessions).forEach { group ->
-                        val collapsed = group.key in collapsedGroups
+                    val groups = sessionGroups(sessions)
+                    val openKeys = expandedSessionGroups(expandedGroups, groups.map { it.key })
+                    groups.forEach { group ->
+                        val expanded = group.key in openKeys
                         item(key = "group-${group.key}") {
                             SessionGroupHeader(
                                 name = group.name,
                                 count = group.sessions.size,
-                                expanded = !collapsed,
+                                expanded = expanded,
                                 onToggle = {
-                                    collapsedGroups = if (collapsed) collapsedGroups - group.key else collapsedGroups + group.key
+                                    expandedGroups = if (expanded) expandedGroups - group.key else expandedGroups + group.key
                                 },
                                 onCreate = if (canCreateSessionInGroup(group.name)) {
                                     { onCreateInGroup(group.name) }
@@ -5449,7 +5462,7 @@ private fun SessionDrawer(
                                 },
                             )
                         }
-                        if (!collapsed) {
+                        if (expanded) {
                             items(group.sessions, key = { "session-${it.id}" }) { session ->
                                 SessionDrawerRow(
                                     session = session,

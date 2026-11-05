@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui
 
 import com.luckyagent.android.data.api.RuntimeSession
+import com.luckyagent.android.ui.screens.expandedSessionGroups
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -38,10 +39,22 @@ class SessionGroupsTest {
             groups.map { it.name },
         )
         assertEquals(listOf("pinned"), groups[0].sessions.map { it.id })
+        assertEquals(emptySet<String>(), expandedSessionGroups(emptySet(), groups.map { it.key }))
         assertEquals(listOf("delegated"), groups[1].sessions.map { it.id })
         assertEquals(listOf("worker"), groups[2].sessions.map { it.id })
         assertEquals(listOf("alpha"), groups[3].sessions.map { it.id })
         assertEquals(listOf("plain"), groups[4].sessions.map { it.id })
+    }
+
+    @Test
+    fun drawerStartsCollapsedAndATapOpensOnlyThatGroup() {
+        val keys = listOf("fixed:pinned", "fixed:delegated", "fixed:worker", "project:notes", "project:<unsorted>")
+        assertEquals(emptySet<String>(), expandedSessionGroups(emptySet(), keys))
+        val opened = expandedSessionGroups(setOf("fixed:pinned"), keys)
+        assertEquals(setOf("fixed:pinned"), opened)
+        assertFalse("project:notes" in opened)
+        assertEquals(emptySet<String>(), expandedSessionGroups(emptySet(), keys))
+        assertEquals(setOf("fixed:worker"), expandedSessionGroups(setOf("fixed:worker", "gone"), keys))
     }
 
     @Test
