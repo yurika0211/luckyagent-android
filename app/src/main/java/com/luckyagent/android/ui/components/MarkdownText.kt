@@ -6,8 +6,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.*
@@ -16,6 +18,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
@@ -23,6 +27,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
@@ -134,30 +140,17 @@ private fun MarkdownBlock(
                 is MdBlock.Code -> CodeText(block.body)
                 is MdBlock.Image -> MarkdownImage(block.source, block.alt, imageHeaders, imageBaseUrl)
                 is MdBlock.Table -> {
-                    val widths = remember(block.rows) {
-                        List(block.alignments.size) { col ->
-                            ((block.rows.maxOfOrNull { it.getOrNull(col).orEmpty().length } ?: 0) * 8 + 16).coerceIn(64, 280).dp
-                        }
+                    val widths = remember(block.rows, block.alignments.size) {
+                        markdownTableColumnWidths(block.rows, block.alignments.size)
                     }
-                    Column(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp)) {
-                        block.rows.forEachIndexed { row, cells -> Row {
-                            cells.forEachIndexed { col, cell ->
-                                RichMarkdownText(cell, color,
-                                    modifier = Modifier.width(widths[col]).border(1.dp, CloverLine).padding(8.dp),
-                                    baseUrl = imageBaseUrl, headers = imageHeaders,
-                                    precomputedNodes = richNodes[cell],
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = color,
-                                        fontWeight = if (row == 0) FontWeight.SemiBold else FontWeight.Normal,
-                                        textAlign = when (block.alignments[col]) {
-                                            TableAlignment.CENTER -> TextAlign.Center
-                                            TableAlignment.RIGHT -> TextAlign.End
-                                            else -> TextAlign.Start
-                                        },
-                                    ))
-                            }
-                        } }
-                    }
+                    MarkdownTable(
+                        block = block,
+                        widths = widths,
+                        color = color,
+                        imageHeaders = imageHeaders,
+                        imageBaseUrl = imageBaseUrl,
+                        richNodes = richNodes,
+                    )
                 }
                 MdBlock.IncompleteTable -> Unit
                 is MdBlock.Rule -> HorizontalDivider(Modifier.padding(vertical = 10.dp), color = CloverLine)
@@ -196,6 +189,115 @@ private fun MarkdownBlock(
                     modifier = Modifier.padding(vertical = 2.dp),
                 )
             }
+}
+
+/**
+ * Column width in dp from cell text. A CJK or fullwidth glyph counts as two
+ * Latin units at 8dp each, plus horizontal padding. The old `length * 8`
+ * clamp at 280dp cut Chinese cells inside the column, so horizontal scroll
+ * could not reveal them.
+ */
+internal fun markdownTableColumnWidthDp(rows: List<List<String>>, column: Int): Int {
+    val units = rows.maxOfOrNull { markdownTableDisplayUnits(it.getOrNull(column).orEmpty()) } ?: 0
+    return (units * 8 + 16).coerceAtLeast(64)
+}
+
+internal fun markdownTableColumnWidths(rows: List<List<String>>, columns: Int): List<Dp> =
+    List(columns) { col -> markdownTableColumnWidthDp(rows, col).dp }
+
+/** Latin letters count as 1. CJK and fullwidth count as 2. */
+internal fun markdownTableDisplayUnits(text: String): Int {
+    var units = 0
+    var index = 0
+    while (index < text.length) {
+        val code = text.codePointAt(index)
+        units += if (markdownTableGlyphIsWide(code)) 2 else 1
+        index += Character.charCount(code)
+    }
+    return units
+}
+
+private fun markdownTableGlyphIsWide(code: Int): Boolean = when (code) {
+    in 0x1100..0x115F,
+    in 0x2329..0x232A,
+    in 0x2E80..0xA4CF,
+    in 0xAC00..0xD7A3,
+    in 0xF900..0xFAFF,
+    in 0xFE10..0xFE19,
+    in 0xFE30..0xFE6F,
+    in 0xFF00..0xFF60,
+    in 0xFFE0..0xFFE6,
+    in 0x1F200..0x1F251,
+    in 0x1F300..0x1FAFF,
+    in 0x20000..0x3FFFD,
+    -> true
+    else -> false
+}
+
+@Composable
+private fun MarkdownTable(
+    block: MdBlock.Table,
+    widths: List<Dp>,
+    color: Color,
+    imageHeaders: Map<String, String>,
+    imageBaseUrl: String,
+    richNodes: Map<String, List<HtmlNode>>,
+) {
+    val grid = CloverLine
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(vertical = 4.dp)
+            .drawBehind {
+                val stroke = 1.dp.toPx()
+                drawRect(grid, style = Stroke(width = stroke))
+            },
+    ) {
+        block.rows.forEachIndexed { row, cells ->
+            Row {
+                val count = maxOf(cells.size, widths.size)
+                for (col in 0 until count) {
+                    val cell = cells.getOrNull(col).orEmpty()
+                    val width = widths.getOrElse(col) { 64.dp }
+                    Box(
+                        Modifier
+                            .widthIn(min = width, max = width)
+                            .drawBehind {
+                                val stroke = 1.dp.toPx()
+                                if (col > 0) {
+                                    drawLine(grid, Offset(0f, 0f), Offset(0f, size.height), strokeWidth = stroke)
+                                }
+                                if (row > 0) {
+                                    drawLine(grid, Offset(0f, 0f), Offset(size.width, 0f), strokeWidth = stroke)
+                                }
+                            }
+                            .padding(8.dp)
+                            .clipToBounds(),
+                    ) {
+                        RichMarkdownText(
+                            cell,
+                            color,
+                            baseUrl = imageBaseUrl,
+                            headers = imageHeaders,
+                            precomputedNodes = richNodes[cell],
+                            softWrap = true,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = color,
+                                fontWeight = if (row == 0) FontWeight.SemiBold else FontWeight.Normal,
+                                textAlign = when (block.alignments.getOrNull(col)) {
+                                    TableAlignment.CENTER -> TextAlign.Center
+                                    TableAlignment.RIGHT -> TextAlign.End
+                                    else -> TextAlign.Start
+                                },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -290,6 +392,8 @@ private fun RichMarkdownText(
     baseUrl: String = "",
     headers: Map<String, String> = emptyMap(),
     precomputedNodes: List<HtmlNode>? = null,
+    softWrap: Boolean = true,
+    overflow: TextOverflow = TextOverflow.Clip,
     style: TextStyle = MaterialTheme.typography.bodyLarge.copy(color = color),
 ) {
     val colors = htmlColorPalette()
@@ -301,14 +405,21 @@ private fun RichMarkdownText(
         return
     }
     val annotated = remember(nodes, colors, baseUrl) { htmlAnnotatedText(nodes, colors, baseUrl, parseMath = false) }
-    RichAnnotatedText(annotated, style, color, modifier)
+    RichAnnotatedText(annotated, style, color, modifier, softWrap, overflow)
 }
 
 @Composable
-internal fun RichAnnotatedText(text: AnnotatedString, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+internal fun RichAnnotatedText(
+    text: AnnotatedString,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+    softWrap: Boolean = true,
+    overflow: TextOverflow = TextOverflow.Clip,
+) {
     val math = text.getStringAnnotations("math", 0, text.length)
     if (math.isEmpty()) {
-        LinkedText(text, style, color, modifier)
+        LinkedText(text, style, color, modifier, softWrap, overflow)
     } else {
         val runs = mutableListOf<InlineMathRun>()
         var cursor = 0
@@ -324,14 +435,28 @@ internal fun RichAnnotatedText(text: AnnotatedString, style: TextStyle, color: C
 }
 
 @Composable
-internal fun LinkedText(text: AnnotatedString, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+internal fun LinkedText(
+    text: AnnotatedString,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+    softWrap: Boolean = true,
+    overflow: TextOverflow = TextOverflow.Clip,
+) {
     if (text.getStringAnnotations("url", 0, text.length).isEmpty()) {
-        Text(text, style = style, color = color, modifier = modifier)
+        Text(text, style = style, color = color, modifier = modifier, softWrap = softWrap, overflow = overflow)
     } else {
         val handler = LocalUriHandler.current
-        ClickableText(text, style = style.copy(color = color), modifier = modifier, onClick = { offset ->
-            text.getStringAnnotations("url", offset, offset).firstOrNull()?.let { runCatching { handler.openUri(it.item) } }
-        })
+        ClickableText(
+            text,
+            style = style.copy(color = color),
+            modifier = modifier,
+            softWrap = softWrap,
+            overflow = overflow,
+            onClick = { offset ->
+                text.getStringAnnotations("url", offset, offset).firstOrNull()?.let { runCatching { handler.openUri(it.item) } }
+            },
+        )
     }
 }
 
