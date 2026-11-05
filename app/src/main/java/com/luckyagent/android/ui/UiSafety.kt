@@ -7,11 +7,8 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 
-/** Keep untrusted runtime payloads from becoming unbounded Compose state. */
+/** Keep untrusted chat replies from becoming unbounded Compose state. */
 internal const val MAX_UI_MESSAGE_CHARS = 32_000
-internal const val MAX_UI_REASONING_CHARS = 16_000
-internal const val MAX_UI_TOOL_ARGS_CHARS = 8_000
-internal const val MAX_UI_TOOL_OUTPUT_CHARS = 16_000
 internal const val MAX_UI_ATTACHMENTS = 32
 private const val UI_TRUNCATION_MARKER = "\n…内容已截断…"
 

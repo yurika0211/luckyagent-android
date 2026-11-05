@@ -1814,7 +1814,7 @@ class AppViewModel(
         // dump the whole catalog into the process fold.
         if (name == "present_ui") return
         val stepId = extractField(data, "step_id").orEmpty()
-        val args = extractToolArgs(data)?.let { capUiText(it, MAX_UI_TOOL_ARGS_CHARS) }
+        val args = extractToolArgs(data)
         val stepKey = "$currentTurnId:$stepId"
         val id = when {
             stepId.isNotBlank() -> toolStepIndex[stepKey] ?: "tool-$stepKey".also { toolStepIndex[stepKey] = it }
@@ -1853,7 +1853,7 @@ class AppViewModel(
         val output = (extractField(data, "output")
             ?: extractField(data, "display")
             ?: extractText(data)
-            ?: "").let { capUiText(it, MAX_UI_TOOL_OUTPUT_CHARS) }
+            ?: "")
         val success = when (val raw = (data as? JsonObject)?.get("success")) {
             is JsonPrimitive -> when {
                 raw.isString -> raw.contentOrNull?.toBooleanStrictOrNull() ?: true
@@ -2041,8 +2041,8 @@ class AppViewModel(
         output: String?,
         attachments: List<ChatMedia> = emptyList(),
     ) {
-        val safeArgs = args?.let { capUiText(it, MAX_UI_TOOL_ARGS_CHARS) }
-        val safeOutput = output?.let { capUiText(it, MAX_UI_TOOL_OUTPUT_CHARS) }
+        val safeArgs = args
+        val safeOutput = output
         val safeAttachments = attachments.take(MAX_UI_ATTACHMENTS)
         _ui.update { st ->
             val list = st.bubbles.toMutableList()
@@ -2088,7 +2088,7 @@ class AppViewModel(
 
     private fun upsertReasoningBubble(round: Int?, text: String, hasContent: Boolean) {
         val id = "reasoning-$currentTurnId-${round ?: 0}"
-        val safeText = capUiText(text, MAX_UI_REASONING_CHARS)
+        val safeText = text
         _ui.update { state ->
             val bubbles = state.bubbles.toMutableList()
             val index = bubbles.indexOfLast { it.id == id }
