@@ -64,6 +64,8 @@ class ForceSimulation(
     fun tick(pin: GraphPin? = null) {
         if (bodies.isEmpty()) return
         val validPin = pin?.takeIf { it.point.isFinite && it.id in indices }
+        // A cooled layout with no drag is done. Further frames must not rebuild the tree.
+        if (validPin == null && temperature <= STOP_TEMPERATURE) return
         val pinned = validPin?.let { indices[it.id] }
         if (pinned != null) {
             bodies[pinned].apply { x = validPin.point.x; y = validPin.point.y; vx = 0f; vy = 0f }
@@ -106,21 +108,37 @@ class ForceSimulation(
         }
     }
 
-    private class Quad(val left: Float, val top: Float, val size: Float) {
+    private class Quad(var left: Float, var top: Float, var size: Float) {
         var count = 0
         var sumX = 0f
         var sumY = 0f
-        val members = mutableListOf<Int>()
+        val members = ArrayList<Int>(4)
         var children: Array<Quad?>? = null
         fun contains(body: Body) = body.x >= left && body.x <= left + size &&
             body.y >= top && body.y <= top + size
+
+        fun reset(nextLeft: Float, nextTop: Float, nextSize: Float) {
+            left = nextLeft
+            top = nextTop
+            size = nextSize
+            count = 0
+            sumX = 0f
+            sumY = 0f
+            members.clear()
+            children?.forEach { it?.reset(0f, 0f, 0f) }
+            children = null
+        }
     }
+
+    private val treeScratch = Quad(0f, 0f, 1f)
 
     private fun buildTree(): Quad {
         val left = bodies.minOf { it.x }
         val top = bodies.minOf { it.y }
         val size = max(bodies.maxOf { it.x } - left, bodies.maxOf { it.y } - top).coerceAtLeast(1f) + 1f
-        return Quad(left, top, size).also { root -> bodies.indices.forEach { insert(root, it, 0) } }
+        treeScratch.reset(left, top, size)
+        bodies.indices.forEach { insert(treeScratch, it, 0) }
+        return treeScratch
     }
 
     private fun insert(quad: Quad, index: Int, depth: Int) {
@@ -217,6 +235,8 @@ class ForceSimulation(
 
     companion object {
         private val COOLING = .001f.pow(1f / 300f)
+        /** Below this the layout is idle. [tick] returns without rebuilding the tree. */
+        const val STOP_TEMPERATURE = .001f
         fun nodeRadius(degree: Int) = (6f + sqrt(degree.coerceAtLeast(0).toFloat()) * 3.4f).coerceAtMost(26f)
     }
 }

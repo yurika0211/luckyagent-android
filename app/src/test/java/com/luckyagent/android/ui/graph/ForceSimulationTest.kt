@@ -68,6 +68,22 @@ class ForceSimulationTest {
         assertTrue(simulation.snapshot().values.any { it.x < 0 || it.y < 0 })
     }
 
+    @Test fun cooledLayoutStopsRebuilding() {
+        val simulation = ForceSimulation(graph)
+        var steps = 0
+        while (simulation.active && steps < 400) {
+            simulation.tick()
+            steps++
+        }
+        assertTrue(steps < 400)
+        assertFalse(simulation.active)
+        assertTrue(simulation.temperature <= ForceSimulation.STOP_TEMPERATURE)
+        val settled = simulation.snapshot()
+        repeat(20) { simulation.tick() }
+        assertEquals(settled, simulation.snapshot())
+        assertTrue(simulation.temperature <= ForceSimulation.STOP_TEMPERATURE)
+    }
+
     @Test fun emptyGraphAndUnknownPinAreSafe() {
         val empty = ForceSimulation(GraphTopology(emptyList(), emptyList()))
         empty.tick()

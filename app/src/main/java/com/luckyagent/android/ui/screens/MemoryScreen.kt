@@ -1,6 +1,5 @@
 package com.luckyagent.android.ui.screens
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -25,21 +24,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.withTransform
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.toArgb
 import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.api.MemoryGraphEdge
 import com.luckyagent.android.data.api.MemoryGraphNode
@@ -60,16 +51,7 @@ import com.luckyagent.android.ui.theme.CloverSurface
 import com.luckyagent.android.ui.theme.CloverSurface2
 import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
-import kotlin.math.*
-
-private data class GraphPoint(val x: Float, val y: Float)
-private data class PositionedNode(val node: MemoryGraphNode, val center: Offset, val radius: Float, val label: String)
-private data class PositionedEdge(val edge: MemoryGraphEdge, val index: Int, val from: Offset, val to: Offset)
 
 @Composable
 fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
@@ -243,153 +225,6 @@ fun MemoryScreen(state: AppUiState, vm: AppViewModel) {
     )
 }
 
-@Composable
-private fun GraphPanel(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge>, search: String, revealed: Map<String, Int>, revealedEdges: Map<String, Int>, selected: String?, onSelect: (String) -> Unit, modifier: Modifier = Modifier, loading: Boolean = false) {
-    var zoom by remember { mutableFloatStateOf(1f) }
-    var pan by remember { mutableStateOf(Offset.Zero) }
-    var positions by remember(nodes, edges) { mutableStateOf(emptyMap<String, GraphPoint>()) }
-    val focusIds = remember(selected, edges) {
-        if (selected == null) emptySet() else buildSet { add(selected); edges.forEach { edge -> if (edge.source == selected) add(edge.target); if (edge.target == selected) add(edge.source) } }
-    }
-    val standingLabels = remember(nodes) {
-        val cap = if (nodes.size > 120) 14 else if (nodes.size > 40) 20 else nodes.size
-        nodes.sortedByDescending { it.degree ?: 0 }.take(cap).filter { (it.degree ?: 0) > 0 }.mapTo(hashSetOf()) { it.id }
-    }
-    val positionedNodes = remember(nodes, positions) {
-        nodes.mapNotNull { node ->
-            positions[node.id]?.let { point ->
-                val radius = (6f + sqrt((node.degree ?: 0).toFloat()) * 3.4f).coerceAtMost(26f)
-                val title = node.title ?: node.id
-                PositionedNode(node, Offset(point.x, point.y), radius, if (title.length > 22) title.take(21) + "…" else title)
-            }
-        }
-    }
-    val positionedEdges = remember(edges, positions) {
-        edges.mapIndexedNotNull { index, edge ->
-            val from = positions[edge.source] ?: return@mapIndexedNotNull null
-            val to = positions[edge.target] ?: return@mapIndexedNotNull null
-            PositionedEdge(edge, index, Offset(from.x, from.y), Offset(to.x, to.y))
-        }
-    }
-    val traceEdgeDepths = remember(edges, revealedEdges) {
-        IntArray(edges.size) { index ->
-            val edge = edges[index]
-            revealedEdges["${edge.source}|${edge.target}"] ?: revealedEdges["${edge.target}|${edge.source}"] ?: -1
-        }
-    }
-    val searchTerm = remember(search) { search.trim().lowercase() }
-    val searchMatches = remember(nodes, searchTerm) {
-        if (searchTerm.isEmpty()) emptySet() else nodes.filter { node ->
-            sequenceOf(node.title.orEmpty(), node.category.orEmpty()).any { it.contains(searchTerm, ignoreCase = true) } ||
-                node.tags.any { it.contains(searchTerm, ignoreCase = true) }
-        }.mapTo(hashSetOf()) { it.id }
-    }
-    val labelPaint = remember {
-        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = 30f
-            textAlign = android.graphics.Paint.Align.CENTER
-        }
-    }
-    val unresolvedStroke = remember { androidx.compose.ui.graphics.drawscope.Stroke(2f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(5f, 4f))) }
-    val selectedUnresolvedStroke = remember { androidx.compose.ui.graphics.drawscope.Stroke(3f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(5f, 4f))) }
-    val selectedStroke = remember { androidx.compose.ui.graphics.drawscope.Stroke(3f) }
-    LaunchedEffect(nodes, edges) { positions = withContext(Dispatchers.Default) { forceLayout(nodes, edges) } }
-    Column(modifier.shadow(2.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(CloverSurface.copy(alpha = com.luckyagent.android.ui.components.LocalSurfaceOpacity.current.card))) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Knowledge topology · ${nodes.size} nodes / ${edges.size} links", style = MaterialTheme.typography.labelMedium, color = CloverText2, modifier = Modifier.weight(1f))
-            TextButton(onClick = { zoom = (zoom * 1.2f).coerceAtMost(4f) }) { Text("+") }
-            TextButton(onClick = { zoom = (zoom / 1.2f).coerceAtLeast(.35f) }) { Text("−") }
-            TextButton(onClick = { zoom = 1f; pan = Offset.Zero }) { Text("Reset") }
-        }
-        val zoomState = rememberUpdatedState(zoom)
-        val panState = rememberUpdatedState(pan)
-        val onSelectState = rememberUpdatedState(onSelect)
-        if (nodes.isEmpty()) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text(if (loading) "Loading memory graph…" else "No graph nodes to display", color = CloverText3, style = MaterialTheme.typography.bodySmall)
-            }
-        } else Canvas(Modifier.weight(1f).fillMaxWidth().pointerInput(Unit) {
-            detectTransformGestures { centroid, gesturePan, gestureZoom, _ ->
-                val next = (zoomState.value * gestureZoom).coerceIn(.35f, 4f)
-                pan = (panState.value - centroid) * (next / zoomState.value) + centroid + gesturePan
-                zoom = next
-            }
-        }.pointerInput(positionedNodes) {
-            detectTapGestures { tap ->
-                val scale = min(size.width / 1200f, size.height / 820f).coerceAtLeast(.001f) * zoomState.value
-                val x = (tap.x - size.width / 2f - panState.value.x) / scale + 600f
-                val y = (tap.y - size.height / 2f - panState.value.y) / scale + 410f
-                val hit = positionedNodes.minByOrNull { hypot(it.center.x - x, it.center.y - y) }
-                if (hit != null && hypot(hit.center.x - x, hit.center.y - y) < max(hit.radius, 20f / scale)) onSelectState.value(hit.node.id)
-            }
-        }) {
-            val scaleFactor = min(size.width / 1200f, size.height / 820f).coerceAtLeast(.001f) * zoom
-            labelPaint.textSize = 13f / scaleFactor
-            val left = 600f - (size.width / 2f + pan.x) / scaleFactor
-            val right = 600f + (size.width / 2f - pan.x) / scaleFactor
-            val top = 410f - (size.height / 2f + pan.y) / scaleFactor
-            val bottom = 410f + (size.height / 2f - pan.y) / scaleFactor
-            withTransform({ translate(size.width / 2f + pan.x - 600f * scaleFactor, size.height / 2f + pan.y - 410f * scaleFactor); scale(scaleFactor, scaleFactor, Offset.Zero) }) {
-                positionedEdges.forEach { item ->
-                    val edge = item.edge
-                    val a = item.from
-                    val b = item.to
-                    if ((a.x < left && b.x < left) || (a.x > right && b.x > right) ||
-                        (a.y < top && b.y < top) || (a.y > bottom && b.y > bottom)) return@forEach
-                    val traceHopDepth = traceEdgeDepths[item.index]
-                    val color = when {
-                        revealed.isNotEmpty() && traceHopDepth < 0 -> CloverLine.copy(alpha = .22f)
-                        traceHopDepth >= 0 -> traceColor(traceHopDepth)
-                        focusIds.isNotEmpty() && (edge.source !in focusIds || edge.target !in focusIds) -> CloverLine.copy(alpha = .22f)
-                        else -> CloverLine.copy(alpha = .75f)
-                    }
-                    drawLine(color, a, b, strokeWidth = (edge.weight ?: 1).toFloat().coerceIn(1f, 4f))
-                }
-                positionedNodes.forEach { item ->
-                    val node = item.node
-                    val p = item.center
-                    val radius = max(item.radius, 5f / scaleFactor)
-                    if (p.x + radius + 30f < left || p.x - radius - 30f > right ||
-                        p.y + radius + 30f < top || p.y - radius - 30f > bottom) return@forEach
-                    val degree = node.degree ?: 0
-                    val isMatch = node.id in searchMatches
-                    val isSelected = selected == node.id
-                    val fill = when {
-                        revealed[node.id] == 0 -> Color(0xFF70D7BD)
-                        revealed[node.id] != null -> traceColor(revealed.getValue(node.id))
-                        degree >= 12 -> Color(0xFF6E9EFF)
-                        degree >= 6 -> Color(0xFF55B8A0)
-                        degree >= 3 -> CloverAccent
-                        else -> Color(0xFF74839B)
-                    }
-                    val alpha = if ((searchTerm.isNotEmpty() && !isMatch) || (focusIds.isNotEmpty() && node.id !in focusIds)) .28f else 1f
-                    if (node.resolved != false) drawCircle(fill.copy(alpha = alpha), radius, p)
-                    if (isSelected || node.resolved == false) {
-                        val outline = when {
-                            node.resolved != false -> selectedStroke
-                            isSelected -> selectedUnresolvedStroke
-                            else -> unresolvedStroke
-                        }
-                        drawCircle(if (node.resolved == false) CloverAccent.copy(alpha = alpha) else fill.copy(alpha = alpha), radius, p, style = outline)
-                    }
-                    if (isSelected || isMatch || node.id in standingLabels || revealed[node.id] != null) {
-                        drawIntoCanvas { canvas ->
-                            labelPaint.color = CloverText2.toArgb()
-                            labelPaint.alpha = (alpha * 255).roundToInt()
-                            canvas.nativeCanvas.drawText(item.label, p.x, p.y + radius + 16f / scaleFactor, labelPaint)
-                        }
-                    }
-                }
-            }
-        }
-        if (nodes.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (revealed.isEmpty()) listOf("1–2 links" to Color(0xFF74839B), "3–5" to CloverAccent, "6–11" to Color(0xFF55B8A0), "12+" to Color(0xFF6E9EFF)).forEach { LegendDot(it.first, it.second) }
-            else (0..3).forEach { LegendDot(if (it == 0) "seed" else "hop $it", traceColor(it)) }
-            LegendDot("unresolved", CloverAccent, dashed = true)
-        }
-    }
-}
-
 private fun traceColor(depth: Int) = when (depth) { 0 -> Color(0xFF70D7BD); 1 -> Color(0xFFFFC66D); 2 -> Color(0xFFFF8E6E); else -> Color(0xFFD38BFF) }
 
 @Composable
@@ -398,40 +233,6 @@ private fun LegendDot(label: String, color: Color, dashed: Boolean = false) {
         Box(Modifier.size(9.dp).clip(RoundedCornerShape(50)).background(if (dashed) Color.Transparent else color).then(if (dashed) Modifier.border(1.dp, color, RoundedCornerShape(50)) else Modifier))
         Text(label, style = MaterialTheme.typography.labelSmall, color = CloverText3)
     }
-}
-
-private suspend fun forceLayout(nodes: List<MemoryGraphNode>, edges: List<MemoryGraphEdge>): Map<String, GraphPoint> {
-    if (nodes.isEmpty()) return emptyMap()
-    val index = nodes.mapIndexed { i, n -> n.id to i }.toMap()
-    val count = nodes.size
-    val x = FloatArray(count) { i -> 600f + cos(i * 2.39996).toFloat() * (70f + sqrt(i.toFloat()) * 26f) }
-    val y = FloatArray(count) { i -> 410f + sin(i * 2.39996).toFloat() * (48f + sqrt(i.toFloat()) * 19f) }
-    val vx = FloatArray(count); val vy = FloatArray(count)
-    val fx = FloatArray(count); val fy = FloatArray(count)
-    val links = edges.mapNotNull { e -> val a = index[e.source]; val b = index[e.target]; if (a == null || b == null) null else a to b }
-    val iterations = if (count > 220) 100 else 180
-    for (step in 0 until iterations) {
-        if (step % 16 == 0) currentCoroutineContext().ensureActive()
-        fx.fill(0f); fy.fill(0f)
-        for (i in 0 until count) for (j in i + 1 until count) {
-            val dx = x[i] - x[j]; val dy = y[i] - y[j]
-            val d2 = (dx * dx + dy * dy).coerceAtLeast(20f); val force = 7000f / d2
-            val inv = 1f / sqrt(d2); val ax = dx * inv * force; val ay = dy * inv * force
-            fx[i] += ax; fy[i] += ay; fx[j] -= ax; fy[j] -= ay
-        }
-        links.forEach { (a, b) ->
-            val dx = x[b] - x[a]; val dy = y[b] - y[a]; val d = hypot(dx, dy).coerceAtLeast(1f)
-            val f = (d - 100f) * .025f; val ax = dx / d * f; val ay = dy / d * f
-            fx[a] += ax; fy[a] += ay; fx[b] -= ax; fy[b] -= ay
-        }
-        for (i in 0 until count) {
-            val hub = 1f + sqrt((nodes[i].degree ?: 0).toFloat()) * .1f
-            fx[i] += (600f - x[i]) * .002f * hub; fy[i] += (410f - y[i]) * .002f * hub
-            vx[i] = ((vx[i] + fx[i]) * .82f).coerceIn(-18f, 18f); vy[i] = ((vy[i] + fy[i]) * .82f).coerceIn(-18f, 18f)
-            x[i] = (x[i] + vx[i]).coerceIn(35f, 1165f); y[i] = (y[i] + vy[i]).coerceIn(35f, 785f)
-        }
-    }
-    return nodes.indices.associate { nodes[it].id to GraphPoint(x[it], y[it]) }
 }
 
 @Composable
