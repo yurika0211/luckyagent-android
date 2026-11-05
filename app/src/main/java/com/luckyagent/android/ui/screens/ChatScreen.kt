@@ -41,14 +41,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.wrapContentSize
 import com.luckyagent.android.ui.MinMainContentWidth
 import com.luckyagent.android.ui.AppNavRailWidth
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -344,9 +342,24 @@ internal fun showsLuckyComposer(connectionMode: String, socketState: SocketState
  */
 internal fun composerAfterLuckyCommand(draft: String): String = draft
 
-/** The collecting state stays visible next to the composer instead of a long-press menu. */
+/** The collecting state stays visible above the composer instead of a long-press menu. */
 internal fun luckyCollectingLabel(segments: Int): String =
     "正在收集 · 已 ${segments.coerceAtLeast(0)} 条"
+
+/**
+ * One Lucky set, shared by the row above the composer and a long-press shortcut.
+ * Idle is only 开始收集. 查看 / 提交 / 放弃 appear only while collecting.
+ */
+internal fun luckyComposerActions(active: Boolean): List<Pair<String, String>> =
+    if (active) {
+        listOf(
+            "/lucky status" to "查看",
+            "/lucky off" to "提交",
+            "/lucky cancel" to "放弃",
+        )
+    } else {
+        listOf("/lucky on" to "开始收集")
+    }
 
 /**
  * One line for the latest chat fold.
@@ -3296,7 +3309,6 @@ private fun ComposerBar(
                 }
             }
         }
-        var showLuckyCommands by rememberSaveable { mutableStateOf(false) }
         if (state.outboundQueue.isNotEmpty()) {
             Row(
                 Modifier
@@ -3349,7 +3361,6 @@ private fun ComposerBar(
                 onRetry = vm::retryLuckySegment,
             )
         }
-        Box(Modifier.fillMaxWidth()) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = CloverSurface.copy(alpha = state.settings.composerOpacity.coerceIn(0, 100) / 100f),
@@ -3359,7 +3370,7 @@ private fun ComposerBar(
         ) {
         Row(
             Modifier
-                .padding(start = 2.dp, end = 52.dp, top = 2.dp, bottom = 2.dp)
+                .padding(start = 2.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
                 .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -3413,27 +3424,6 @@ private fun ComposerBar(
             ) {
                 Icon(Icons.Outlined.Mic, contentDescription = "录音", tint = CloverText2)
             }
-        }
-        }
-        Box(
-            Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 4.dp)
-                .size(44.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (showLuckyCommands && showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
-                LuckyClover(
-                    modifier = Modifier
-                        .offset(y = (-58).dp)
-                        .wrapContentSize(unbounded = true),
-                    onCommand = { action ->
-                        vm.runLuckyCommand(action)
-                        showLuckyCommands = false
-                    },
-                    onDismiss = { showLuckyCommands = false },
-                )
-            }
             // Same source of truth as the label above; recomputing the condition
             // here is how the text and the spinner drift apart.
             if (activityLabel == ComposerActivityLabel.Executing) {
@@ -3446,17 +3436,9 @@ private fun ComposerBar(
             } else {
                 SendButton(
                     enabled = hasInput || chatWorking && isStopCommand,
-                    contentDescription = when {
-                        isStopCommand -> "发送 /stop"
-                        showsLuckyComposer(state.settings.connectionMode, state.socketState) -> "发送，长按打开 Lucky"
-                        else -> "发送"
-                    },
+                    contentDescription = if (isStopCommand) "发送 /stop" else "发送",
                     onClick = onSend,
-                    onLongClick = {
-                        if (showsLuckyComposer(state.settings.connectionMode, state.socketState)) {
-                            showLuckyCommands = !showLuckyCommands
-                        }
-                    },
+                    onLongClick = {},
                 )
             }
         }
@@ -3471,53 +3453,9 @@ private fun ComposerBar(
     }
 }
 
-@Composable
-private fun LuckyClover(
-    modifier: Modifier = Modifier,
-    onCommand: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val leaves = listOf(
-        "/lucky on" to "开始",
-        "/lucky status" to "状态",
-        "/lucky off" to "提交",
-        "/lucky cancel" to "放弃",
-    )
-    Box(
-        modifier
-            .widthIn(min = 248.dp)
-            .heightIn(min = 52.dp)
-            .clickable(onClick = onDismiss),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            leaves.forEach { (command, label) ->
-            Surface(
-                onClick = { onCommand(command) },
-                shape = CircleShape,
-                color = CloverSurface.copy(alpha = .96f),
-                border = BorderStroke(1.dp, CloverAccent.copy(alpha = .45f)),
-                shadowElevation = 2.dp,
-            ) {
-                Text(
-                    label,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CloverAccent,
-                )
-            }
-            }
-        }
-    }
-}
-
 /**
- * Lucky lives next to the composer: a visible entry while it is off, and the
- * collecting state with 查看 / 提交 / 放弃 while it is on. The long-press menu on
- * the send button stays a shortcut, never the only way in.
+ * One Lucky control above the composer. Idle is only 「开始收集」.
+ * While collecting, the same slot is 「正在收集」 plus 查看 / 提交 / 放弃.
  */
 @Composable
 private fun LuckyComposerControl(
@@ -3527,71 +3465,52 @@ private fun LuckyComposerControl(
 ) {
     val failed = state.luckyPending.filter { it.error != null }
     val waiting = state.luckyPending.count { it.error == null }
-    if (!state.luckyActive && state.luckyPending.isEmpty()) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            Surface(
-                onClick = { onCommand("/lucky on") },
-                shape = RoundedCornerShape(999.dp),
-                color = CloverSurface2,
-                border = BorderStroke(1.dp, CloverLine),
-            ) {
-                Row(
-                    Modifier.padding(start = 8.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(
-                        Icons.Outlined.Add,
-                        contentDescription = null,
-                        tint = CloverAccent,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Text("开始收集", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
-                }
-            }
-        }
-        return
-    }
+    val collecting = state.luckyActive
     val tint = if (failed.isNotEmpty()) CloverError else CloverAccent
-    Column(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 4.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                when {
-                    failed.isNotEmpty() -> "${failed.size} 段没送进"
-                    waiting > 0 -> "${luckyCollectingLabel(state.luckySegments)} · $waiting 段发送中"
-                    else -> luckyCollectingLabel(state.luckySegments)
-                },
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.labelSmall,
-                color = tint,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            failed.firstOrNull()?.let { segment ->
-                TextButton(
-                    onClick = { onRetry(segment.id) },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                ) { Text("重试", style = MaterialTheme.typography.labelSmall) }
+    Column(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 6.dp)) {
+        if (collecting || failed.isNotEmpty() || waiting > 0) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when {
+                        failed.isNotEmpty() -> "${failed.size} 段没送进"
+                        waiting > 0 -> "${luckyCollectingLabel(state.luckySegments)} · $waiting 段发送中"
+                        else -> luckyCollectingLabel(state.luckySegments)
+                    },
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tint,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                failed.firstOrNull()?.let { segment ->
+                    TextButton(
+                        onClick = { onRetry(segment.id) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) { Text("重试", style = MaterialTheme.typography.labelSmall) }
+                }
             }
         }
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            listOf(
-                "/lucky status" to "查看",
-                "/lucky off" to "提交",
-                "/lucky cancel" to "放弃",
-            ).forEach { (command, label) ->
+            if (!collecting) {
                 TextButton(
-                    onClick = { onCommand(command) },
+                    onClick = { onCommand("/lucky on") },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 ) {
-                    Text(label, style = MaterialTheme.typography.labelSmall)
+                    Text("开始收集", style = MaterialTheme.typography.labelSmall, color = CloverAccent)
+                }
+            }
+            if (collecting) {
+                luckyComposerActions(active = true).forEach { (command, label) ->
+                    TextButton(
+                        onClick = { onCommand(command) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) {
+                        Text(label, style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
         }

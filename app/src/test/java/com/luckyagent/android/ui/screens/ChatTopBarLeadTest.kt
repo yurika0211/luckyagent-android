@@ -66,4 +66,21 @@ class ChatTopBarLeadTest {
         assertEquals("正在收集 · 已 0 条", luckyCollectingLabel(0))
         assertEquals("正在收集 · 已 0 条", luckyCollectingLabel(-1))
     }
+
+    @Test
+    fun idleLuckyOffersOnlyStart() {
+        assertEquals(listOf("/lucky on" to "开始收集"), luckyComposerActions(active = false))
+    }
+
+    @Test
+    fun collectingLuckyOffersViewSubmitCancel() {
+        assertEquals(
+            listOf(
+                "/lucky status" to "查看",
+                "/lucky off" to "提交",
+                "/lucky cancel" to "放弃",
+            ),
+            luckyComposerActions(active = true),
+        )
+    }
 }
