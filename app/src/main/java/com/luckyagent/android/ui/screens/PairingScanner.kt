@@ -45,6 +45,7 @@ import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 @Composable
 fun PairingScannerDialog(
@@ -68,6 +69,7 @@ private fun PairingScanner(
     val lifecycleOwner = LocalLifecycleOwner.current
     val delivered = remember { AtomicBoolean(false) }
     var failure by remember { mutableStateOf<String?>(null) }
+    val missedFrames = remember { AtomicInteger(0) }
     val previewView = remember {
         PreviewView(context).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -105,7 +107,17 @@ private fun PairingScanner(
                 }
                 val text = decodeQr(image)
                 image.close()
-                if (text.isNullOrBlank()) return@setAnalyzer
+                if (text.isNullOrBlank()) {
+                    val misses = missedFrames.incrementAndGet()
+                    if (misses == CAMERA_QR_MISS_LIMIT) {
+                        previewView.post {
+                            if (!delivered.get()) {
+                                failure = "画面里还没认出配对码。可以对准 lh qr 再试，或改用相册和手动填写。"
+                            }
+                        }
+                    }
+                    return@setAnalyzer
+                }
                 if (!delivered.compareAndSet(false, true)) return@setAnalyzer
                 previewView.post { onScanned(text) }
             }
@@ -138,21 +150,84 @@ private fun PairingScanner(
     }
 }
 
-internal fun decodeQr(image: androidx.camera.core.ImageProxy): String? {
-    val buffer = image.planes.firstOrNull()?.buffer ?: return null
-    val bytes = ByteArray(buffer.remaining())
-    buffer.get(bytes)
-    val width = image.width
-    val height = image.height
-    val rowStride = image.planes[0].rowStride
+/** Frames analyzed with no QR before the hint becomes a readable failure. */
+internal const val CAMERA_QR_MISS_LIMIT = 45
+
+/**
+ * Packed Y after rotation. 90 and 270 swap width and height.
+ * Crop width never exceeds the source row stride.
+ */
+internal data class YPlaneFrame(
+    val bytes: ByteArray,
+    val width: Int,
+    val height: Int,
+)
+
+internal fun rotateYPlane(
+    y: ByteArray,
+    width: Int,
+    height: Int,
+    rowStride: Int,
+    rotationDegrees: Int,
+): YPlaneFrame? {
+    if (width <= 0 || height <= 0 || rowStride < width) return null
+    val cropWidth = minOf(width, rowStride)
+    val needed = rowStride * (height - 1) + cropWidth
+    if (y.size < needed) return null
+    val packed = ByteArray(cropWidth * height)
+    var index = 0
+    for (row in 0 until height) {
+        val start = row * rowStride
+        y.copyInto(packed, index, start, start + cropWidth)
+        index += cropWidth
+    }
+    return when (rotationDegrees.mod(360)) {
+        0 -> YPlaneFrame(packed, cropWidth, height)
+        90 -> YPlaneFrame(rotatePacked(packed, cropWidth, height, 90), height, cropWidth)
+        180 -> YPlaneFrame(rotatePacked(packed, cropWidth, height, 180), cropWidth, height)
+        270 -> YPlaneFrame(rotatePacked(packed, cropWidth, height, 270), height, cropWidth)
+        else -> null
+    }
+}
+
+private fun rotatePacked(source: ByteArray, width: Int, height: Int, degrees: Int): ByteArray {
+    val out = ByteArray(width * height)
+    when (degrees) {
+        90 -> {
+            var index = 0
+            for (x in 0 until width) {
+                for (y in height - 1 downTo 0) {
+                    out[index++] = source[y * width + x]
+                }
+            }
+        }
+        180 -> {
+            var index = 0
+            for (i in source.lastIndex downTo 0) out[index++] = source[i]
+        }
+        270 -> {
+            var index = 0
+            for (x in width - 1 downTo 0) {
+                for (y in 0 until height) {
+                    out[index++] = source[y * width + x]
+                }
+            }
+        }
+        else -> source.copyInto(out)
+    }
+    return out
+}
+
+internal fun decodeQrLuminance(frame: YPlaneFrame): String? {
+    if (frame.width <= 0 || frame.height <= 0 || frame.bytes.size < frame.width * frame.height) return null
     val source = PlanarYUVLuminanceSource(
-        bytes,
-        rowStride,
-        height,
+        frame.bytes,
+        frame.width,
+        frame.height,
         0,
         0,
-        width,
-        height,
+        frame.width,
+        frame.height,
         false,
     )
     val reader = MultiFormatReader().apply {
@@ -173,6 +248,21 @@ internal fun decodeQr(image: androidx.camera.core.ImageProxy): String? {
     } finally {
         reader.reset()
     }
+}
+
+internal fun decodeQr(image: androidx.camera.core.ImageProxy): String? {
+    val plane = image.planes.firstOrNull() ?: return null
+    val buffer = plane.buffer
+    val bytes = ByteArray(buffer.remaining())
+    buffer.get(bytes)
+    val frame = rotateYPlane(
+        y = bytes,
+        width = image.width,
+        height = image.height,
+        rowStride = plane.rowStride,
+        rotationDegrees = image.imageInfo.rotationDegrees,
+    ) ?: return null
+    return decodeQrLuminance(frame)
 }
 
 internal fun decodeQrBitmap(bitmap: Bitmap): String? {
