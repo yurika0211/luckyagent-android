@@ -2780,6 +2780,10 @@ class AppViewModel(
         _ui.update { it.copy(snackbarMessage = null) }
     }
 
+    fun showSnackbar(message: String) {
+        _ui.update { it.copy(snackbarMessage = message) }
+    }
+
     fun loadModels(force: Boolean = false) {
         if (isStandaloneConnection()) return
         val current = _ui.value

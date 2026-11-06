@@ -3,6 +3,7 @@ package com.luckyagent.android.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -44,7 +45,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -162,6 +165,7 @@ fun OpenUiTree(
     selectedWidgetId: String? = null,
     imageHeaders: Map<String, String> = emptyMap(),
     imageBaseUrl: String = "",
+    onNotice: (String) -> Unit = {},
 ) {
     if (tree.nodes.isEmpty()) return
     val ion = ionPalette()
@@ -197,6 +201,7 @@ fun OpenUiTree(
                         imageHeaders = imageHeaders,
                         imageBaseUrl = imageBaseUrl,
                         ion = ion,
+                        onNotice = onNotice,
                     )
                 }
                 if (actionsWaiting) {
@@ -243,11 +248,12 @@ private fun OpenUiNodeView(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     ion: IonPalette,
+    onNotice: (String) -> Unit = {},
 ) {
     when (node.type) {
         "Table" -> OpenUiTable(node, ion)
         "List" -> OpenUiList(node, ion)
-        "Chart" -> OpenUiChart(node, ion)
+        "Chart" -> OpenUiChart(node, ion, onNotice)
         "Map" -> OpenUiMap(node, ion)
         "Citation" -> OpenUiCitation(node, ion)
         "Image" -> {
@@ -438,16 +444,28 @@ private fun sourceHost(source: String): String? {
     return source.substringAfter("://").substringBefore("/").substringBefore("?").ifBlank { null }
 }
 
+private val chartKindChips = listOf(
+    "bar" to "柱",
+    "line" to "折",
+    "area" to "面积",
+    "pie" to "饼",
+    "scatter" to "散点",
+)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
+private fun OpenUiChart(node: OpenUiNode, ion: IonPalette, onNotice: (String) -> Unit) {
     val rawSeries = node.chartSeries().filter { it.values.isNotEmpty() }
     val unit = node.props.string("unit").orEmpty()
     val fullLabels = node.props.stringList("labels").ifEmpty { node.props.stringList("categories") }
     val pointCount = rawSeries.maxOfOrNull { it.values.size } ?: 0
     val sliceCount = rawSeries.firstOrNull()?.values?.size ?: 0
     val pieSum = rawSeries.firstOrNull()?.values?.sum() ?: 0f
-    val kind = openUiChartKind(node.props.string("kind").orEmpty(), sliceCount, pieSum)
+    val resolvedKind = openUiChartKind(node.props.string("kind").orEmpty(), sliceCount, pieSum)
+    var chosenKind by remember(node.id) { mutableStateOf(resolvedKind) }
+    val drawSliceCount = rawSeries.firstOrNull()?.values?.size ?: 0
+    val drawPieSum = rawSeries.firstOrNull()?.values?.sum() ?: 0f
+    val kind = openUiChartKind(chosenKind, drawSliceCount, drawPieSum)
     val usable = rawSeries.any { ser -> ser.values.any { !it.isNaN() && it != 0f } }
     if (rawSeries.isEmpty() || pointCount == 0 || !usable) {
         Text("没有可显示的数据", color = ion.text2, style = MaterialTheme.typography.bodySmall)
@@ -463,11 +481,34 @@ private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
     val (_, labels) = openUiChartWindow(List(pointCount) { 0f }, fullLabels, windowSize)
     var hidden by remember(node.id) { mutableStateOf(setOf<Int>()) }
     val visible = cropped.mapIndexedNotNull { index, ser -> if (index in hidden) null else index to ser }
-    var readout by remember(node.id, windowSize, hidden) { mutableStateOf<String?>(null) }
+    var readout by remember(node.id, windowSize, hidden, kind) { mutableStateOf<String?>(null) }
+    var hit by remember(node.id, windowSize, hidden, kind) { mutableStateOf<Pair<Int, Int>?>(null) }
     val colors = ion.series
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!readout.isNullOrBlank()) {
             Text(readout.orEmpty(), color = ion.clayEmphasis, style = MaterialTheme.typography.labelSmall)
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            chartKindChips.forEach { (id, label) ->
+                val selected = chosenKind == id
+                Text(
+                    label,
+                    color = if (selected) ion.onClay else ion.text2,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .height(24.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (selected) ion.clay else ion.raised)
+                        .border(1.dp, if (selected) ion.clay else ion.lineStrong, RoundedCornerShape(999.dp))
+                        .clickable {
+                            chosenKind = id
+                            readout = null
+                            hit = null
+                        }
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             cropped.forEachIndexed { i, ser ->
@@ -476,6 +517,7 @@ private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
                     Modifier.clickable {
                         hidden = if (off) hidden - i else hidden + i
                         readout = null
+                        hit = null
                     },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -504,12 +546,19 @@ private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
                 labels = labels,
                 unit = unit,
                 ion = ion,
+                hit = hit,
                 onReadout = { seriesIndex, index ->
+                    if (seriesIndex < 0 || index < 0) {
+                        readout = null
+                        hit = null
+                        return@OpenUiChartCanvas
+                    }
                     val drawn = visible.getOrNull(seriesIndex)?.second ?: return@OpenUiChartCanvas
                     val value = drawn.values.getOrNull(index) ?: return@OpenUiChartCanvas
                     val label = if (kind == "pie") drawn.name else labels.getOrElse(index) { "" }
                     val name = if (kind == "pie") "" else drawn.name
                     readout = openUiChartReadout(label, name, value, unit)
+                    hit = seriesIndex to index
                 },
             )
             val ticks = chartAxisLabels(labels)
@@ -532,6 +581,18 @@ private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
                 valueRange = range.min..range.max.coerceAtLeast(range.min),
                 steps = steps.coerceAtMost(pointCount - 1),
             )
+            Text(
+                "应用这些参数",
+                color = ion.text,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(ion.raised)
+                    .border(1.dp, ion.lineStrong, RoundedCornerShape(999.dp))
+                    .clickable { onNotice("这一版还不能把参数发回模型") }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
         }
     }
 }
@@ -551,6 +612,7 @@ private fun OpenUiChartCanvas(
     labels: List<String>,
     unit: String,
     ion: IonPalette,
+    hit: Pair<Int, Int>? = null,
     onReadout: (seriesIndex: Int, index: Int) -> Unit,
 ) {
     val finite = series.flatMap { it.values }.filter { !it.isNaN() }
@@ -587,8 +649,8 @@ private fun OpenUiChartCanvas(
                             tapX = (offset.x - pad) / w,
                             tapY = (offset.y - pad) / h,
                             values = series.map { it.values },
-                        ) ?: return@detectTapGestures
-                        onReadout(hit.first, hit.second)
+                        )
+                        if (hit == null) onReadout(-1, -1) else onReadout(hit.first, hit.second)
                     }
                 },
         ) {
@@ -600,6 +662,8 @@ private fun OpenUiChartCanvas(
             val zeroY = originY - ((0f - min) / span) * h
             if (kind != "pie") {
                 drawLine(ion.line, Offset(originX, pad), Offset(originX, originY), strokeWidth = 1.dp.toPx())
+                drawLine(ion.line, Offset(originX, pad), Offset(originX + w, pad), strokeWidth = 1.dp.toPx())
+                drawLine(ion.line, Offset(originX, originY - h / 2f), Offset(originX + w, originY - h / 2f), strokeWidth = 1.dp.toPx())
                 drawLine(ion.line, Offset(originX, zeroY), Offset(originX + w, zeroY), strokeWidth = 1.dp.toPx())
                 drawLine(ion.lineStrong, Offset(originX, originY), Offset(originX + w, originY), strokeWidth = 1.dp.toPx())
             }
@@ -614,13 +678,17 @@ private fun OpenUiChartCanvas(
                     var start = -90f
                     slices.forEachIndexed { i, v ->
                         val sweep = 360f * (v / total)
+                        val marked = hit?.first == 0 && hit.second == i
+                        val shift = if (marked) 6.dp.toPx() else 0f
+                        val angle = Math.toRadians((start + sweep / 2f).toDouble())
                         drawArc(
                             color = colors[i % colors.size].let { if (i == 0) ion.clay else it },
                             startAngle = start,
                             sweepAngle = sweep,
                             useCenter = true,
-                            topLeft = Offset(originX + w * 0.25f, pad),
+                            topLeft = Offset(originX + w * 0.25f + kotlin.math.cos(angle).toFloat() * shift, pad + kotlin.math.sin(angle).toFloat() * shift),
                             size = Size(h, h),
+                            style = if (marked) Stroke(width = 2.dp.toPx()) else Fill,
                         )
                         start += sweep
                     }
@@ -638,12 +706,45 @@ private fun OpenUiChartCanvas(
                             val top = minOf(y, zeroY)
                             val bh = kotlin.math.abs(zeroY - y).coerceAtLeast(1f)
                             val x = originX + i * slot + (slot - inner) / 2 + s * (barW + gap)
-                            drawRoundRect(colorAt(s), Offset(x, top), Size(barW, bh), radius)
+                            val marked = hit?.first == s && hit.second == i
+                            drawRoundRect(if (marked) ion.clayEmphasis else colorAt(s), Offset(x, top), Size(barW, bh), radius)
+                        }
+                    }
+                }
+                "scatter" -> {
+                    val denom = (groups - 1).coerceAtLeast(1)
+                    hit?.let { (s, i) ->
+                        val x = originX + w * i / denom
+                        drawLine(
+                            ion.lineStrong,
+                            Offset(x, pad),
+                            Offset(x, originY),
+                            strokeWidth = 1.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx())),
+                        )
+                    }
+                    series.forEachIndexed { s, ser ->
+                        ser.values.forEachIndexed { i, v ->
+                            if (v.isNaN()) return@forEachIndexed
+                            val marked = hit?.first == s && hit.second == i
+                            val x = originX + w * i / denom
+                            val y = originY - ((v - min) / span) * h
+                            drawCircle(if (marked) ion.clayEmphasis else colorAt(s), radius = if (marked) 6.dp.toPx() else 3.5.dp.toPx(), center = Offset(x, y))
                         }
                     }
                 }
                 else -> {
                     val denom = (groups - 1).coerceAtLeast(1)
+                    hit?.let { (_, i) ->
+                        val x = originX + w * i / denom
+                        drawLine(
+                            ion.lineStrong,
+                            Offset(x, pad),
+                            Offset(x, originY),
+                            strokeWidth = 1.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx())),
+                        )
+                    }
                     series.forEachIndexed { s, ser ->
                         val path = Path()
                         val fill = Path().apply { fillType = PathFillType.NonZero }
@@ -659,7 +760,8 @@ private fun OpenUiChartCanvas(
                                 path.lineTo(x, y)
                                 fill.lineTo(x, y)
                             }
-                            drawCircle(colorAt(s), radius = 3.dp.toPx(), center = Offset(x, y))
+                            val marked = hit?.first == s && hit.second == i
+                            drawCircle(if (marked) ion.clayEmphasis else colorAt(s), radius = if (marked) 6.dp.toPx() else 3.dp.toPx(), center = Offset(x, y))
                         }
                         if (ser.values.isNotEmpty()) {
                             val lastX = originX + w * (ser.values.lastIndex) / denom

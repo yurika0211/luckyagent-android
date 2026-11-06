@@ -188,6 +188,8 @@ class OpenUiCatalogTest {
         assertEquals("bar", openUiChartKind("foo", 3, 10f))
         assertEquals("line", openUiChartKind("line", 3, 10f))
         assertEquals("area", openUiChartKind("AREA", 3, 10f))
+        assertEquals("scatter", openUiChartKind("SCATTER", 3, 10f))
+        assertEquals("bar", openUiChartKind("散点", 3, 10f))
         assertEquals("pie", openUiChartKind("pie", 6, 10f))
         assertEquals("bar", openUiChartKind("pie", 7, 10f))
         assertEquals("bar", openUiChartKind("pie", 3, 0f))
@@ -215,6 +217,20 @@ class OpenUiCatalogTest {
         assertEquals(1 to 0, openUiChartHit("area", 2, 1, 0.2f, 0.95f, lines))
         val pie = openUiChartHit("pie", 1, 3, 0.5f, 0.1f, listOf(listOf(1f, 1f, 1f)))
         assertEquals(0, pie?.first)
+        val scatter = listOf(listOf(0f, 10f), listOf(10f, 0f))
+        assertEquals(1 to 0, openUiChartHit("scatter", 2, 2, 0.02f, 0.05f, scatter))
+        assertEquals(0 to 1, openUiChartHit("scatter", 2, 2, 0.98f, 0.05f, scatter))
+    }
+
+    @Test
+    fun chartPointsReadExplicitPairsOrIndexes() {
+        val json = Json { ignoreUnknownKeys = true }
+        val props = json.parseToJsonElement(
+            """{"series":[{"name":"点","points":[{"x":1,"y":2},{"x":3,"value":4}]},{"name":"序","values":[8,9]}]}""",
+        ).jsonObject
+        val series = OpenUiNode(id = "c", type = "Chart", props = props).chartSeries()
+        assertEquals(listOf(OpenUiChartPoint(1f, 2f), OpenUiChartPoint(3f, 4f)), openUiChartPoints(series[0].values, series[0].xs))
+        assertEquals(listOf(OpenUiChartPoint(0f, 8f), OpenUiChartPoint(1f, 9f)), openUiChartPoints(series[1].values))
     }
 
     @Test
