@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.luckyagent.android.data.openui.OpenUiDelta
 import com.luckyagent.android.data.openui.OpenUiNode
+import com.luckyagent.android.data.openui.canSendAction
 import com.luckyagent.android.data.openui.caption
 import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.heading
@@ -611,7 +612,7 @@ private fun OpenUiActions(
                     val id = obj?.get("id")?.jsonPrimitive?.content ?: node.id
                     val label = obj?.get("label")?.jsonPrimitive?.content ?: id
                     val selected = selectedWidgetId == id
-                    val canSend = interactive && node.policy == "action"
+                    val canSend = interactive && node.canSendAction()
                     Button(
                         onClick = { if (canSend) onAction(id, label) },
                         enabled = canSend && !locked,
@@ -644,7 +645,7 @@ private fun OpenUiActions(
                     val label = obj?.get("label")?.jsonPrimitive?.content ?: id
                     val hint = obj?.string("description") ?: obj?.string("detail")
                     val selected = selectedWidgetId == id
-                    val canSend = interactive && node.policy == "action"
+                    val canSend = interactive && node.canSendAction()
                     Button(
                         onClick = { if (canSend) onAction(id, label) },
                         enabled = canSend && !locked,

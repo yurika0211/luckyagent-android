@@ -139,6 +139,9 @@ private fun openUiGlyphIsWide(code: Int): Boolean = when (code) {
     else -> false
 }
 
+/** Actions chips send. Go stamps `mutate`; a missing policy still defaults to inspect and must send. */
+fun OpenUiNode.canSendAction(): Boolean = type == "Actions"
+
 fun OpenUiNode.listItems(maxItems: Int = OpenUiListCollapsedItems): Pair<List<String>, Int> {
     val items = props["items"]?.jsonArray?.mapNotNull { el ->
         val obj = el as? JsonObject

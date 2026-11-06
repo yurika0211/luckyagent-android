@@ -1,10 +1,12 @@
 package com.luckyagent.android.data.openui
 
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -88,6 +90,19 @@ class OpenUiCatalogTest {
         val (full, none) = node.listItems(OpenUiListExpandedItems)
         assertEquals(0, none)
         assertEquals(14, full.size)
+    }
+
+    @Test
+    fun actionsWithoutPolicyFieldAreSendable() {
+        val json = Json { ignoreUnknownKeys = true }
+        val node = json.decodeFromString<OpenUiNode>(
+            """{"id":"a","type":"Actions","props":{"items":[{"id":"x","label":"绿茶"}]}}""",
+        )
+        assertEquals("inspect", node.policy)
+        assertTrue(node.canSendAction())
+        assertTrue(node.copy(policy = "mutate").canSendAction())
+        assertTrue(node.copy(policy = "action").canSendAction())
+        assertFalse(node.copy(type = "List").canSendAction())
     }
 
     @Test
