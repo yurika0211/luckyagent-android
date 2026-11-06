@@ -134,6 +134,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import com.luckyagent.android.ui.util.artifactDownloadUrl
+import com.luckyagent.android.ui.util.attachmentRunningUpdate
+import com.luckyagent.android.ui.util.attachmentTerminalNotice
 import com.luckyagent.android.ui.util.chatMediaFromAttachmentJson
 import com.luckyagent.android.ui.util.downloadPercent
 import com.luckyagent.android.ui.util.downloadProgressLabel
@@ -4445,7 +4447,6 @@ class AppViewModel(
     fun downloadAttachment(context: Context, media: ChatMedia) {
         if (_ui.value.attachmentDownload.phase == AttachmentDownloadPhase.Running) return
         val descriptor = media.descriptor
-        val fileName = descriptor.fileName ?: "附件"
         val downloadUrl = descriptor.fileUrl?.takeIf { it.isNotBlank() }
             ?: descriptor.filePath?.let(::artifactDescriptor)?.fileUrl
         if (downloadUrl.isNullOrBlank()) {
@@ -4456,15 +4457,8 @@ class AppViewModel(
         val key = attachmentDownloadKey(media)
         val appContext = context.applicationContext
         val startedAt = android.os.SystemClock.elapsedRealtime()
-        _ui.update {
-            it.copy(
-                attachmentDownloadKey = key,
-                attachmentDownload = AttachmentDownloadUi(phase = AttachmentDownloadPhase.Running),
-            )
-        }
-        publishAttachmentNotice("准备下载 · $fileName")
+        _ui.update { attachmentRunningUpdate(it, key) }
         viewModelScope.launch {
-            publishAttachmentNotice("下载中 · $fileName")
             container.api.downloadAttachment(appContext, downloadDescriptor) { copied, total ->
                 val elapsed = (android.os.SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1L)
                 val progress = AttachmentDownloadUi(
@@ -4538,14 +4532,13 @@ class AppViewModel(
         attachmentNoticeJob?.cancel()
         _ui.update {
             it.copy(
-                attachmentNotice = AttachmentNotice(
+                attachmentNotice = attachmentTerminalNotice(
                     text = text,
                     isError = isError,
                     isComplete = isComplete,
                     openUri = openUri,
                     mimeType = mimeType,
                 ),
-                activityLine = text,
             )
         }
         if (isComplete || isError) {

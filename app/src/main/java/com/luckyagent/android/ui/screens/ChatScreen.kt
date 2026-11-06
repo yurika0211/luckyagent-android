@@ -286,6 +286,7 @@ import com.luckyagent.android.ui.util.artifactDownloadUrl
 import com.luckyagent.android.ui.util.fileVisualKind
 import com.luckyagent.android.ui.util.fileVisualLabel
 import com.luckyagent.android.ui.util.canDownloadAttachment
+import com.luckyagent.android.ui.util.composerDownloadCaption
 import com.luckyagent.android.ui.components.HtmlPreviewDialog
 import com.luckyagent.android.ui.components.isHtmlAttachment
 import com.luckyagent.android.ui.util.quoteRoleLabel
@@ -3294,7 +3295,31 @@ private fun ComposerBar(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        state.attachmentNotice?.let { notice ->
+        if (state.attachmentDownload.phase == AttachmentDownloadPhase.Running) {
+            val caption = composerDownloadCaption(state.attachmentDownload)
+            Column(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 8.dp)) {
+                val total = state.attachmentDownload.bytesTotal
+                if (total != null && total > 0L) {
+                    LinearProgressIndicator(
+                        progress = { (state.attachmentDownload.percent ?: 0) / 100f },
+                        modifier = Modifier.fillMaxWidth().height(3.dp),
+                    )
+                } else {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().height(3.dp))
+                }
+                if (!caption.isNullOrBlank()) {
+                    Text(
+                        caption,
+                        color = CloverText3,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(top = 4.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+        state.attachmentNotice?.takeIf { it.isComplete || it.isError }?.let { notice ->
             Row(
                 Modifier
                     .fillMaxWidth()
