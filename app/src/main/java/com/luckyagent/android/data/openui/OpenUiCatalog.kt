@@ -96,6 +96,14 @@ const val OpenUiListCollapsedItems = 12
 const val OpenUiListExpandedItems = 40
 const val OpenUiTableCollapsedRows = 8
 const val OpenUiTableExpandedRows = 40
+const val OpenUiActionCollapsedItems = 4
+const val OpenUiActionExpandedItems = 40
+
+/** Shown items plus how many were left out. */
+fun <T> openUiActionItems(items: List<T>, max: Int = OpenUiActionCollapsedItems): Pair<List<T>, Int> {
+    val limit = max.coerceAtLeast(0)
+    return items.take(limit) to (items.size - limit).coerceAtLeast(0)
+}
 
 /** Latin letters count as 1. CJK and fullwidth count as 2. */
 fun openUiDisplayUnits(text: String): Int {

@@ -54,11 +54,14 @@ import com.luckyagent.android.data.openui.OpenUiNode
 import com.luckyagent.android.data.openui.caption
 import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.heading
+import com.luckyagent.android.data.openui.OpenUiActionCollapsedItems
+import com.luckyagent.android.data.openui.OpenUiActionExpandedItems
 import com.luckyagent.android.data.openui.OpenUiListCollapsedItems
 import com.luckyagent.android.data.openui.OpenUiListExpandedItems
 import com.luckyagent.android.data.openui.OpenUiTableCollapsedRows
 import com.luckyagent.android.data.openui.OpenUiTableExpandedRows
 import com.luckyagent.android.data.openui.listItems
+import com.luckyagent.android.data.openui.openUiActionItems
 import com.luckyagent.android.data.openui.mapPoints
 import com.luckyagent.android.data.openui.openUiColumnWidthDp
 import com.luckyagent.android.data.openui.openUiDisplayUnits
@@ -617,7 +620,9 @@ private fun OpenUiActions(
     onAction: (String, String) -> Unit,
     ion: IonPalette,
 ) {
-    val items = node.props["items"]?.jsonArray.orEmpty().take(4)
+    var expanded by remember(node.id) { mutableStateOf(false) }
+    val allItems = node.props["items"]?.jsonArray.orEmpty()
+    val (items, extra) = openUiActionItems(allItems, if (expanded) OpenUiActionExpandedItems else OpenUiActionCollapsedItems)
     val prompt = node.props.string("prompt") ?: node.props.string("question")
     val chips = items.isNotEmpty() && items.all { el ->
         val obj = runCatching { el.jsonObject }.getOrNull()
@@ -704,6 +709,13 @@ private fun OpenUiActions(
                     }
                 }
             }
+        }
+        if (extra > 0 && !expanded) {
+            TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
+                Text("显示其余 $extra 项", color = ion.clayEmphasis, style = MaterialTheme.typography.labelMedium)
+            }
+        } else if (extra > 0) {
+            Text("仍有 $extra 项未显示", color = ion.text3, style = MaterialTheme.typography.labelSmall)
         }
     }
 }

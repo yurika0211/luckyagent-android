@@ -91,6 +91,17 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun actionItemsReportRemainingAndShowAllWhenExpanded() {
+        val labels = (1..6).map { "选项$it" }
+        val (clipped, extra) = openUiActionItems(labels)
+        assertEquals(4, clipped.size)
+        assertEquals(2, extra)
+        val (full, none) = openUiActionItems(labels, OpenUiActionExpandedItems)
+        assertEquals(0, none)
+        assertEquals(labels, full)
+    }
+
+    @Test
     fun tableGridJoinsHeaderAndClipsBody() {
         val json = Json { ignoreUnknownKeys = true }
         val props = json.parseToJsonElement(
