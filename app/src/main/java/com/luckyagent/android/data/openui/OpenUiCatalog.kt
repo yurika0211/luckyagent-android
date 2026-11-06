@@ -200,6 +200,69 @@ fun OpenUiNode.heading(): String? = props.string("title") ?: props.string("headi
 
 fun OpenUiNode.caption(): String? = props.string("caption") ?: props.string("description") ?: props.string("subtitle")
 
+private val openUiChartKinds = setOf("bar", "line", "area", "pie")
+
+/**
+ * Whitelist chart kinds. Unknown kinds draw as bars. A pie with more than six
+ * slices, or a non-positive sum, also falls back to bars.
+ */
+fun openUiChartKind(kind: String, sliceCount: Int, sum: Float): String {
+    val normalized = kind.trim().lowercase()
+    val resolved = if (normalized in openUiChartKinds) normalized else "bar"
+    if (resolved == "pie" && (sliceCount > 6 || sum <= 0f || sum.isNaN())) return "bar"
+    return resolved
+}
+
+/** Last [window] points already present. A non-positive window keeps the full series. */
+fun openUiChartWindow(values: List<Float>, labels: List<String>, window: Int): Pair<List<Float>, List<String>> {
+    if (window <= 0 || values.size <= window) {
+        val aligned = List(values.size) { i -> labels.getOrElse(i) { "" } }
+        return values to aligned
+    }
+    val start = values.size - window
+    return values.drop(start) to List(window) { i -> labels.getOrElse(start + i) { "" } }
+}
+
+/** Local inspect line. Chart taps never become ui_action. */
+fun openUiChartReadout(label: String, seriesName: String, value: Float, unit: String): String {
+    val number = if (value.isNaN()) "—" else if (value == value.toLong().toFloat()) value.toLong().toString() else "%.1f".format(value)
+    val amount = listOf(seriesName.trim(), number, unit.trim()).filter { it.isNotBlank() }.joinToString(" ")
+    return listOf(label.trim(), amount).filter { it.isNotBlank() }.joinToString(" · ")
+}
+
+data class OpenUiChartRange(
+    val id: String,
+    val min: Float,
+    val max: Float,
+    val step: Float,
+    val value: Float,
+)
+
+/** First range control, if the node already carries one. Missing controls stay null. */
+fun OpenUiNode.chartRange(): OpenUiChartRange? {
+    val raw = props["controls"] ?: props["control"] ?: return null
+    val array = runCatching { raw.jsonArray }.getOrNull()
+    val obj = when {
+        array != null -> array.firstNotNullOfOrNull { el ->
+            val item = el as? JsonObject ?: return@firstNotNullOfOrNull null
+            val type = item.string("type") ?: "range"
+            if (type.equals("range", ignoreCase = true) || type.equals("slider", ignoreCase = true)) item else null
+        }
+        else -> raw as? JsonObject
+    } ?: return null
+    val type = obj.string("type")
+    if (type != null && !type.equals("range", ignoreCase = true) && !type.equals("slider", ignoreCase = true)) return null
+    val min = obj.float("min") ?: 1f
+    val max = obj.float("max") ?: return null
+    if (max < min) return null
+    val step = (obj.float("step") ?: 1f).takeIf { it > 0f } ?: 1f
+    val value = (obj.float("value") ?: max).coerceIn(min, max)
+    return OpenUiChartRange(id = obj.string("id").orEmpty(), min = min, max = max, step = step, value = value)
+}
+
+private fun JsonObject.float(key: String): Float? =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.toFloatOrNull()
+
 fun OpenUiNode.chartSeries(): List<OpenUiChartSeries> {
     val raw = props["series"] ?: return emptyList()
     val array = runCatching { raw.jsonArray }.getOrNull() ?: return emptyList()

@@ -181,6 +181,50 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun chartKindFallsBackToBar() {
+        assertEquals("bar", openUiChartKind("", 3, 10f))
+        assertEquals("bar", openUiChartKind("柱", 3, 10f))
+        assertEquals("bar", openUiChartKind("折线", 3, 10f))
+        assertEquals("bar", openUiChartKind("foo", 3, 10f))
+        assertEquals("line", openUiChartKind("line", 3, 10f))
+        assertEquals("area", openUiChartKind("AREA", 3, 10f))
+        assertEquals("pie", openUiChartKind("pie", 6, 10f))
+        assertEquals("bar", openUiChartKind("pie", 7, 10f))
+        assertEquals("bar", openUiChartKind("pie", 3, 0f))
+        assertEquals("bar", openUiChartKind("pie", 3, -1f))
+    }
+
+    @Test
+    fun chartWindowKeepsTheLastPoints() {
+        val values = (1..10).map { it.toFloat() }
+        val labels = (1..10).map { "第$it" }
+        val (windowed, names) = openUiChartWindow(values, labels, 3)
+        assertEquals(listOf(8f, 9f, 10f), windowed)
+        assertEquals(listOf("第8", "第9", "第10"), names)
+        val (all, allNames) = openUiChartWindow(values, labels, 0)
+        assertEquals(values, all)
+        assertEquals(labels, allNames)
+    }
+
+    @Test
+    fun chartReadoutJoinsLabelSeriesValueAndUnit() {
+        assertEquals("周二 · 咖啡因 95 mg", openUiChartReadout("周二", "咖啡因", 95f, "mg"))
+        assertEquals("咖啡因 12.5", openUiChartReadout("", "咖啡因", 12.5f, ""))
+    }
+
+    @Test
+    fun chartRangeReadsOptionalControl() {
+        val json = Json { ignoreUnknownKeys = true }
+        val props = json.parseToJsonElement(
+            """{"controls":[{"id":"n","type":"range","min":1,"max":10,"step":1,"value":4}]}""",
+        ).jsonObject
+        val range = OpenUiNode(id = "c", type = "Chart", props = props).chartRange()
+        assertEquals("n", range?.id)
+        assertEquals(4f, range?.value)
+        assertNull(OpenUiNode(id = "c", type = "Chart").chartRange())
+    }
+
+    @Test
     fun parseDeltaFromWireJson() {
         val json = Json { ignoreUnknownKeys = true }
         val el = json.parseToJsonElement(
