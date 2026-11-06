@@ -3396,11 +3396,12 @@ class AppViewModel(
 
     /** Reads optional process RSS, CPU, disk, and Go heap. Missing keys stay as dashes. */
     private suspend fun readHostResources(): HostResourceLines {
-        val detail = container.api.healthDetail()
-        return detail.getOrNull()?.let { body ->
+        val detail = container.api.healthDetailTimed()
+        return detail.getOrNull()?.let { reading ->
             runCatching {
                 hostResourcesFromDetail(
-                    Json { ignoreUnknownKeys = true }.parseToJsonElement(body) as? JsonObject,
+                    Json { ignoreUnknownKeys = true }.parseToJsonElement(reading.body) as? JsonObject,
+                    reading.rttMs,
                 )
             }.getOrNull()
         } ?: formatHostResources(null)

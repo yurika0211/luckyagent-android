@@ -6,6 +6,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.luckyagent.android.BuildConfig
@@ -465,13 +466,20 @@ class LuckyAgentApi(
         }
     }
 
-    suspend fun healthDetail(): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun healthDetail(): Result<String> = healthDetailTimed().map { it.body }
+
+    data class HealthDetailReading(val body: String, val rttMs: Long)
+
+    /** Body plus client RTT of this same GET. Failures carry no elapsed time. */
+    suspend fun healthDetailTimed(): Result<HealthDetailReading> = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder().url(url("/api/v1/health/detail")).get().build()
+            val started = SystemClock.elapsedRealtime()
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
+                val rttMs = (SystemClock.elapsedRealtime() - started).coerceAtLeast(0)
                 if (!resp.isSuccessful) error("health detail ${resp.code}: $body")
-                body.ifBlank { "{}" }
+                HealthDetailReading(body = body.ifBlank { "{}" }, rttMs = rttMs)
             }
         }
     }
