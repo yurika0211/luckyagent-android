@@ -51,7 +51,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
 import com.luckyagent.android.data.openui.OpenUiDelta
 import com.luckyagent.android.data.openui.OpenUiNode
 import com.luckyagent.android.data.openui.canSendAction
@@ -59,6 +58,7 @@ import com.luckyagent.android.data.openui.caption
 import com.luckyagent.android.data.openui.chartRange
 import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.heading
+import com.luckyagent.android.data.openui.openUiChartHit
 import com.luckyagent.android.data.openui.openUiChartKind
 import com.luckyagent.android.data.openui.openUiChartReadout
 import com.luckyagent.android.data.openui.openUiChartWindow
@@ -578,34 +578,17 @@ private fun OpenUiChartCanvas(
                 .pointerInput(kind, groups, series) {
                     detectTapGestures { offset ->
                         val pad = 8.dp.toPx()
-                        val w = size.width - pad
-                        val index = if (kind == "pie") {
-                            val slices = series.first().values
-                            val total = slices.sumOf { v -> if (v.isNaN() || v < 0f) 0.0 else v.toDouble() }.toFloat().coerceAtLeast(0.0001f)
-                            val cx = pad + w * 0.25f + (size.height - pad * 2) / 2f
-                            val cy = pad + (size.height - pad * 2) / 2f
-                            var angle = (kotlin.math.atan2(offset.y - cy, offset.x - cx) * 180f / Math.PI.toFloat() + 90f)
-                            if (angle < 0f) angle += 360f
-                            var cursor = 0f
-                            var hit = 0
-                            slices.forEachIndexed { i, v ->
-                                val sweep = 360f * ((if (v.isNaN() || v < 0f) 0f else v) / total)
-                                if (angle >= cursor) hit = i
-                                cursor += sweep
-                            }
-                            hit
-                        } else if (kind == "bar") {
-                            val slot = w / groups
-                            ((offset.x - pad) / slot).toInt()
-                        } else {
-                            val denom = (groups - 1).coerceAtLeast(1)
-                            ((offset.x - pad) / w * denom).roundToInt()
-                        }
-                        if (kind == "pie") {
-                            if (index in series.first().values.indices) onReadout(0, index)
-                        } else if (index in 0 until groups) {
-                            onReadout(0, index)
-                        }
+                        val w = (size.width - pad).coerceAtLeast(1f)
+                        val h = (size.height - pad * 2).coerceAtLeast(1f)
+                        val hit = openUiChartHit(
+                            kind = kind,
+                            seriesCount = series.size,
+                            groups = groups,
+                            tapX = (offset.x - pad) / w,
+                            tapY = (offset.y - pad) / h,
+                            values = series.map { it.values },
+                        ) ?: return@detectTapGestures
+                        onReadout(hit.first, hit.second)
                     }
                 },
         ) {

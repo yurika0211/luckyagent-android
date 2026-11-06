@@ -207,6 +207,17 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun chartHitPicksTheSeriesUnderTheTap() {
+        val bars = listOf(listOf(1f, 2f), listOf(3f, 4f))
+        assertEquals(1 to 1, openUiChartHit("bar", 2, 2, 0.8f, 0.5f, bars))
+        val lines = listOf(listOf(10f), listOf(0f))
+        assertEquals(0 to 0, openUiChartHit("line", 2, 1, 0.2f, 0.05f, lines))
+        assertEquals(1 to 0, openUiChartHit("area", 2, 1, 0.2f, 0.95f, lines))
+        val pie = openUiChartHit("pie", 1, 3, 0.5f, 0.1f, listOf(listOf(1f, 1f, 1f)))
+        assertEquals(0, pie?.first)
+    }
+
+    @Test
     fun chartReadoutJoinsLabelSeriesValueAndUnit() {
         assertEquals("周二 · 咖啡因 95 mg", openUiChartReadout("周二", "咖啡因", 95f, "mg"))
         assertEquals("咖啡因 12.5", openUiChartReadout("", "咖啡因", 12.5f, ""))
