@@ -432,6 +432,8 @@ data class AppUiState(
     /** Segments accepted locally but not yet acknowledged by the runtime collector. */
     val luckyPending: List<LuckyPendingSegment> = emptyList(),
     val snackbarMessage: String? = null,
+    /** Widget id chosen on an OpenUI tree, keyed by tree id. */
+    val openUiSelection: Map<String, String> = emptyMap(),
     val appearanceBusy: Boolean = false,
     val personaName: String = "",
     val models: List<ModelRef> = emptyList(),
@@ -2723,8 +2725,21 @@ class AppViewModel(
 
     fun sendOpenUiAction(treeId: String, widgetId: String, label: String) {
         if (treeId.isBlank() || widgetId.isBlank()) return
+        if (_ui.value.openUiSelection[treeId] != null) return
+        val previous = _ui.value.openUiSelection[treeId]
+        _ui.update { it.copy(openUiSelection = it.openUiSelection + (treeId to widgetId)) }
         val values = if (label.isBlank()) emptyMap() else mapOf("label" to label)
-        container.wsClient.sendUiAction(currentSessionId(), treeId, widgetId, values)
+        val sent = container.wsClient.sendUiAction(currentSessionId(), treeId, widgetId, values)
+        if (!sent) {
+            _ui.update { state ->
+                val next = state.openUiSelection.toMutableMap()
+                if (previous == null) next.remove(treeId) else next[treeId] = previous
+                state.copy(
+                    openUiSelection = next,
+                    snackbarMessage = "无法发送选项，请检查连接",
+                )
+            }
+        }
     }
 
     fun notifyCopied() {
