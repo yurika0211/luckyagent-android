@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -35,6 +37,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -51,8 +55,13 @@ import com.luckyagent.android.data.openui.OpenUiDelta
 import com.luckyagent.android.data.openui.OpenUiNode
 import com.luckyagent.android.data.openui.canSendAction
 import com.luckyagent.android.data.openui.caption
+import com.luckyagent.android.data.openui.chartRange
 import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.heading
+import com.luckyagent.android.data.openui.openUiChartHit
+import com.luckyagent.android.data.openui.openUiChartKind
+import com.luckyagent.android.data.openui.openUiChartReadout
+import com.luckyagent.android.data.openui.openUiChartWindow
 import com.luckyagent.android.data.openui.OpenUiActionCollapsedItems
 import com.luckyagent.android.data.openui.OpenUiActionExpandedItems
 import com.luckyagent.android.data.openui.OpenUiListCollapsedItems
@@ -432,57 +441,191 @@ private fun sourceHost(source: String): String? {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
-    val kind = node.props.string("kind") ?: "chart"
-    val series = node.chartSeries().filter { it.values.isNotEmpty() }
-    if (series.isEmpty()) {
-        Text("图：$kind", color = ion.text2, style = MaterialTheme.typography.bodySmall)
+    val rawSeries = node.chartSeries().filter { it.values.isNotEmpty() }
+    val unit = node.props.string("unit").orEmpty()
+    val fullLabels = node.props.stringList("labels").ifEmpty { node.props.stringList("categories") }
+    val pointCount = rawSeries.maxOfOrNull { it.values.size } ?: 0
+    val sliceCount = rawSeries.firstOrNull()?.values?.size ?: 0
+    val pieSum = rawSeries.firstOrNull()?.values?.sum() ?: 0f
+    val kind = openUiChartKind(node.props.string("kind").orEmpty(), sliceCount, pieSum)
+    val usable = rawSeries.any { ser -> ser.values.any { !it.isNaN() && it != 0f } }
+    if (rawSeries.isEmpty() || pointCount == 0 || !usable) {
+        Text("没有可显示的数据", color = ion.text2, style = MaterialTheme.typography.bodySmall)
         return
     }
-    val max = series.maxOf { it.values.max() }.coerceAtLeast(0f)
-    val min = series.minOf { it.values.min() }.coerceAtMost(0f)
-    val span = (max - min).let { if (it == 0f) 1f else it }
-    val bar = kind.contains("bar", ignoreCase = true) || kind.contains("柱", ignoreCase = true)
-    val labels = node.props.stringList("labels").ifEmpty { node.props.stringList("categories") }
+    val range = node.chartRange()
+    var window by remember(node.id) { mutableStateOf(range?.value ?: pointCount.toFloat()) }
+    val windowSize = window.toInt().coerceIn(1, pointCount)
+    val cropped = rawSeries.map { ser ->
+        val (values, _) = openUiChartWindow(ser.values, fullLabels, windowSize)
+        ser.copy(values = values)
+    }
+    val (_, labels) = openUiChartWindow(List(pointCount) { 0f }, fullLabels, windowSize)
+    var hidden by remember(node.id) { mutableStateOf(setOf<Int>()) }
+    val visible = cropped.mapIndexedNotNull { index, ser -> if (index in hidden) null else index to ser }
+    var readout by remember(node.id, windowSize, hidden) { mutableStateOf<String?>(null) }
     val colors = ion.series
-    val groups = series.maxOf { it.values.size }.coerceAtLeast(1)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!readout.isNullOrBlank()) {
+            Text(readout.orEmpty(), color = ion.clayEmphasis, style = MaterialTheme.typography.labelSmall)
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            series.forEachIndexed { i, ser ->
-                val total = ser.values.sum()
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            cropped.forEachIndexed { i, ser ->
+                val off = i in hidden
+                Row(
+                    Modifier.clickable {
+                        hidden = if (off) hidden - i else hidden + i
+                        readout = null
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     Box(
                         Modifier
                             .size(7.dp)
                             .clip(RoundedCornerShape(2.dp))
-                            .background(colors[i % colors.size]),
+                            .background(if (off) ion.lineStrong else if (i == 0) ion.clay else colors[i % colors.size]),
                     )
                     Text(
-                        "${ser.name} ${formatChartTick(total)}",
-                        color = ion.text2,
+                        ser.name,
+                        color = if (off) ion.text3 else if (i == 0) ion.clayEmphasis else ion.text2,
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().height(148.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(
-                Modifier.width(40.dp).fillMaxHeight(),
-                verticalArrangement = Arrangement.SpaceBetween,
-                horizontalAlignment = Alignment.End,
-            ) {
-                Text(formatChartTick(max), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End)
-                Text(formatChartTick(min), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End)
+        if (visible.isEmpty()) {
+            Text("没有可显示的数据", color = ion.text2, style = MaterialTheme.typography.bodySmall)
+        } else {
+            OpenUiChartCanvas(
+                kind = kind,
+                series = visible.map { it.second },
+                colorIndexes = visible.map { it.first },
+                labels = labels,
+                unit = unit,
+                ion = ion,
+                onReadout = { seriesIndex, index ->
+                    val drawn = visible.getOrNull(seriesIndex)?.second ?: return@OpenUiChartCanvas
+                    val value = drawn.values.getOrNull(index) ?: return@OpenUiChartCanvas
+                    val label = if (kind == "pie") drawn.name else labels.getOrElse(index) { "" }
+                    val name = if (kind == "pie") "" else drawn.name
+                    readout = openUiChartReadout(label, name, value, unit)
+                },
+            )
+            val ticks = chartAxisLabels(labels)
+            if (ticks.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth().padding(start = 48.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    ticks.forEach { label ->
+                        Text(label, color = ion.text3, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
-            Canvas(Modifier.weight(1f).fillMaxHeight().padding(start = 8.dp)) {
-                val pad = 8.dp.toPx()
-                val w = size.width - pad
-                val h = size.height - pad * 2
-                val originX = pad
-                val originY = pad + h
-                val axis = ion.lineStrong
-                drawLine(axis, Offset(originX, pad), Offset(originX, originY), strokeWidth = 1.dp.toPx())
-                drawLine(axis, Offset(originX, originY), Offset(originX + w, originY), strokeWidth = 1.dp.toPx())
-                if (bar) {
+        }
+        if (range != null && pointCount > 1) {
+            val steps = (((range.max - range.min) / range.step).toInt()).coerceAtLeast(0)
+            Slider(
+                value = window.coerceIn(range.min, range.max.coerceAtMost(pointCount.toFloat())),
+                onValueChange = {
+                    window = it
+                    readout = null
+                },
+                valueRange = range.min..range.max.coerceAtLeast(range.min),
+                steps = steps.coerceAtMost(pointCount - 1),
+            )
+        }
+    }
+}
+
+private fun chartAxisLabels(labels: List<String>): List<String> {
+    val present = labels.filter { it.isNotBlank() }
+    if (present.size <= 8) return present
+    val step = ((present.size + 7) / 8).coerceAtLeast(1)
+    return present.filterIndexed { index, _ -> index % step == 0 }
+}
+
+@Composable
+private fun OpenUiChartCanvas(
+    kind: String,
+    series: List<com.luckyagent.android.data.openui.OpenUiChartSeries>, // visible series in draw order
+    colorIndexes: List<Int>,
+    labels: List<String>,
+    unit: String,
+    ion: IonPalette,
+    onReadout: (seriesIndex: Int, index: Int) -> Unit,
+) {
+    val finite = series.flatMap { it.values }.filter { !it.isNaN() }
+    val max = (finite.maxOrNull() ?: 0f).coerceAtLeast(0f)
+    val min = (finite.minOrNull() ?: 0f).coerceAtMost(0f)
+    val span = (max - min).let { if (it == 0f) 1f else it }
+    val groups = series.maxOf { it.values.size }.coerceAtLeast(1)
+    val colors = ion.series
+    val mid = min + span / 2f
+    Row(Modifier.fillMaxWidth().height(148.dp)) {
+        Column(
+            Modifier.width(44.dp).fillMaxHeight().padding(bottom = 8.dp, top = 8.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.End,
+        ) {
+            Text(chartTickLabel(max, unit), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, maxLines = 1)
+            Text(formatChartTick(mid), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, maxLines = 1)
+            Text(formatChartTick(min), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, maxLines = 1)
+        }
+        Canvas(
+            Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .padding(start = 8.dp)
+                .pointerInput(kind, groups, series) {
+                    detectTapGestures { offset ->
+                        val pad = 8.dp.toPx()
+                        val w = (size.width - pad).coerceAtLeast(1f)
+                        val h = (size.height - pad * 2).coerceAtLeast(1f)
+                        val hit = openUiChartHit(
+                            kind = kind,
+                            seriesCount = series.size,
+                            groups = groups,
+                            tapX = (offset.x - pad) / w,
+                            tapY = (offset.y - pad) / h,
+                            values = series.map { it.values },
+                        ) ?: return@detectTapGestures
+                        onReadout(hit.first, hit.second)
+                    }
+                },
+        ) {
+            val pad = 8.dp.toPx()
+            val w = size.width - pad
+            val h = size.height - pad * 2
+            val originX = pad
+            val originY = pad + h
+            val zeroY = originY - ((0f - min) / span) * h
+            if (kind != "pie") {
+                drawLine(ion.line, Offset(originX, pad), Offset(originX, originY), strokeWidth = 1.dp.toPx())
+                drawLine(ion.line, Offset(originX, zeroY), Offset(originX + w, zeroY), strokeWidth = 1.dp.toPx())
+                drawLine(ion.lineStrong, Offset(originX, originY), Offset(originX + w, originY), strokeWidth = 1.dp.toPx())
+            }
+            fun colorAt(s: Int): Color {
+                val index = colorIndexes.getOrElse(s) { s }
+                return if (index == 0) ion.clay else colors[index % colors.size]
+            }
+            when (kind) {
+                "pie" -> {
+                    val slices = series.first().values.map { if (it.isNaN() || it < 0f) 0f else it }
+                    val total = slices.sum().coerceAtLeast(0.0001f)
+                    var start = -90f
+                    slices.forEachIndexed { i, v ->
+                        val sweep = 360f * (v / total)
+                        drawArc(
+                            color = colors[i % colors.size].let { if (i == 0) ion.clay else it },
+                            startAngle = start,
+                            sweepAngle = sweep,
+                            useCenter = true,
+                            topLeft = Offset(originX + w * 0.25f, pad),
+                            size = Size(h, h),
+                        )
+                        start += sweep
+                    }
+                }
+                "bar" -> {
                     val slot = w / groups
                     val inner = slot * 0.72f
                     val gap = 2.dp.toPx()
@@ -490,39 +633,53 @@ private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
                     val radius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
                     series.forEachIndexed { s, ser ->
                         ser.values.forEachIndexed { i, v ->
-                            val bh = ((v - min) / span) * h
+                            if (v.isNaN()) return@forEachIndexed
+                            val y = originY - ((v - min) / span) * h
+                            val top = minOf(y, zeroY)
+                            val bh = kotlin.math.abs(zeroY - y).coerceAtLeast(1f)
                             val x = originX + i * slot + (slot - inner) / 2 + s * (barW + gap)
-                            drawRoundRect(
-                                color = colors[s % colors.size],
-                                topLeft = Offset(x, originY - bh),
-                                size = Size(barW, bh),
-                                cornerRadius = radius,
-                            )
+                            drawRoundRect(colorAt(s), Offset(x, top), Size(barW, bh), radius)
                         }
                     }
-                } else {
+                }
+                else -> {
                     val denom = (groups - 1).coerceAtLeast(1)
                     series.forEachIndexed { s, ser ->
                         val path = Path()
+                        val fill = Path().apply { fillType = PathFillType.NonZero }
                         ser.values.forEachIndexed { i, v ->
+                            val value = if (v.isNaN()) min else v
                             val x = originX + w * i / denom
-                            val y = originY - ((v - min) / span) * h
-                            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-                            drawCircle(color = colors[s % colors.size], radius = 3.dp.toPx(), center = Offset(x, y))
+                            val y = originY - ((value - min) / span) * h
+                            if (i == 0) {
+                                path.moveTo(x, y)
+                                fill.moveTo(x, zeroY)
+                                fill.lineTo(x, y)
+                            } else {
+                                path.lineTo(x, y)
+                                fill.lineTo(x, y)
+                            }
+                            drawCircle(colorAt(s), radius = 3.dp.toPx(), center = Offset(x, y))
                         }
-                        drawPath(path, color = colors[s % colors.size], style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+                        if (ser.values.isNotEmpty()) {
+                            val lastX = originX + w * (ser.values.lastIndex) / denom
+                            fill.lineTo(lastX, zeroY)
+                            fill.close()
+                        }
+                        if (kind == "area") {
+                            drawPath(fill, colorAt(s).copy(alpha = 0.18f))
+                        }
+                        drawPath(path, colorAt(s), style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
                     }
-                }
-            }
-        }
-        if (labels.isNotEmpty()) {
-            Row(Modifier.fillMaxWidth().padding(start = 48.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                labels.take(6).forEach { label ->
-                    Text(label, color = ion.text3, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
     }
+}
+
+private fun chartTickLabel(value: Float, unit: String): String {
+    val number = formatChartTick(value)
+    return if (unit.isBlank()) number else "$number $unit"
 }
 
 private fun formatChartTick(value: Float): String =

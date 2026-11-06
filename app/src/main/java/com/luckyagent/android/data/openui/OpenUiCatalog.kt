@@ -10,6 +10,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.math.roundToInt
 
 @Serializable
 data class OpenUiDelta(
@@ -199,6 +200,154 @@ data class OpenUiChartSeries(
 fun OpenUiNode.heading(): String? = props.string("title") ?: props.string("heading") ?: props.string("name")
 
 fun OpenUiNode.caption(): String? = props.string("caption") ?: props.string("description") ?: props.string("subtitle")
+
+private val openUiChartKinds = setOf("bar", "line", "area", "pie")
+
+/**
+ * Whitelist chart kinds. Unknown kinds draw as bars. A pie with more than six
+ * slices, or a non-positive sum, also falls back to bars.
+ */
+fun openUiChartKind(kind: String, sliceCount: Int, sum: Float): String {
+    val normalized = kind.trim().lowercase()
+    val resolved = if (normalized in openUiChartKinds) normalized else "bar"
+    if (resolved == "pie" && (sliceCount > 6 || sum <= 0f || sum.isNaN())) return "bar"
+    return resolved
+}
+
+/** Last [window] points already present. A non-positive window keeps the full series. */
+fun openUiChartWindow(values: List<Float>, labels: List<String>, window: Int): Pair<List<Float>, List<String>> {
+    if (window <= 0 || values.size <= window) {
+        val aligned = List(values.size) { i -> labels.getOrElse(i) { "" } }
+        return values to aligned
+    }
+    val start = values.size - window
+    return values.drop(start) to List(window) { i -> labels.getOrElse(start + i) { "" } }
+}
+
+/**
+ * Hit-test a chart in plot coordinates. Chart taps stay local.
+ *
+ * [tapX] and [tapY] are fractions of the plot, each in `0..1`.
+ * x grows to the right. y grows downward, so `0` is the top.
+ *
+ * Bars: group `i` is the slice `[i / groups, (i + 1) / groups)`.
+ * The series in that group share the centered 72% of the slice, left to right.
+ * A tap inside the group but outside a bar snaps to the nearest series.
+ *
+ * Line and area: x picks the nearest point. y picks the series whose value
+ * is closest on the same top-down scale.
+ *
+ * Pie always returns series 0. The slice is the clockwise sector from 12
+ * o'clock under the tap, measured from the plot center `(0.5, 0.5)`.
+ *
+ * Returns series index to point index, or null when there is nothing to hit.
+ */
+fun openUiChartHit(
+    kind: String,
+    seriesCount: Int,
+    groups: Int,
+    tapX: Float,
+    tapY: Float,
+    values: List<List<Float>>,
+): Pair<Int, Int>? {
+    if (seriesCount <= 0 || groups <= 0 || values.isEmpty()) return null
+    val x = tapX.coerceIn(0f, 0.999999f)
+    val y = tapY.coerceIn(0f, 1f)
+    if (kind == "pie") {
+        val slices = values.first()
+        if (slices.isEmpty()) return null
+        val dx = x - 0.5f
+        val dy = y - 0.5f
+        var angle = kotlin.math.atan2(dy, dx) * 180f / Math.PI.toFloat() + 90f
+        if (angle < 0f) angle += 360f
+        val weights = slices.map { if (it.isNaN() || it < 0f) 0f else it }
+        val total = weights.sum().coerceAtLeast(0.0001f)
+        var cursor = 0f
+        var hit = 0
+        weights.forEachIndexed { i, v ->
+            if (angle >= cursor) hit = i
+            cursor += 360f * (v / total)
+        }
+        return 0 to hit.coerceIn(0, slices.lastIndex)
+    }
+    val index = if (kind == "bar") {
+        (x * groups).toInt().coerceIn(0, groups - 1)
+    } else {
+        val denom = (groups - 1).coerceAtLeast(1)
+        (x * denom).roundToInt().coerceIn(0, groups - 1)
+    }
+    if (kind == "bar") {
+        val slot = 1f / groups
+        val innerStart = index * slot + slot * 0.14f
+        val inner = slot * 0.72f
+        val barW = inner / seriesCount
+        val local = x - innerStart
+        val seriesIndex = when {
+            local <= 0f -> 0
+            local >= inner -> seriesCount - 1
+            else -> (local / barW).toInt().coerceIn(0, seriesCount - 1)
+        }
+        return seriesIndex to index
+    }
+    val finite = values.flatten().filter { !it.isNaN() }
+    if (finite.isEmpty()) return null
+    val max = finite.max().coerceAtLeast(0f)
+    val min = finite.min().coerceAtMost(0f)
+    val span = (max - min).let { if (it == 0f) 1f else it }
+    var best = 0
+    var bestDist = Float.POSITIVE_INFINITY
+    for (s in 0 until seriesCount) {
+        val raw = values.getOrNull(s)?.getOrNull(index) ?: continue
+        if (raw.isNaN()) continue
+        val valueY = 1f - (raw - min) / span
+        val dist = kotlin.math.abs(y - valueY)
+        if (dist < bestDist) {
+            bestDist = dist
+            best = s
+        }
+    }
+    return best to index
+}
+
+/** Local inspect line. Chart taps never become ui_action. */
+fun openUiChartReadout(label: String, seriesName: String, value: Float, unit: String): String {
+    val number = if (value.isNaN()) "—" else if (value == value.toLong().toFloat()) value.toLong().toString() else "%.1f".format(value)
+    val amount = listOf(seriesName.trim(), number, unit.trim()).filter { it.isNotBlank() }.joinToString(" ")
+    return listOf(label.trim(), amount).filter { it.isNotBlank() }.joinToString(" · ")
+}
+
+data class OpenUiChartRange(
+    val id: String,
+    val min: Float,
+    val max: Float,
+    val step: Float,
+    val value: Float,
+)
+
+/** First range control, if the node already carries one. Missing controls stay null. */
+fun OpenUiNode.chartRange(): OpenUiChartRange? {
+    val raw = props["controls"] ?: props["control"] ?: return null
+    val array = runCatching { raw.jsonArray }.getOrNull()
+    val obj = when {
+        array != null -> array.firstNotNullOfOrNull { el ->
+            val item = el as? JsonObject ?: return@firstNotNullOfOrNull null
+            val type = item.string("type") ?: "range"
+            if (type.equals("range", ignoreCase = true) || type.equals("slider", ignoreCase = true)) item else null
+        }
+        else -> raw as? JsonObject
+    } ?: return null
+    val type = obj.string("type")
+    if (type != null && !type.equals("range", ignoreCase = true) && !type.equals("slider", ignoreCase = true)) return null
+    val min = obj.float("min") ?: 1f
+    val max = obj.float("max") ?: return null
+    if (max < min) return null
+    val step = (obj.float("step") ?: 1f).takeIf { it > 0f } ?: 1f
+    val value = (obj.float("value") ?: max).coerceIn(min, max)
+    return OpenUiChartRange(id = obj.string("id").orEmpty(), min = min, max = max, step = step, value = value)
+}
+
+private fun JsonObject.float(key: String): Float? =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.toFloatOrNull()
 
 fun OpenUiNode.chartSeries(): List<OpenUiChartSeries> {
     val raw = props["series"] ?: return emptyList()
