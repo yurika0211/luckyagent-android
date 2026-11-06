@@ -220,6 +220,10 @@ class OpenUiCatalogTest {
         val scatter = listOf(listOf(0f, 10f), listOf(10f, 0f))
         assertEquals(1 to 0, openUiChartHit("scatter", 2, 2, 0.02f, 0.05f, scatter))
         assertEquals(0 to 1, openUiChartHit("scatter", 2, 2, 0.98f, 0.05f, scatter))
+        val reversed = listOf(listOf(0f, 10f))
+        val reversedX = listOf(listOf(100f, 0f))
+        assertEquals(0 to 1, openUiChartHit("scatter", 1, 2, 0.02f, 0.05f, reversed, reversedX))
+        assertEquals(0 to 0, openUiChartHit("scatter", 1, 2, 0.98f, 0.95f, reversed, reversedX))
     }
 
     @Test

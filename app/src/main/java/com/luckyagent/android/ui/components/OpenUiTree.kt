@@ -476,7 +476,8 @@ private fun OpenUiChart(node: OpenUiNode, ion: IonPalette, onNotice: (String) ->
     val windowSize = window.toInt().coerceIn(1, pointCount)
     val cropped = rawSeries.map { ser ->
         val (values, _) = openUiChartWindow(ser.values, fullLabels, windowSize)
-        ser.copy(values = values)
+        val start = (ser.values.size - values.size).coerceAtLeast(0)
+        ser.copy(values = values, xs = ser.xs.drop(start).take(values.size))
     }
     val (_, labels) = openUiChartWindow(List(pointCount) { 0f }, fullLabels, windowSize)
     var hidden by remember(node.id) { mutableStateOf(setOf<Int>()) }
@@ -649,6 +650,7 @@ private fun OpenUiChartCanvas(
                             tapX = (offset.x - pad) / w,
                             tapY = (offset.y - pad) / h,
                             values = series.map { it.values },
+                            xs = series.map { it.xs },
                         )
                         if (hit == null) onReadout(-1, -1) else onReadout(hit.first, hit.second)
                     }
@@ -712,9 +714,20 @@ private fun OpenUiChartCanvas(
                     }
                 }
                 "scatter" -> {
-                    val denom = (groups - 1).coerceAtLeast(1)
+                    val finiteX = series.flatMap { ser ->
+                        ser.values.mapIndexedNotNull { i, v ->
+                            if (v.isNaN()) null else ser.xs.getOrNull(i)?.takeUnless { it.isNaN() } ?: i.toFloat()
+                        }
+                    }
+                    val minX = finiteX.minOrNull() ?: 0f
+                    val spanX = ((finiteX.maxOrNull() ?: minX) - minX).let { if (it == 0f) 1f else it }
+                    fun plotX(ser: com.luckyagent.android.data.openui.OpenUiChartSeries, i: Int): Float {
+                        val rawX = ser.xs.getOrNull(i)?.takeUnless { it.isNaN() } ?: i.toFloat()
+                        return originX + w * ((rawX - minX) / spanX)
+                    }
                     hit?.let { (s, i) ->
-                        val x = originX + w * i / denom
+                        val ser = series.getOrNull(s) ?: return@let
+                        val x = plotX(ser, i)
                         drawLine(
                             ion.lineStrong,
                             Offset(x, pad),
@@ -727,7 +740,7 @@ private fun OpenUiChartCanvas(
                         ser.values.forEachIndexed { i, v ->
                             if (v.isNaN()) return@forEachIndexed
                             val marked = hit?.first == s && hit.second == i
-                            val x = originX + w * i / denom
+                            val x = plotX(ser, i)
                             val y = originY - ((v - min) / span) * h
                             drawCircle(if (marked) ion.clayEmphasis else colorAt(s), radius = if (marked) 6.dp.toPx() else 3.5.dp.toPx(), center = Offset(x, y))
                         }
