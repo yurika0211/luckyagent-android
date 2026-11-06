@@ -49,6 +49,48 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun cjkColumnIsWiderThanALatinLengthEstimate() {
+        val cell = "咖啡因"
+        val units = openUiDisplayUnits(cell)
+        val width = openUiColumnWidthDp(listOf(listOf(cell)), 0)
+
+        assertTrue(units > cell.length)
+        assertEquals(units * 8 + 16, width)
+        assertTrue(width > cell.length * 8 + 16)
+    }
+
+    @Test
+    fun tableGridReportsRemainingAndShowsAllWhenExpanded() {
+        val rows = (1..10).joinToString(",") { """["饮品$it","$it"]""" }
+        val json = Json { ignoreUnknownKeys = true }
+        val props = json.parseToJsonElement(
+            """{"columns":["饮品","咖啡因"],"rows":[$rows]}""",
+        ).jsonObject
+        val node = OpenUiNode(id = "t", type = "Table", props = props)
+        val (clipped, extra) = node.tableGrid()
+        assertEquals(2, extra)
+        assertEquals(9, clipped.size)
+        val (full, none) = node.tableGrid(OpenUiTableExpandedRows)
+        assertEquals(0, none)
+        assertEquals(11, full.size)
+        assertEquals(listOf("饮品10", "10"), full.last())
+    }
+
+    @Test
+    fun listItemsReportsRemainingAndShowsAllWhenExpanded() {
+        val json = Json { ignoreUnknownKeys = true }
+        val labels = (1..14).joinToString(",") { """{"label":"项$it"}""" }
+        val props = json.parseToJsonElement("""{"items":[$labels]}""").jsonObject
+        val node = OpenUiNode(id = "l", type = "List", props = props)
+        val (clipped, extra) = node.listItems()
+        assertEquals(2, extra)
+        assertEquals(12, clipped.size)
+        val (full, none) = node.listItems(OpenUiListExpandedItems)
+        assertEquals(0, none)
+        assertEquals(14, full.size)
+    }
+
+    @Test
     fun tableGridJoinsHeaderAndClipsBody() {
         val json = Json { ignoreUnknownKeys = true }
         val props = json.parseToJsonElement(

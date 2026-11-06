@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,6 +10,8 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -24,8 +27,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,8 +54,14 @@ import com.luckyagent.android.data.openui.OpenUiNode
 import com.luckyagent.android.data.openui.caption
 import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.heading
+import com.luckyagent.android.data.openui.OpenUiListCollapsedItems
+import com.luckyagent.android.data.openui.OpenUiListExpandedItems
+import com.luckyagent.android.data.openui.OpenUiTableCollapsedRows
+import com.luckyagent.android.data.openui.OpenUiTableExpandedRows
 import com.luckyagent.android.data.openui.listItems
 import com.luckyagent.android.data.openui.mapPoints
+import com.luckyagent.android.data.openui.openUiColumnWidthDp
+import com.luckyagent.android.data.openui.openUiDisplayUnits
 import com.luckyagent.android.data.openui.string
 import com.luckyagent.android.data.openui.stringList
 import com.luckyagent.android.data.openui.tableGrid
@@ -135,52 +149,83 @@ fun OpenUiTree(
     tree: OpenUiDelta,
     interactive: Boolean,
     onAction: (widgetId: String, label: String) -> Unit,
+    selectedWidgetId: String? = null,
     imageHeaders: Map<String, String> = emptyMap(),
     imageBaseUrl: String = "",
 ) {
     if (tree.nodes.isEmpty()) return
     val ion = ionPalette()
+    val waiting = tree.state == "waiting_input"
+    val canAct = interactive && tree.state != "streaming"
     Column(
         Modifier
             .fillMaxWidth()
             .clip(IonCardShape)
             .background(ion.surface)
-            .border(1.dp, ion.lineStrong, IonCardShape)
+            .border(if (waiting) 1.5.dp else 1.dp, if (waiting) ion.clay else ion.lineStrong, IonCardShape)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         val caption = when (tree.state) {
             "streaming" -> "生成中"
-            "waiting_input" -> "请选择"
+            "waiting_input" -> tree.nodes.firstNotNullOfOrNull { it.props.string("prompt") ?: it.props.string("question") } ?: "请选择"
             else -> null
         }
-        if (caption != null) {
+        if (caption != null && tree.nodes.size != 1) {
             Text(
                 caption,
                 style = MaterialTheme.typography.labelSmall,
-                color = ion.text3,
+                color = if (waiting) ion.clayEmphasis else ion.text3,
                 fontWeight = FontWeight.Medium,
             )
         }
-        tree.nodes.forEach { node ->
-            IonNodeCard(node, ion) {
-                OpenUiNodeView(
-                    node = node,
-                    interactive = interactive && tree.state != "streaming",
-                    onAction = onAction,
-                    imageHeaders = imageHeaders,
-                    imageBaseUrl = imageBaseUrl,
-                    ion = ion,
-                )
+        if (tree.nodes.size == 1) {
+            val node = tree.nodes.single()
+            NodeHeading(node, ion)
+            OpenUiNodeView(
+                node = node,
+                interactive = canAct,
+                selectedWidgetId = selectedWidgetId,
+                onAction = onAction,
+                imageHeaders = imageHeaders,
+                imageBaseUrl = imageBaseUrl,
+                ion = ion,
+            )
+        } else {
+            tree.nodes.forEach { node ->
+                IonNodeCard(node, ion) {
+                    OpenUiNodeView(
+                        node = node,
+                        interactive = canAct,
+                        selectedWidgetId = selectedWidgetId,
+                        onAction = onAction,
+                        imageHeaders = imageHeaders,
+                        imageBaseUrl = imageBaseUrl,
+                        ion = ion,
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun IonNodeCard(node: OpenUiNode, ion: IonPalette, content: @Composable () -> Unit) {
+private fun NodeHeading(node: OpenUiNode, ion: IonPalette) {
     val title = node.heading()
     val note = node.caption()
+    if (title == null && note == null) return
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (title != null) {
+            Text(title, color = ion.text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+        }
+        if (note != null) {
+            Text(note, color = ion.text3, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun IonNodeCard(node: OpenUiNode, ion: IonPalette, content: @Composable () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -190,16 +235,7 @@ private fun IonNodeCard(node: OpenUiNode, ion: IonPalette, content: @Composable 
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (title != null || note != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                if (title != null) {
-                    Text(title, color = ion.text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
-                }
-                if (note != null) {
-                    Text(note, color = ion.text3, style = MaterialTheme.typography.labelSmall)
-                }
-            }
-        }
+        NodeHeading(node, ion)
         content()
     }
 }
@@ -208,6 +244,7 @@ private fun IonNodeCard(node: OpenUiNode, ion: IonPalette, content: @Composable 
 private fun OpenUiNodeView(
     node: OpenUiNode,
     interactive: Boolean,
+    selectedWidgetId: String?,
     onAction: (String, String) -> Unit,
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
@@ -254,7 +291,7 @@ private fun OpenUiNodeView(
             }
         }
         "Markdown" -> MarkdownText(markdown = node.props.string("text").orEmpty())
-        "Actions" -> OpenUiActions(node, interactive, onAction, ion)
+        "Actions" -> OpenUiActions(node, interactive, selectedWidgetId, onAction, ion)
         else -> {}
     }
 }
@@ -262,7 +299,8 @@ private fun OpenUiNodeView(
 @Composable
 private fun OpenUiTable(node: OpenUiNode, ion: IonPalette) {
     val columns = node.props.stringList("columns")
-    val (grid, extra) = node.tableGrid()
+    var expanded by remember(node.id) { mutableStateOf(false) }
+    val (grid, extra) = node.tableGrid(if (expanded) OpenUiTableExpandedRows else OpenUiTableCollapsedRows)
     if (grid.isEmpty()) return
     val colCount = grid.maxOf { it.size }
     val numeric = List(colCount) { col ->
@@ -270,7 +308,7 @@ private fun OpenUiTable(node: OpenUiNode, ion: IonPalette) {
         body.count { it.getOrNull(col)?.trim()?.toFloatOrNull() != null } >= (body.size / 2).coerceAtLeast(1)
     }
     val widths = List(colCount) { col ->
-        ((grid.maxOf { it.getOrNull(col).orEmpty().length } * 8 + 16).coerceIn(64, 280)).dp
+        openUiColumnWidthDp(grid, col).dp
     }
     val shown = if (columns.isNotEmpty()) grid.size - 1 else grid.size
     Column(
@@ -306,9 +344,13 @@ private fun OpenUiTable(node: OpenUiNode, ion: IonPalette) {
                 Box(Modifier.fillMaxWidth().height(1.dp).background(ion.line))
             }
         }
-        if (extra > 0) {
+        if (extra > 0 && !expanded) {
+            TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                Text("显示其余 $extra 行", color = ion.clayEmphasis, style = MaterialTheme.typography.labelMedium)
+            }
+        } else if (extra > 0) {
             Text(
-                "另有 $extra 行",
+                "仍有 $extra 行未显示",
                 color = ion.text3,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -319,7 +361,8 @@ private fun OpenUiTable(node: OpenUiNode, ion: IonPalette) {
 
 @Composable
 private fun OpenUiList(node: OpenUiNode, ion: IonPalette) {
-    val (items, extra) = node.listItems()
+    var expanded by remember(node.id) { mutableStateOf(false) }
+    val (items, extra) = node.listItems(if (expanded) OpenUiListExpandedItems else OpenUiListCollapsedItems)
     val details = node.props["items"]?.jsonArray.orEmpty()
     Column {
         items.forEachIndexed { i, item ->
@@ -353,8 +396,12 @@ private fun OpenUiList(node: OpenUiNode, ion: IonPalette) {
                 }
             }
         }
-        if (extra > 0) {
-            Text("另有 $extra 项", color = ion.text3, style = MaterialTheme.typography.labelSmall)
+        if (extra > 0 && !expanded) {
+            TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
+                Text("显示其余 $extra 项", color = ion.clayEmphasis, style = MaterialTheme.typography.labelMedium)
+            }
+        } else if (extra > 0) {
+            Text("仍有 $extra 项未显示", color = ion.text3, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -400,6 +447,7 @@ private fun sourceHost(source: String): String? {
     return source.substringAfter("://").substringBefore("/").substringBefore("?").ifBlank { null }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
     val kind = node.props.string("kind") ?: "chart"
@@ -416,7 +464,7 @@ private fun OpenUiChart(node: OpenUiNode, ion: IonPalette) {
     val colors = ion.series
     val groups = series.maxOf { it.values.size }.coerceAtLeast(1)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             series.forEachIndexed { i, ser ->
                 val total = ser.values.sum()
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -560,44 +608,98 @@ private fun OpenUiMap(node: OpenUiNode, ion: IonPalette) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun OpenUiActions(node: OpenUiNode, interactive: Boolean, onAction: (String, String) -> Unit, ion: IonPalette) {
-    val items = node.props["items"]?.jsonArray.orEmpty()
+private fun OpenUiActions(
+    node: OpenUiNode,
+    interactive: Boolean,
+    selectedWidgetId: String?,
+    onAction: (String, String) -> Unit,
+    ion: IonPalette,
+) {
+    val items = node.props["items"]?.jsonArray.orEmpty().take(4)
     val prompt = node.props.string("prompt") ?: node.props.string("question")
+    val chips = items.isNotEmpty() && items.all { el ->
+        val obj = runCatching { el.jsonObject }.getOrNull()
+        val label = obj?.get("label")?.jsonPrimitive?.content ?: obj?.get("id")?.jsonPrimitive?.content ?: node.id
+        !label.contains('\n') && openUiDisplayUnits(label) <= 10
+    }
+    val locked = selectedWidgetId != null
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!prompt.isNullOrBlank() && prompt != node.heading()) {
-            Text(prompt, color = ion.text, style = MaterialTheme.typography.bodySmall)
+            Text(prompt, color = ion.text, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
         }
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items.take(4).forEachIndexed { index, el ->
-                val obj = runCatching { el.jsonObject }.getOrNull()
-                val id = obj?.get("id")?.jsonPrimitive?.content ?: node.id
-                val label = obj?.get("label")?.jsonPrimitive?.content ?: id
-                val hint = obj?.string("description") ?: obj?.string("detail")
-                val primary = index == 0
-                Button(
-                    onClick = { onAction(id, label) },
-                    enabled = interactive,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
-                    shape = RoundedCornerShape(999.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (primary) ion.clay else ion.header,
-                        contentColor = if (primary) ion.onClay else ion.text,
-                        disabledContainerColor = ion.header,
-                        disabledContentColor = ion.text3,
-                    ),
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (!hint.isNullOrBlank()) {
+        if (chips) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items.forEachIndexed { index, el ->
+                    val obj = runCatching { el.jsonObject }.getOrNull()
+                    val id = obj?.get("id")?.jsonPrimitive?.content ?: node.id
+                    val label = obj?.get("label")?.jsonPrimitive?.content ?: id
+                    val selected = selectedWidgetId == id
+                    val primary = selected || (selectedWidgetId == null && index == 0)
+                    Button(
+                        onClick = { if (interactive) onAction(id, label) },
+                        enabled = interactive && !locked,
+                        shape = RoundedCornerShape(999.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (primary) ion.clay else ion.header,
+                            contentColor = if (primary) ion.onClay else ion.text,
+                            disabledContainerColor = if (selected) ion.clay else ion.header,
+                            disabledContentColor = if (selected) ion.onClay else ion.text3,
+                        ),
+                        border = if (primary) null else BorderStroke(1.dp, ion.lineStrong),
+                    ) {
+                        Text(
+                            if (selected) "✓ $label" else label,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items.forEachIndexed { index, el ->
+                    val obj = runCatching { el.jsonObject }.getOrNull()
+                    val id = obj?.get("id")?.jsonPrimitive?.content ?: node.id
+                    val label = obj?.get("label")?.jsonPrimitive?.content ?: id
+                    val hint = obj?.string("description") ?: obj?.string("detail")
+                    val selected = selectedWidgetId == id
+                    val primary = selected || (selectedWidgetId == null && index == 0)
+                    Button(
+                        onClick = { if (interactive) onAction(id, label) },
+                        enabled = interactive && !locked,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
+                        shape = RoundedCornerShape(999.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (primary) ion.clay else ion.header,
+                            contentColor = if (primary) ion.onClay else ion.text,
+                            disabledContainerColor = if (selected) ion.clay else ion.header,
+                            disabledContentColor = if (selected) ion.onClay else ion.text3,
+                        ),
+                        border = if (primary) null else BorderStroke(1.dp, ion.lineStrong),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                hint,
-                                style = MaterialTheme.typography.labelSmall,
-                                maxLines = 1,
+                                if (selected) "✓ $label" else label,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
-                                color = if (primary) ion.onClay.copy(alpha = 0.85f) else ion.text3,
                             )
+                            if (!hint.isNullOrBlank()) {
+                                Text(
+                                    hint,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (primary) ion.onClay.copy(alpha = 0.85f) else ion.text3,
+                                )
+                            }
                         }
                     }
                 }

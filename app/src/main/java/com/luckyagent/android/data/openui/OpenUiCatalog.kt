@@ -92,7 +92,46 @@ fun JsonObject.stringList(key: String): List<String> {
     }
 }
 
-fun OpenUiNode.listItems(maxItems: Int = 12): Pair<List<String>, Int> {
+const val OpenUiListCollapsedItems = 12
+const val OpenUiListExpandedItems = 40
+const val OpenUiTableCollapsedRows = 8
+const val OpenUiTableExpandedRows = 40
+
+/** Latin letters count as 1. CJK and fullwidth count as 2. */
+fun openUiDisplayUnits(text: String): Int {
+    var units = 0
+    var index = 0
+    while (index < text.length) {
+        val code = text.codePointAt(index)
+        units += if (openUiGlyphIsWide(code)) 2 else 1
+        index += Character.charCount(code)
+    }
+    return units
+}
+
+fun openUiColumnWidthDp(grid: List<List<String>>, column: Int, cap: Int = 280): Int {
+    val units = grid.maxOfOrNull { openUiDisplayUnits(it.getOrNull(column).orEmpty()) } ?: 0
+    return (units * 8 + 16).coerceIn(64, cap)
+}
+
+private fun openUiGlyphIsWide(code: Int): Boolean = when (code) {
+    in 0x1100..0x115F,
+    in 0x2329..0x232A,
+    in 0x2E80..0xA4CF,
+    in 0xAC00..0xD7A3,
+    in 0xF900..0xFAFF,
+    in 0xFE10..0xFE19,
+    in 0xFE30..0xFE6F,
+    in 0xFF00..0xFF60,
+    in 0xFFE0..0xFFE6,
+    in 0x1F200..0x1F251,
+    in 0x1F300..0x1FAFF,
+    in 0x20000..0x3FFFD,
+    -> true
+    else -> false
+}
+
+fun OpenUiNode.listItems(maxItems: Int = OpenUiListCollapsedItems): Pair<List<String>, Int> {
     val items = props["items"]?.jsonArray?.mapNotNull { el ->
         val obj = el as? JsonObject
         if (obj != null) obj.string("label") ?: obj.string("text")
@@ -102,7 +141,7 @@ fun OpenUiNode.listItems(maxItems: Int = 12): Pair<List<String>, Int> {
 }
 
 /** Header plus at most [maxRows] body rows; extra is how many body rows were clipped. */
-fun OpenUiNode.tableGrid(maxRows: Int = 8): Pair<List<List<String>>, Int> {
+fun OpenUiNode.tableGrid(maxRows: Int = OpenUiTableCollapsedRows): Pair<List<List<String>>, Int> {
     val columns = props.stringList("columns")
     val rows = props["rows"]?.jsonArray.orEmpty().map { row ->
         runCatching { row.jsonArray.map { it.jsonPrimitive.content } }.getOrElse {
