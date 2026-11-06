@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.height
@@ -54,7 +56,12 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
+import coil.request.ImageRequest
 import com.luckyagent.android.data.openui.OpenUiDelta
 import com.luckyagent.android.data.openui.OpenUiNode
 import com.luckyagent.android.data.openui.canSendAction
@@ -83,6 +90,9 @@ import com.luckyagent.android.data.openui.OpenUiTableExpandedRows
 import com.luckyagent.android.data.openui.listItems
 import com.luckyagent.android.data.openui.openUiActionItems
 import com.luckyagent.android.data.openui.mapPoints
+import com.luckyagent.android.data.openui.openUiLatToTileY
+import com.luckyagent.android.data.openui.openUiLonToTileX
+import com.luckyagent.android.data.openui.openUiMapTiles
 import com.luckyagent.android.data.openui.openUiColumnWidthDp
 import com.luckyagent.android.data.openui.openUiDisplayUnits
 import com.luckyagent.android.data.openui.string
@@ -948,6 +958,55 @@ private fun formatChartTick(value: Float): String =
 
 private fun formatCoord(value: Double): String = "%.2f".format(value)
 
+private fun openUiMapPinOffset(
+    lng: Double,
+    lat: Double,
+    width: Float,
+    height: Float,
+    tileZ: Int?,
+    tileMinX: Int?,
+    tileMinY: Int?,
+    tileCols: Int,
+    tileRows: Int,
+    minLat: Double,
+    maxLat: Double,
+    minLng: Double,
+    maxLng: Double,
+    pad: Float,
+): Pair<Float, Float> {
+    if (tileZ != null && tileMinX != null && tileMinY != null && tileCols > 0 && tileRows > 0) {
+        val x = ((openUiLonToTileX(lng, tileZ) - tileMinX) / tileCols.toDouble()).toFloat() * width
+        val y = ((openUiLatToTileY(lat, tileZ) - tileMinY) / tileRows.toDouble()).toFloat() * height
+        return x to y
+    }
+    val dLat = (maxLat - minLat).let { if (it == 0.0) 1.0 else it }
+    val dLng = (maxLng - minLng).let { if (it == 0.0) 1.0 else it }
+    val plotW = (width - pad * 2).coerceAtLeast(1f)
+    val plotH = (height - pad * 2).coerceAtLeast(1f)
+    return (pad + (((lng - minLng) / dLng) * plotW).toFloat()) to
+        (pad + plotH - (((lat - minLat) / dLat) * plotH).toFloat())
+}
+
+@Composable
+private fun OpenUiMapTileImage(url: String?, modifier: Modifier = Modifier) {
+    if (url.isNullOrBlank()) return
+    val context = LocalContext.current
+    val painter = rememberAsyncImagePainter(
+        model = ImageRequest.Builder(context)
+            .data(url)
+            .crossfade(false)
+            .build(),
+    )
+    if (painter.state is AsyncImagePainter.State.Success) {
+        Image(
+            painter = painter,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = modifier,
+        )
+    }
+}
+
 @Composable
 private fun OpenUiMap(node: OpenUiNode, ion: IonPalette) {
     val points = node.mapPoints()
@@ -968,23 +1027,63 @@ private fun OpenUiMap(node: OpenUiNode, ion: IonPalette) {
             val maxLat = located.maxOf { it.second.lat!! }
             val minLng = located.minOf { it.second.lng!! }
             val maxLng = located.maxOf { it.second.lng!! }
-            val dLat = (maxLat - minLat).let { if (it == 0.0) 1.0 else it }
-            val dLng = (maxLng - minLng).let { if (it == 0.0) 1.0 else it }
+            val tiles = openUiMapTiles(located.map { it.second })
+            val tileZ = tiles.firstOrNull()?.z
+            val tileMinX = tiles.minOfOrNull { it.x }
+            val tileMaxX = tiles.maxOfOrNull { it.x }
+            val tileMinY = tiles.minOfOrNull { it.y }
+            val tileMaxY = tiles.maxOfOrNull { it.y }
+            val tileCols = if (tileMinX != null && tileMaxX != null) tileMaxX - tileMinX + 1 else 0
+            val tileRows = if (tileMinY != null && tileMaxY != null) tileMaxY - tileMinY + 1 else 0
             val pin = ion.clay
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(168.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+            ) {
+            if (tileCols > 0 && tileRows > 0 && tileMinX != null && tileMinY != null) {
+                Column(Modifier.fillMaxSize()) {
+                    for (row in 0 until tileRows) {
+                        Row(Modifier.weight(1f).fillMaxWidth()) {
+                            for (col in 0 until tileCols) {
+                                val tile = tiles.firstOrNull { it.x == tileMinX + col && it.y == tileMinY + row }
+                                OpenUiMapTileImage(
+                                    url = tile?.url,
+                                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             Canvas(
                 Modifier
                     .fillMaxWidth()
-                    .height(120.dp)
-                    .pointerInput(located, minLat, maxLat, minLng, maxLng) {
+                    .fillMaxSize()
+                    .pointerInput(located, tiles, minLat, maxLat, minLng, maxLng) {
                         detectTapGestures { offset ->
-                            val pad = 14.dp.toPx()
-                            val w = (size.width - pad * 2).coerceAtLeast(1f)
-                            val h = (size.height - pad * 2).coerceAtLeast(1f)
+                            val w = size.width.toFloat().coerceAtLeast(1f)
+                            val h = size.height.toFloat().coerceAtLeast(1f)
                             var best = -1
                             var bestDist = Float.POSITIVE_INFINITY
                             located.forEach { (index, p) ->
-                                val x = pad + (((p.lng!! - minLng) / dLng) * w).toFloat()
-                                val y = pad + h - (((p.lat!! - minLat) / dLat) * h).toFloat()
+                                val (x, y) = openUiMapPinOffset(
+                                    p.lng!!,
+                                    p.lat!!,
+                                    w,
+                                    h,
+                                    tileZ,
+                                    tileMinX,
+                                    tileMinY,
+                                    tileCols,
+                                    tileRows,
+                                    minLat,
+                                    maxLat,
+                                    minLng,
+                                    maxLng,
+                                    14.dp.toPx(),
+                                )
                                 val dist = (offset.x - x) * (offset.x - x) + (offset.y - y) * (offset.y - y)
                                 if (dist < bestDist) {
                                     bestDist = dist
@@ -996,18 +1095,33 @@ private fun OpenUiMap(node: OpenUiNode, ion: IonPalette) {
                         }
                     },
             ) {
-                val pad = 14.dp.toPx()
-                val w = size.width - pad * 2
-                val h = size.height - pad * 2
+                val w = size.width
+                val h = size.height
                 located.forEach { (index, p) ->
                     val marked = index == selected
-                    val x = pad + (((p.lng!! - minLng) / dLng) * w).toFloat()
-                    val y = pad + h - (((p.lat!! - minLat) / dLat) * h).toFloat()
+                    val (x, y) = openUiMapPinOffset(
+                        p.lng!!,
+                        p.lat!!,
+                        w,
+                        h,
+                        tileZ,
+                        tileMinX,
+                        tileMinY,
+                        tileCols,
+                        tileRows,
+                        minLat,
+                        maxLat,
+                        minLng,
+                        maxLng,
+                        14.dp.toPx(),
+                    )
                     val color = if (marked) ion.clayEmphasis else pin
                     drawCircle(color = color.copy(alpha = 0.22f), radius = if (marked) 14.dp.toPx() else 9.dp.toPx(), center = Offset(x, y))
                     drawCircle(color = color, radius = if (marked) 6.dp.toPx() else 4.dp.toPx(), center = Offset(x, y))
                 }
             }
+            }
+            Text("© OpenStreetMap", color = ion.text3, style = MaterialTheme.typography.labelSmall)
             Text(
                 "${located.size} 个点 · ${formatCoord(minLat)}–${formatCoord(maxLat)}",
                 color = ion.text3,
@@ -1061,7 +1175,6 @@ private fun OpenUiActions(
         val label = obj?.get("label")?.jsonPrimitive?.content ?: obj?.get("id")?.jsonPrimitive?.content ?: node.id
         !label.contains('\n') && openUiDisplayUnits(label) <= 10
     }
-    val locked = selectedWidgetId != null
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (chips) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1073,7 +1186,7 @@ private fun OpenUiActions(
                     val canSend = interactive && node.canSendAction()
                     Button(
                         onClick = { if (canSend) onAction(id, label) },
-                        enabled = canSend && !locked,
+                        enabled = canSend,
                         modifier = Modifier.height(32.dp),
                         shape = RoundedCornerShape(999.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
@@ -1106,7 +1219,7 @@ private fun OpenUiActions(
                     val canSend = interactive && node.canSendAction()
                     Button(
                         onClick = { if (canSend) onAction(id, label) },
-                        enabled = canSend && !locked,
+                        enabled = canSend,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),

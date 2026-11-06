@@ -12,7 +12,10 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.text.Collator
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.ln
 import kotlin.math.roundToInt
+import kotlin.math.tan
 
 @Serializable
 data class OpenUiDelta(
@@ -225,6 +228,87 @@ data class OpenUiMapPoint(
     val lat: Double?,
     val lng: Double?,
 )
+
+data class OpenUiMapTile(
+    val x: Int,
+    val y: Int,
+    val z: Int,
+    val url: String,
+)
+
+/** Web Mercator tile x. lon -180 is 0. lon 0 at z=1 is 1. */
+fun openUiLonToTileX(lon: Double, z: Int): Double {
+    val n = 1 shl z.coerceIn(0, 22)
+    return ((lon + 180.0) / 360.0) * n
+}
+
+/** Web Mercator tile y. lat 0 at z=1 is 1. y is clamped to the zoom's tile range. */
+fun openUiLatToTileY(lat: Double, z: Int): Double {
+    val n = 1 shl z.coerceIn(0, 22)
+    val clamped = lat.coerceIn(-85.05112878, 85.05112878)
+    val rad = clamped * PI / 180.0
+    val raw = (1.0 - ln(tan(rad) + 1.0 / kotlin.math.cos(rad)) / PI) / 2.0 * n
+    return raw.coerceIn(0.0, (n - 1).toDouble())
+}
+
+private const val openUiMapTileHost = "https://tile.openstreetmap.org"
+
+/**
+ * OSM tiles covering the located points. One point uses z=12 and a 3×3 around
+ * it. A spread of points drops z until the box is about 3–4 tiles wide, then
+ * adds [pad] and caps the grid at 4×4.
+ */
+fun openUiMapTiles(points: List<OpenUiMapPoint>, z: Int = 0, pad: Int = 1): List<OpenUiMapTile> {
+    val located = points.filter { it.lat != null && it.lng != null }
+    if (located.isEmpty()) return emptyList()
+    val zoom = if (z > 0) z.coerceIn(2, 16) else openUiMapZoom(located)
+    val n = 1 shl zoom
+    val xs = located.map { openUiLonToTileX(it.lng!!, zoom) }
+    val ys = located.map { openUiLatToTileY(it.lat!!, zoom) }
+    var minX = xs.min().toInt() - pad
+    var maxX = xs.max().toInt() + pad
+    var minY = ys.min().toInt() - pad
+    var maxY = ys.max().toInt() + pad
+    if (maxX - minX > 3) {
+        val mid = ((minX + maxX) / 2)
+        minX = mid - 1
+        maxX = mid + 2
+    }
+    if (maxY - minY > 3) {
+        val mid = ((minY + maxY) / 2)
+        minY = mid - 1
+        maxY = mid + 2
+    }
+    minX = minX.coerceIn(0, n - 1)
+    maxX = maxX.coerceIn(0, n - 1)
+    minY = minY.coerceIn(0, n - 1)
+    maxY = maxY.coerceIn(0, n - 1)
+    return buildList {
+        for (ty in minY..maxY) {
+            for (tx in minX..maxX) {
+                add(OpenUiMapTile(tx, ty, zoom, "$openUiMapTileHost/$zoom/$tx/$ty.png"))
+            }
+        }
+    }
+}
+
+/** z between 2 and 16. A single point stays at 12. */
+internal fun openUiMapZoom(points: List<OpenUiMapPoint>): Int {
+    val located = points.filter { it.lat != null && it.lng != null }
+    if (located.size <= 1) return 12
+    val lats = located.map { it.lat!! }
+    val lngs = located.map { it.lng!! }
+    val dLat = lats.max() - lats.min()
+    val dLng = lngs.max() - lngs.min()
+    val span = maxOf(dLat, dLng).coerceAtLeast(0.000001)
+    var zoom = 16
+    while (zoom > 2) {
+        val world = 360.0 / (1 shl zoom)
+        if (span / world <= 3.5) return zoom
+        zoom -= 1
+    }
+    return 2
+}
 
 fun OpenUiNode.mapPoints(): List<OpenUiMapPoint> {
     val raw = props["points"] ?: return emptyList()

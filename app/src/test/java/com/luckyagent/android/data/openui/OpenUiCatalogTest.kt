@@ -131,6 +131,31 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun mapTilesUseWebMercator() {
+        // lon -180 is the left edge of tile 0. lon 0 at z=1 is the boundary of tile 1.
+        // lat 0 at z=1 is tile y 1. lon just under 180 is the last tile.
+        assertEquals(0.0, openUiLonToTileX(-180.0, 1), 0.0001)
+        assertEquals(1.0, openUiLonToTileX(0.0, 1), 0.0001)
+        assertEquals(1.0, openUiLatToTileY(0.0, 1), 0.0001)
+        val last = openUiLonToTileX(179.9, 2)
+        assertTrue(last > 3.0 && last < 4.0)
+        val one = openUiMapTiles(listOf(OpenUiMapPoint("这里", 39.9, 116.4)))
+        assertTrue(one.isNotEmpty())
+        assertTrue(one.all { it.z == 12 && it.url.startsWith("https://tile.openstreetmap.org/12/") })
+        val far = openUiMapTiles(
+            listOf(
+                OpenUiMapPoint("西", 37.7, -122.4),
+                OpenUiMapPoint("东", 35.6, 139.7),
+            ),
+        )
+        assertTrue(far.isNotEmpty())
+        assertTrue(far.map { it.z }.distinct().single() < 12)
+        assertTrue(far.map { it.x }.distinct().size > 1 || far.map { it.y }.distinct().size > 1)
+        assertTrue(far.size <= 16)
+        assertTrue(openUiMapTiles(listOf(OpenUiMapPoint("无名", null, null))).isEmpty())
+    }
+
+    @Test
     fun mapPointsReadNameAndCoordinates() {
         val json = Json { ignoreUnknownKeys = true }
         val props = json.parseToJsonElement(

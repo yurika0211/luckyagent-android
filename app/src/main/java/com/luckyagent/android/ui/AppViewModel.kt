@@ -2725,7 +2725,6 @@ class AppViewModel(
 
     fun sendOpenUiAction(treeId: String, widgetId: String, label: String) {
         if (treeId.isBlank() || widgetId.isBlank()) return
-        if (_ui.value.openUiSelection[treeId] != null) return
         val previous = _ui.value.openUiSelection[treeId]
         _ui.update { it.copy(openUiSelection = it.openUiSelection + (treeId to widgetId)) }
         val values = if (label.isBlank()) emptyMap() else mapOf("label" to label)
