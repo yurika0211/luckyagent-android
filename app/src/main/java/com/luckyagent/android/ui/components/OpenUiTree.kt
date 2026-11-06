@@ -61,6 +61,7 @@ import com.luckyagent.android.data.openui.caption
 import com.luckyagent.android.data.openui.chartRange
 import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.heading
+import com.luckyagent.android.data.openui.openUiChartApplyValues
 import com.luckyagent.android.data.openui.openUiChartHit
 import com.luckyagent.android.data.openui.openUiChartKind
 import com.luckyagent.android.data.openui.openUiChartReadout
@@ -166,6 +167,7 @@ fun OpenUiTree(
     imageHeaders: Map<String, String> = emptyMap(),
     imageBaseUrl: String = "",
     onNotice: (String) -> Unit = {},
+    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean = { _, _ -> false },
 ) {
     if (tree.nodes.isEmpty()) return
     val ion = ionPalette()
@@ -202,6 +204,7 @@ fun OpenUiTree(
                         imageBaseUrl = imageBaseUrl,
                         ion = ion,
                         onNotice = onNotice,
+                        onChartApply = onChartApply,
                     )
                 }
                 if (actionsWaiting) {
@@ -249,11 +252,12 @@ private fun OpenUiNodeView(
     imageBaseUrl: String,
     ion: IonPalette,
     onNotice: (String) -> Unit = {},
+    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean = { _, _ -> false },
 ) {
     when (node.type) {
         "Table" -> OpenUiTable(node, ion)
         "List" -> OpenUiList(node, ion)
-        "Chart" -> OpenUiChart(node, ion, onNotice)
+        "Chart" -> OpenUiChart(node, ion, onNotice, onChartApply)
         "Map" -> OpenUiMap(node, ion)
         "Citation" -> OpenUiCitation(node, ion)
         "Image" -> {
@@ -454,7 +458,12 @@ private val chartKindChips = listOf(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun OpenUiChart(node: OpenUiNode, ion: IonPalette, onNotice: (String) -> Unit) {
+private fun OpenUiChart(
+    node: OpenUiNode,
+    ion: IonPalette,
+    onNotice: (String) -> Unit,
+    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean,
+) {
     val rawSeries = node.chartSeries().filter { it.values.isNotEmpty() }
     val unit = node.props.string("unit").orEmpty()
     val fullLabels = node.props.stringList("labels").ifEmpty { node.props.stringList("categories") }
@@ -591,7 +600,10 @@ private fun OpenUiChart(node: OpenUiNode, ion: IonPalette, onNotice: (String) ->
                     .clip(RoundedCornerShape(999.dp))
                     .background(ion.raised)
                     .border(1.dp, ion.lineStrong, RoundedCornerShape(999.dp))
-                    .clickable { onNotice("这一版还不能把参数发回模型") }
+                    .clickable {
+                        val sent = onChartApply(node.id, openUiChartApplyValues(windowSize, chosenKind))
+                        if (!sent) onNotice("无法发给模型")
+                    }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             )
         }

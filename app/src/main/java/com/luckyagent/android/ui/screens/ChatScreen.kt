@@ -1604,6 +1604,7 @@ private fun ChatConversation(
                                     state.expandingHistoryIndex == item.bubble.historyIndex,
                                 onOpenUiAction = vm::sendOpenUiAction,
                                 onOpenUiNotice = vm::showSnackbar,
+                                onOpenUiChartApply = vm::sendOpenUiChartApply,
                                 openUiSelection = state.openUiSelection,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
@@ -2294,6 +2295,7 @@ private fun BubbleRow(
     expanding: Boolean = false,
     onOpenUiAction: (treeId: String, widgetId: String, label: String) -> Unit = { _, _, _ -> },
     onOpenUiNotice: (String) -> Unit = {},
+    onOpenUiChartApply: (treeId: String, widgetId: String, values: Map<String, String>) -> Boolean = { _, _, _ -> false },
     openUiSelection: Map<String, String> = emptyMap(),
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2383,6 +2385,7 @@ private fun BubbleRow(
                                 selectedWidgetId = openUiSelection[tree.treeId],
                                 onAction = { id, label -> onOpenUiAction(tree.treeId, id, label) },
                                 onNotice = onOpenUiNotice,
+                                onChartApply = { id, values -> onOpenUiChartApply(tree.treeId, id, values) },
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = imageBaseUrl,
                             )

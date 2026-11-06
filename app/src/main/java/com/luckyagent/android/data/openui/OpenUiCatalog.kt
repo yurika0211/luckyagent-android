@@ -368,6 +368,12 @@ fun openUiChartPoints(values: List<Float>, xs: List<Float> = emptyList()): List<
     }
 }
 
+/** Chart apply payload. Window is an integer string. Kind is the local chip id. */
+fun openUiChartApplyValues(window: Int, kind: String): Map<String, String> = mapOf(
+    "window" to window.coerceAtLeast(0).toString(),
+    "kind" to kind.trim().lowercase(),
+)
+
 /** Local inspect line. Chart taps never become ui_action. */
 fun openUiChartReadout(label: String, seriesName: String, value: Float, unit: String): String {
     val number = if (value.isNaN()) "—" else if (value == value.toLong().toFloat()) value.toLong().toString() else "%.1f".format(value)

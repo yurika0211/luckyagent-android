@@ -227,6 +227,12 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun chartApplyValuesAreWindowAndKindStrings() {
+        assertEquals(mapOf("window" to "4", "kind" to "scatter"), openUiChartApplyValues(4, "scatter"))
+        assertEquals(mapOf("window" to "0", "kind" to "bar"), openUiChartApplyValues(-2, " BAR "))
+    }
+
+    @Test
     fun chartPointsReadExplicitPairsOrIndexes() {
         val json = Json { ignoreUnknownKeys = true }
         val props = json.parseToJsonElement(
