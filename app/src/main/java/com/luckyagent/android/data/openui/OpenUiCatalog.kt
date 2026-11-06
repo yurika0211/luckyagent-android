@@ -10,7 +10,12 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.text.Collator
+import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.ln
 import kotlin.math.roundToInt
+import kotlin.math.tan
 
 @Serializable
 data class OpenUiDelta(
@@ -167,11 +172,143 @@ fun OpenUiNode.tableGrid(maxRows: Int = OpenUiTableCollapsedRows): Pair<List<Lis
     return grid to (rows.size - maxRows).coerceAtLeast(0)
 }
 
+enum class OpenUiTableSortMode { None, Asc, Desc }
+
+/** Next header tap. none → asc → desc → none. */
+fun openUiTableSortCycle(mode: OpenUiTableSortMode): OpenUiTableSortMode = when (mode) {
+    OpenUiTableSortMode.None -> OpenUiTableSortMode.Asc
+    OpenUiTableSortMode.Asc -> OpenUiTableSortMode.Desc
+    OpenUiTableSortMode.Desc -> OpenUiTableSortMode.None
+}
+
+/**
+ * Sorts the body of an already-clipped grid. [headerRow] keeps row 0 in place.
+ * Numeric columns (half or more of the body parse as float) sort as float.
+ * Everything else sorts as a string. [mode] none returns [grid] unchanged.
+ */
+fun openUiTableSort(
+    grid: List<List<String>>,
+    headerRow: Boolean,
+    column: Int,
+    mode: OpenUiTableSortMode,
+): List<List<String>> {
+    if (mode == OpenUiTableSortMode.None || grid.isEmpty() || column < 0) return grid
+    val header = if (headerRow) grid.first() else null
+    val body = if (headerRow) grid.drop(1) else grid
+    if (body.isEmpty()) return grid
+    val numeric = body.count { it.getOrNull(column)?.trim()?.toFloatOrNull() != null } >= (body.size / 2).coerceAtLeast(1)
+    val sorted = body.sortedWith { left, right ->
+        val a = left.getOrNull(column).orEmpty()
+        val b = right.getOrNull(column).orEmpty()
+        val cmp = if (numeric) {
+            val fa = a.trim().toFloatOrNull()
+            val fb = b.trim().toFloatOrNull()
+            when {
+                fa == null && fb == null -> a.compareTo(b)
+                fa == null -> 1
+                fb == null -> -1
+                else -> fa.compareTo(fb)
+            }
+        } else {
+            Collator.getInstance(Locale.CHINA).compare(a, b)
+        }
+        if (mode == OpenUiTableSortMode.Desc) -cmp else cmp
+    }
+    return if (header != null) listOf(header) + sorted else sorted
+}
+
+/** Detail text for one list item. A copy of the label is not a detail. */
+fun openUiListDetail(item: JsonElement?, label: String): String? {
+    val obj = item as? JsonObject ?: return null
+    return obj.string("detail") ?: obj.string("description") ?: obj.string("text")?.takeIf { it != label }
+}
+
 data class OpenUiMapPoint(
     val name: String,
     val lat: Double?,
     val lng: Double?,
 )
+
+data class OpenUiMapTile(
+    val x: Int,
+    val y: Int,
+    val z: Int,
+    val url: String,
+)
+
+/** Web Mercator tile x. lon -180 is 0. lon 0 at z=1 is 1. */
+fun openUiLonToTileX(lon: Double, z: Int): Double {
+    val n = 1 shl z.coerceIn(0, 22)
+    return ((lon + 180.0) / 360.0) * n
+}
+
+/** Web Mercator tile y. lat 0 at z=1 is 1. y is clamped to the zoom's tile range. */
+fun openUiLatToTileY(lat: Double, z: Int): Double {
+    val n = 1 shl z.coerceIn(0, 22)
+    val clamped = lat.coerceIn(-85.05112878, 85.05112878)
+    val rad = clamped * PI / 180.0
+    val raw = (1.0 - ln(tan(rad) + 1.0 / kotlin.math.cos(rad)) / PI) / 2.0 * n
+    return raw.coerceIn(0.0, (n - 1).toDouble())
+}
+
+private const val openUiMapTileHost = "https://tile.openstreetmap.org"
+
+/**
+ * OSM tiles covering the located points. One point uses z=12 and a 3×3 around
+ * it. A spread of points drops z until the box is about 3–4 tiles wide, then
+ * adds [pad] and caps the grid at 4×4.
+ */
+fun openUiMapTiles(points: List<OpenUiMapPoint>, z: Int = 0, pad: Int = 1): List<OpenUiMapTile> {
+    val located = points.filter { it.lat != null && it.lng != null }
+    if (located.isEmpty()) return emptyList()
+    val zoom = if (z > 0) z.coerceIn(2, 16) else openUiMapZoom(located)
+    val n = 1 shl zoom
+    val xs = located.map { openUiLonToTileX(it.lng!!, zoom) }
+    val ys = located.map { openUiLatToTileY(it.lat!!, zoom) }
+    var minX = xs.min().toInt() - pad
+    var maxX = xs.max().toInt() + pad
+    var minY = ys.min().toInt() - pad
+    var maxY = ys.max().toInt() + pad
+    if (maxX - minX > 3) {
+        val mid = ((minX + maxX) / 2)
+        minX = mid - 1
+        maxX = mid + 2
+    }
+    if (maxY - minY > 3) {
+        val mid = ((minY + maxY) / 2)
+        minY = mid - 1
+        maxY = mid + 2
+    }
+    minX = minX.coerceIn(0, n - 1)
+    maxX = maxX.coerceIn(0, n - 1)
+    minY = minY.coerceIn(0, n - 1)
+    maxY = maxY.coerceIn(0, n - 1)
+    return buildList {
+        for (ty in minY..maxY) {
+            for (tx in minX..maxX) {
+                add(OpenUiMapTile(tx, ty, zoom, "$openUiMapTileHost/$zoom/$tx/$ty.png"))
+            }
+        }
+    }
+}
+
+/** z between 2 and 16. A single point stays at 12. */
+internal fun openUiMapZoom(points: List<OpenUiMapPoint>): Int {
+    val located = points.filter { it.lat != null && it.lng != null }
+    if (located.size <= 1) return 12
+    val lats = located.map { it.lat!! }
+    val lngs = located.map { it.lng!! }
+    val dLat = lats.max() - lats.min()
+    val dLng = lngs.max() - lngs.min()
+    val span = maxOf(dLat, dLng).coerceAtLeast(0.000001)
+    var zoom = 16
+    while (zoom > 2) {
+        val world = 360.0 / (1 shl zoom)
+        if (span / world <= 3.5) return zoom
+        zoom -= 1
+    }
+    return 2
+}
 
 fun OpenUiNode.mapPoints(): List<OpenUiMapPoint> {
     val raw = props["points"] ?: return emptyList()
@@ -195,6 +332,10 @@ data class OpenUiChartSeries(
     val name: String,
     val values: List<Float>,
     val xs: List<Float> = emptyList(),
+    /** Whitelisted draw kind, or null so the series follows the node chip. */
+    val kind: String? = null,
+    /** `"right"` uses the second axis. Anything else stays on the left. */
+    val yAxis: String? = null,
 )
 
 data class OpenUiChartPoint(val x: Float, val y: Float)
@@ -215,6 +356,36 @@ fun openUiChartKind(kind: String, sliceCount: Int, sum: Float): String {
     val resolved = if (normalized in openUiChartKinds) normalized else "bar"
     if (resolved == "pie" && (sliceCount > 6 || sum <= 0f || sum.isNaN())) return "bar"
     return resolved
+}
+
+/**
+ * Series kind on the wire. Only the chart whitelist is kept. Unknown and
+ * Chinese labels are null so the series follows the node kind.
+ */
+fun openUiSeriesKind(kind: String?): String? {
+    val normalized = kind?.trim()?.lowercase().orEmpty()
+    return normalized.takeIf { it in openUiChartKinds }
+}
+
+/** Right axis only when the wire says `"right"`. Missing and anything else stay left. */
+fun openUiSeriesYAxis(yAxis: String?): String = if (yAxis?.trim()?.equals("right", ignoreCase = true) == true) "right" else "left"
+
+/**
+ * Draw kinds for the visible series. `mix` uses each series kind, and a null
+ * series kind uses [resolvedKind]. A pie chip, or any visible pie series,
+ * isolates to one pie of the first visible series.
+ */
+fun openUiMixKinds(chosenKind: String, resolvedKind: String, seriesKinds: List<String?>): List<String> {
+    val fallback = openUiSeriesKind(resolvedKind) ?: "bar"
+    val chip = chosenKind.trim().lowercase()
+    if (chip == "pie") return listOf("pie")
+    val usingMix = chip == "mix"
+    val kinds = seriesKinds.map { raw ->
+        val own = openUiSeriesKind(raw)
+        if (usingMix) own ?: fallback else openUiSeriesKind(chip) ?: fallback
+    }
+    if (usingMix && kinds.any { it == "pie" }) return listOf("pie")
+    return kinds
 }
 
 /** Last [window] points already present. A non-positive window keeps the full series. */
@@ -359,6 +530,64 @@ fun openUiChartHit(
 }
 
 /**
+ * Mixed cartesian hit. A tap inside a bar slot prefers a bar series in that
+ * group. Otherwise the nearest line, area, or scatter point wins.
+ */
+fun openUiChartMixHit(
+    kinds: List<String>,
+    groups: Int,
+    tapX: Float,
+    tapY: Float,
+    values: List<List<Float>>,
+    xs: List<List<Float>> = emptyList(),
+): Pair<Int, Int>? {
+    if (kinds.isEmpty() || groups <= 0 || values.isEmpty()) return null
+    if (kinds.any { it == "pie" } || kinds.all { it == "pie" }) {
+        return openUiChartHit("pie", 1, groups, tapX, tapY, values.take(1), xs)
+    }
+    val x = tapX.coerceIn(0f, 0.999999f)
+    val slot = 1f / groups
+    val index = (x / slot).toInt().coerceIn(0, groups - 1)
+    val innerStart = index * slot + slot * 0.14f
+    val inner = slot * 0.72f
+    val barIndexes = kinds.mapIndexedNotNull { i, kind -> if (kind == "bar") i else null }
+    if (barIndexes.isNotEmpty() && x >= innerStart && x <= innerStart + inner) {
+        val barW = inner / barIndexes.size
+        val local = (x - innerStart).coerceIn(0f, inner - 0.000001f)
+        val pick = (local / barW).toInt().coerceIn(0, barIndexes.lastIndex)
+        return barIndexes[pick] to index
+    }
+    val pointIndexes = kinds.mapIndexedNotNull { i, kind ->
+        if (kind == "line" || kind == "area" || kind == "scatter") i else null
+    }
+    if (pointIndexes.isEmpty()) {
+        return openUiChartHit("bar", kinds.size, groups, tapX, tapY, values, xs)
+    }
+    val pointValues = pointIndexes.map { values.getOrElse(it) { emptyList() } }
+    val pointXs = pointIndexes.map { xs.getOrElse(it) { emptyList() } }
+    val scatterOnly = pointIndexes.all { kinds[it] == "scatter" }
+    val hit = if (scatterOnly) {
+        openUiChartHit("scatter", pointIndexes.size, groups, tapX, tapY, pointValues, pointXs)
+    } else {
+        openUiChartHit("line", pointIndexes.size, groups, tapX, tapY, pointValues, pointXs)
+    } ?: return null
+    return pointIndexes[hit.first] to hit.second
+}
+
+/**
+ * Inclusive brush indexes become a window start and count. Indexes are clamped
+ * to `0 until n`. An empty series returns `0 to 0`.
+ */
+fun openUiChartBrush(startIndex: Int, endIndex: Int, n: Int): Pair<Int, Int> {
+    if (n <= 0) return 0 to 0
+    val a = startIndex.coerceIn(0, n - 1)
+    val b = endIndex.coerceIn(0, n - 1)
+    val start = minOf(a, b)
+    val end = maxOf(a, b)
+    return start to (end - start + 1)
+}
+
+/**
  * Scatter coordinates. Explicit [xs] wins. Otherwise x is the point index.
  * Length follows [values].
  */
@@ -368,11 +597,15 @@ fun openUiChartPoints(values: List<Float>, xs: List<Float> = emptyList()): List<
     }
 }
 
-/** Chart apply payload. Window is an integer string. Kind is the local chip id. */
-fun openUiChartApplyValues(window: Int, kind: String): Map<String, String> = mapOf(
-    "window" to window.coerceAtLeast(0).toString(),
-    "kind" to kind.trim().lowercase(),
-)
+/**
+ * Chart apply payload. Window is an integer string. Kind is the local chip id.
+ * [start] is the brushed index, sent only when the user released a brush.
+ */
+fun openUiChartApplyValues(window: Int, kind: String, start: Int? = null): Map<String, String> = buildMap {
+    put("window", window.coerceAtLeast(0).toString())
+    put("kind", kind.trim().lowercase())
+    if (start != null) put("start", start.coerceAtLeast(0).toString())
+}
 
 /** Local inspect line. Chart taps never become ui_action. */
 fun openUiChartReadout(label: String, seriesName: String, value: Float, unit: String): String {
@@ -442,7 +675,13 @@ fun OpenUiNode.chartSeries(): List<OpenUiChartSeries> {
                     runCatching { nums.jsonArray.mapNotNull { it.jsonPrimitive.content.toFloatOrNull() } }.getOrNull()
                 }.orEmpty()
             }
-            OpenUiChartSeries(name, values, xs)
+            OpenUiChartSeries(
+                name = name,
+                values = values,
+                xs = xs,
+                kind = openUiSeriesKind(obj.string("kind")),
+                yAxis = openUiSeriesYAxis(obj.string("yAxis") ?: obj.string("y_axis")),
+            )
         } else {
             val n = (el as? JsonPrimitive)?.contentOrNull?.toFloatOrNull()
             if (n != null) OpenUiChartSeries("系列 1", listOf(n)) else null

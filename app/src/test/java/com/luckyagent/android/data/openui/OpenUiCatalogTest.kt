@@ -1,9 +1,10 @@
 package com.luckyagent.android.data.openui
 
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -130,6 +131,31 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun mapTilesUseWebMercator() {
+        // lon -180 is the left edge of tile 0. lon 0 at z=1 is the boundary of tile 1.
+        // lat 0 at z=1 is tile y 1. lon just under 180 is the last tile.
+        assertEquals(0.0, openUiLonToTileX(-180.0, 1), 0.0001)
+        assertEquals(1.0, openUiLonToTileX(0.0, 1), 0.0001)
+        assertEquals(1.0, openUiLatToTileY(0.0, 1), 0.0001)
+        val last = openUiLonToTileX(179.9, 2)
+        assertTrue(last > 3.0 && last < 4.0)
+        val one = openUiMapTiles(listOf(OpenUiMapPoint("这里", 39.9, 116.4)))
+        assertTrue(one.isNotEmpty())
+        assertTrue(one.all { it.z == 12 && it.url.startsWith("https://tile.openstreetmap.org/12/") })
+        val far = openUiMapTiles(
+            listOf(
+                OpenUiMapPoint("西", 37.7, -122.4),
+                OpenUiMapPoint("东", 35.6, 139.7),
+            ),
+        )
+        assertTrue(far.isNotEmpty())
+        assertTrue(far.map { it.z }.distinct().single() < 12)
+        assertTrue(far.map { it.x }.distinct().size > 1 || far.map { it.y }.distinct().size > 1)
+        assertTrue(far.size <= 16)
+        assertTrue(openUiMapTiles(listOf(OpenUiMapPoint("无名", null, null))).isEmpty())
+    }
+
+    @Test
     fun mapPointsReadNameAndCoordinates() {
         val json = Json { ignoreUnknownKeys = true }
         val props = json.parseToJsonElement(
@@ -230,6 +256,86 @@ class OpenUiCatalogTest {
     fun chartApplyValuesAreWindowAndKindStrings() {
         assertEquals(mapOf("window" to "4", "kind" to "scatter"), openUiChartApplyValues(4, "scatter"))
         assertEquals(mapOf("window" to "0", "kind" to "bar"), openUiChartApplyValues(-2, " BAR "))
+        assertEquals(
+            mapOf("window" to "3", "kind" to "mix", "start" to "2"),
+            openUiChartApplyValues(3, "mix", start = 2),
+        )
+        assertFalse(openUiChartApplyValues(4, "bar").containsKey("start"))
+    }
+
+    @Test
+    fun seriesKindStaysOnTheWhitelist() {
+        val json = Json { ignoreUnknownKeys = true }
+        val props = json.parseToJsonElement(
+            """{"series":[
+                {"name":"柱","kind":"bar","values":[1,2]},
+                {"name":"右","kind":"LINE","yAxis":"right","values":[3]},
+                {"name":"丢","kind":"折线","yAxis":"left","values":[4]}
+            ]}""",
+        ).jsonObject
+        val series = OpenUiNode(id = "c", type = "Chart", props = props).chartSeries()
+        assertEquals("bar", series[0].kind)
+        assertEquals("left", series[0].yAxis)
+        assertEquals("line", series[1].kind)
+        assertEquals("right", series[1].yAxis)
+        assertNull(series[2].kind)
+        assertEquals("left", series[2].yAxis)
+        assertNull(openUiSeriesKind("饼"))
+        assertNull(openUiSeriesKind(null))
+    }
+
+    @Test
+    fun mixUsesSeriesKindAndIsolatesPie() {
+        assertEquals(listOf("bar", "bar"), openUiMixKinds("mix", "bar", listOf("bar", null)))
+        assertEquals(listOf("bar", "line"), openUiMixKinds("mix", "line", listOf("bar", null)))
+        assertEquals(listOf("line", "line"), openUiMixKinds("line", "bar", listOf("bar", "scatter")))
+        assertEquals(listOf("pie"), openUiMixKinds("mix", "line", listOf("bar", "pie")))
+        assertEquals(listOf("pie"), openUiMixKinds("pie", "bar", listOf("line", "bar")))
+        assertEquals("bar", openUiChartKind(openUiMixKinds("mix", "pie", listOf("pie")).single(), sliceCount = 7, sum = 10f))
+        assertEquals("bar", openUiChartKind(openUiMixKinds("pie", "bar", listOf("line")).single(), sliceCount = 3, sum = 0f))
+    }
+
+    @Test
+    fun mixHitPrefersTheBarSlot() {
+        val values = listOf(listOf(1f, 4f), listOf(9f, 0f))
+        val kinds = listOf("bar", "line")
+        assertEquals(0 to 0, openUiChartMixHit(kinds, 2, 0.2f, 0.9f, values))
+        assertEquals(1 to 1, openUiChartMixHit(kinds, 2, 0.95f, 0.95f, values))
+    }
+
+    @Test
+    fun brushBecomesStartAndCount() {
+        assertEquals(1 to 3, openUiChartBrush(3, 1, 8))
+        assertEquals(0 to 1, openUiChartBrush(-4, 0, 5))
+        assertEquals(4 to 1, openUiChartBrush(9, 9, 5))
+        assertEquals(0 to 0, openUiChartBrush(1, 2, 0))
+    }
+
+    @Test
+    fun tableSortCyclesNumericAndCjk() {
+        val grid = listOf(
+            listOf("名", "数"),
+            listOf("丙", "10"),
+            listOf("甲", "2"),
+            listOf("乙", "2.5"),
+        )
+        val numeric = openUiTableSort(grid, headerRow = true, column = 1, mode = OpenUiTableSortMode.Asc)
+        assertEquals(listOf("名", "数"), numeric.first())
+        assertEquals(listOf("甲", "乙", "丙"), numeric.drop(1).map { it[0] })
+        val desc = openUiTableSort(grid, headerRow = true, column = 0, mode = OpenUiTableSortMode.Desc)
+        assertEquals(listOf("乙", "甲", "丙"), desc.drop(1).map { it[0] })
+        val asc = openUiTableSort(grid, headerRow = true, column = 0, mode = OpenUiTableSortMode.Asc)
+        assertEquals(listOf("丙", "甲", "乙"), asc.drop(1).map { it[0] })
+        assertEquals(grid, openUiTableSort(grid, headerRow = true, column = 0, mode = OpenUiTableSortMode.None))
+        assertEquals(OpenUiTableSortMode.Asc, openUiTableSortCycle(OpenUiTableSortMode.None))
+        assertEquals(OpenUiTableSortMode.Desc, openUiTableSortCycle(OpenUiTableSortMode.Asc))
+        assertEquals(OpenUiTableSortMode.None, openUiTableSortCycle(OpenUiTableSortMode.Desc))
+        val item = buildJsonObject {
+            put("label", "甲")
+            put("detail", "展开")
+        }
+        assertEquals("展开", openUiListDetail(item, "甲"))
+        assertNull(openUiListDetail(buildJsonObject { put("label", "甲") }, "甲"))
     }
 
     @Test
