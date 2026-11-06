@@ -2742,6 +2742,16 @@ class AppViewModel(
         }
     }
 
+    /** Chart apply may be sent again. It does not lock Actions selection. */
+    fun sendOpenUiChartApply(treeId: String, widgetId: String, values: Map<String, String>): Boolean {
+        if (treeId.isBlank() || widgetId.isBlank()) return false
+        val sent = container.wsClient.sendUiAction(currentSessionId(), treeId, widgetId, values)
+        if (!sent) {
+            _ui.update { it.copy(snackbarMessage = "无法发给模型") }
+        }
+        return sent
+    }
+
     fun notifyCopied() {
         _ui.update { it.copy(snackbarMessage = "已复制") }
     }
@@ -2778,6 +2788,10 @@ class AppViewModel(
 
     fun consumeSnackbar() {
         _ui.update { it.copy(snackbarMessage = null) }
+    }
+
+    fun showSnackbar(message: String) {
+        _ui.update { it.copy(snackbarMessage = message) }
     }
 
     fun loadModels(force: Boolean = false) {

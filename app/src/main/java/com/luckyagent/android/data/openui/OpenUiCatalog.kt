@@ -194,14 +194,17 @@ fun OpenUiNode.mapPoints(): List<OpenUiMapPoint> {
 data class OpenUiChartSeries(
     val name: String,
     val values: List<Float>,
+    val xs: List<Float> = emptyList(),
 )
+
+data class OpenUiChartPoint(val x: Float, val y: Float)
 
 /** Optional title/caption already present on a node. Missing keys stay blank. */
 fun OpenUiNode.heading(): String? = props.string("title") ?: props.string("heading") ?: props.string("name")
 
 fun OpenUiNode.caption(): String? = props.string("caption") ?: props.string("description") ?: props.string("subtitle")
 
-private val openUiChartKinds = setOf("bar", "line", "area", "pie")
+private val openUiChartKinds = setOf("bar", "line", "area", "pie", "scatter")
 
 /**
  * Whitelist chart kinds. Unknown kinds draw as bars. A pie with more than six
@@ -237,6 +240,10 @@ fun openUiChartWindow(values: List<Float>, labels: List<String>, window: Int): P
  * Line and area: x picks the nearest point. y picks the series whose value
  * is closest on the same top-down scale.
  *
+ * Scatter: each series is a row of y values. When [xs] has a finite value at
+ * that index, x is normalized across the finite xs of every series into 0..1.
+ * Otherwise x is index / (n - 1). The nearest point by euclidean distance wins.
+ *
  * Pie always returns series 0. The slice is the clockwise sector from 12
  * o'clock under the tap, measured from the plot center `(0.5, 0.5)`.
  *
@@ -249,6 +256,7 @@ fun openUiChartHit(
     tapX: Float,
     tapY: Float,
     values: List<List<Float>>,
+    xs: List<List<Float>> = emptyList(),
 ): Pair<Int, Int>? {
     if (seriesCount <= 0 || groups <= 0 || values.isEmpty()) return null
     val x = tapX.coerceIn(0f, 0.999999f)
@@ -269,6 +277,47 @@ fun openUiChartHit(
             cursor += 360f * (v / total)
         }
         return 0 to hit.coerceIn(0, slices.lastIndex)
+    }
+    if (kind == "scatter") {
+        val finite = values.flatten().filter { !it.isNaN() }
+        if (finite.isEmpty()) return null
+        val max = finite.max().coerceAtLeast(0f)
+        val min = finite.min().coerceAtMost(0f)
+        val span = (max - min).let { if (it == 0f) 1f else it }
+        val denom = (groups - 1).coerceAtLeast(1)
+        val finiteX = buildList {
+            for (s in 0 until seriesCount) {
+                val row = values.getOrNull(s) ?: continue
+                row.forEachIndexed { i, raw ->
+                    if (raw.isNaN()) return@forEachIndexed
+                    val explicit = xs.getOrNull(s)?.getOrNull(i)
+                    add(if (explicit != null && !explicit.isNaN()) explicit else i.toFloat())
+                }
+            }
+        }
+        val minX = finiteX.minOrNull() ?: 0f
+        val maxX = finiteX.maxOrNull() ?: minX
+        val spanX = (maxX - minX).let { if (it == 0f) 1f else it }
+        var bestSeries = 0
+        var bestIndex = 0
+        var bestDist = Float.POSITIVE_INFINITY
+        for (s in 0 until seriesCount) {
+            val row = values.getOrNull(s) ?: continue
+            row.forEachIndexed { i, raw ->
+                if (raw.isNaN()) return@forEachIndexed
+                val explicit = xs.getOrNull(s)?.getOrNull(i)
+                val rawX = if (explicit != null && !explicit.isNaN()) explicit else i.toFloat()
+                val px = (rawX - minX) / spanX
+                val py = 1f - (raw - min) / span
+                val dist = (x - px) * (x - px) + (y - py) * (y - py)
+                if (dist < bestDist) {
+                    bestDist = dist
+                    bestSeries = s
+                    bestIndex = i
+                }
+            }
+        }
+        return bestSeries to bestIndex
     }
     val index = if (kind == "bar") {
         (x * groups).toInt().coerceIn(0, groups - 1)
@@ -308,6 +357,22 @@ fun openUiChartHit(
     }
     return best to index
 }
+
+/**
+ * Scatter coordinates. Explicit [xs] wins. Otherwise x is the point index.
+ * Length follows [values].
+ */
+fun openUiChartPoints(values: List<Float>, xs: List<Float> = emptyList()): List<OpenUiChartPoint> {
+    return values.mapIndexed { i, y ->
+        OpenUiChartPoint(x = xs.getOrNull(i) ?: i.toFloat(), y = y)
+    }
+}
+
+/** Chart apply payload. Window is an integer string. Kind is the local chip id. */
+fun openUiChartApplyValues(window: Int, kind: String): Map<String, String> = mapOf(
+    "window" to window.coerceAtLeast(0).toString(),
+    "kind" to kind.trim().lowercase(),
+)
 
 /** Local inspect line. Chart taps never become ui_action. */
 fun openUiChartReadout(label: String, seriesName: String, value: Float, unit: String): String {
@@ -356,10 +421,28 @@ fun OpenUiNode.chartSeries(): List<OpenUiChartSeries> {
         val obj = el as? JsonObject
         if (obj != null) {
             val name = obj.string("name") ?: obj.string("label") ?: "系列 ${i + 1}"
-            val values = (obj["values"] ?: obj["data"] ?: obj["y"])?.let { nums ->
-                runCatching { nums.jsonArray.mapNotNull { it.jsonPrimitive.content.toFloatOrNull() } }.getOrNull()
+            val points = obj["points"]?.let { runCatching { it.jsonArray }.getOrNull() }
+            val fromPoints = points?.mapNotNull { el ->
+                val point = el as? JsonObject ?: return@mapNotNull null
+                val x = point.float("x") ?: return@mapNotNull null
+                val y = point.float("y") ?: point.float("value") ?: return@mapNotNull null
+                x to y
             }.orEmpty()
-            OpenUiChartSeries(name, values)
+            val values = if (fromPoints.isNotEmpty()) {
+                fromPoints.map { it.second }
+            } else {
+                (obj["values"] ?: obj["data"] ?: obj["y"])?.let { nums ->
+                    runCatching { nums.jsonArray.mapNotNull { it.jsonPrimitive.content.toFloatOrNull() } }.getOrNull()
+                }.orEmpty()
+            }
+            val xs = if (fromPoints.isNotEmpty()) {
+                fromPoints.map { it.first }
+            } else {
+                obj["x"]?.let { nums ->
+                    runCatching { nums.jsonArray.mapNotNull { it.jsonPrimitive.content.toFloatOrNull() } }.getOrNull()
+                }.orEmpty()
+            }
+            OpenUiChartSeries(name, values, xs)
         } else {
             val n = (el as? JsonPrimitive)?.contentOrNull?.toFloatOrNull()
             if (n != null) OpenUiChartSeries("系列 1", listOf(n)) else null
