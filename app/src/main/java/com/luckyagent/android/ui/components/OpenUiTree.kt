@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -62,10 +63,17 @@ import com.luckyagent.android.data.openui.chartRange
 import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.heading
 import com.luckyagent.android.data.openui.openUiChartApplyValues
+import com.luckyagent.android.data.openui.openUiChartBrush
 import com.luckyagent.android.data.openui.openUiChartHit
 import com.luckyagent.android.data.openui.openUiChartKind
+import com.luckyagent.android.data.openui.openUiChartMixHit
 import com.luckyagent.android.data.openui.openUiChartReadout
 import com.luckyagent.android.data.openui.openUiChartWindow
+import com.luckyagent.android.data.openui.openUiListDetail
+import com.luckyagent.android.data.openui.openUiMixKinds
+import com.luckyagent.android.data.openui.openUiTableSort
+import com.luckyagent.android.data.openui.openUiTableSortCycle
+import com.luckyagent.android.data.openui.OpenUiTableSortMode
 import com.luckyagent.android.data.openui.OpenUiActionCollapsedItems
 import com.luckyagent.android.data.openui.OpenUiActionExpandedItems
 import com.luckyagent.android.data.openui.OpenUiListCollapsedItems
@@ -304,7 +312,10 @@ private fun OpenUiNodeView(
 private fun OpenUiTable(node: OpenUiNode, ion: IonPalette) {
     val columns = node.props.stringList("columns")
     var expanded by remember(node.id) { mutableStateOf(false) }
-    val (grid, extra) = node.tableGrid(if (expanded) OpenUiTableExpandedRows else OpenUiTableCollapsedRows)
+    var sortColumn by remember(node.id) { mutableStateOf(-1) }
+    var sortMode by remember(node.id) { mutableStateOf(OpenUiTableSortMode.None) }
+    val (rawGrid, extra) = node.tableGrid(if (expanded) OpenUiTableExpandedRows else OpenUiTableCollapsedRows)
+    val grid = openUiTableSort(rawGrid, headerRow = columns.isNotEmpty(), column = sortColumn, mode = sortMode)
     if (grid.isEmpty()) return
     val colCount = grid.maxOf { it.size }
     val numeric = List(colCount) { col ->
@@ -323,9 +334,16 @@ private fun OpenUiTable(node: OpenUiNode, ion: IonPalette) {
             val header = row == 0 && columns.isNotEmpty()
             Row {
                 repeat(colCount) { col ->
+                    val mark = if (header && sortColumn == col) {
+                        when (sortMode) {
+                            OpenUiTableSortMode.Asc -> " ↑"
+                            OpenUiTableSortMode.Desc -> " ↓"
+                            OpenUiTableSortMode.None -> ""
+                        }
+                    } else ""
                     Text(
-                        cells.getOrNull(col).orEmpty(),
-                        color = if (header) ion.text3 else ion.text,
+                        cells.getOrNull(col).orEmpty() + mark,
+                        color = if (header && sortColumn == col && sortMode != OpenUiTableSortMode.None) ion.clayEmphasis else if (header) ion.text3 else ion.text,
                         style = if (header) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                         fontWeight = if (header) FontWeight.Medium else FontWeight.Normal,
                         textAlign = if (numeric[col] && !header) TextAlign.End else TextAlign.Start,
@@ -333,6 +351,12 @@ private fun OpenUiTable(node: OpenUiNode, ion: IonPalette) {
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .width(widths[col])
+                            .then(if (header) Modifier.clickable {
+                                if (sortColumn == col) sortMode = openUiTableSortCycle(sortMode) else {
+                                    sortColumn = col
+                                    sortMode = OpenUiTableSortMode.Asc
+                                }
+                            } else Modifier)
                             .padding(end = 12.dp, top = if (header) 0.dp else 11.dp, bottom = if (header) 8.dp else 11.dp),
                     )
                 }
@@ -366,15 +390,20 @@ private fun OpenUiTable(node: OpenUiNode, ion: IonPalette) {
 @Composable
 private fun OpenUiList(node: OpenUiNode, ion: IonPalette) {
     var expanded by remember(node.id) { mutableStateOf(false) }
+    var openDetail by remember(node.id) { mutableStateOf(setOf<Int>()) }
     val (items, extra) = node.listItems(if (expanded) OpenUiListExpandedItems else OpenUiListCollapsedItems)
     val details = node.props["items"]?.jsonArray.orEmpty()
     Column {
         items.forEachIndexed { i, item ->
-            val obj = details.getOrNull(i)?.let { runCatching { it.jsonObject }.getOrNull() }
-            val detail = obj?.string("detail") ?: obj?.string("description") ?: obj?.string("text")?.takeIf { it != item }
+            val detail = openUiListDetail(details.getOrNull(i), item)
             if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(ion.line))
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .then(if (!detail.isNullOrBlank()) Modifier.clickable {
+                        openDetail = if (i in openDetail) openDetail - i else openDetail + i
+                    } else Modifier)
+                    .padding(vertical = 10.dp),
                 verticalAlignment = Alignment.Top,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -387,7 +416,7 @@ private fun OpenUiList(node: OpenUiNode, ion: IonPalette) {
                 )
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(item, color = ion.text, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
-                    if (!detail.isNullOrBlank()) {
+                    if (!detail.isNullOrBlank() && i in openDetail) {
                         Text(detail, color = ion.text2, style = MaterialTheme.typography.labelSmall)
                     }
                 }
@@ -454,6 +483,7 @@ private val chartKindChips = listOf(
     "area" to "面积",
     "pie" to "饼",
     "scatter" to "散点",
+    "mix" to "混",
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -472,9 +502,6 @@ private fun OpenUiChart(
     val pieSum = rawSeries.firstOrNull()?.values?.sum() ?: 0f
     val resolvedKind = openUiChartKind(node.props.string("kind").orEmpty(), sliceCount, pieSum)
     var chosenKind by remember(node.id) { mutableStateOf(resolvedKind) }
-    val drawSliceCount = rawSeries.firstOrNull()?.values?.size ?: 0
-    val drawPieSum = rawSeries.firstOrNull()?.values?.sum() ?: 0f
-    val kind = openUiChartKind(chosenKind, drawSliceCount, drawPieSum)
     val usable = rawSeries.any { ser -> ser.values.any { !it.isNaN() && it != 0f } }
     if (rawSeries.isEmpty() || pointCount == 0 || !usable) {
         Text("没有可显示的数据", color = ion.text2, style = MaterialTheme.typography.bodySmall)
@@ -482,17 +509,27 @@ private fun OpenUiChart(
     }
     val range = node.chartRange()
     var window by remember(node.id) { mutableStateOf(range?.value ?: pointCount.toFloat()) }
+    var brushOrigin by remember(node.id) { mutableStateOf<Int?>(null) }
     val windowSize = window.toInt().coerceIn(1, pointCount)
+    val tailStart = (brushOrigin ?: (pointCount - windowSize)).coerceIn(0, (pointCount - windowSize).coerceAtLeast(0))
     val cropped = rawSeries.map { ser ->
-        val (values, _) = openUiChartWindow(ser.values, fullLabels, windowSize)
-        val start = (ser.values.size - values.size).coerceAtLeast(0)
-        ser.copy(values = values, xs = ser.xs.drop(start).take(values.size))
+        val values = ser.values.drop(tailStart).take(windowSize)
+        ser.copy(values = values, xs = ser.xs.drop(tailStart).take(values.size))
     }
-    val (_, labels) = openUiChartWindow(List(pointCount) { 0f }, fullLabels, windowSize)
+    val labels = List(windowSize) { i -> fullLabels.getOrElse(tailStart + i) { "" } }
     var hidden by remember(node.id) { mutableStateOf(setOf<Int>()) }
     val visible = cropped.mapIndexedNotNull { index, ser -> if (index in hidden) null else index to ser }
-    var readout by remember(node.id, windowSize, hidden, kind) { mutableStateOf<String?>(null) }
-    var hit by remember(node.id, windowSize, hidden, kind) { mutableStateOf<Pair<Int, Int>?>(null) }
+    val drawSliceCount = visible.firstOrNull()?.second?.values?.size ?: 0
+    val drawPieSum = visible.firstOrNull()?.second?.values?.sum() ?: 0f
+    val drawKinds = openUiMixKinds(chosenKind, resolvedKind, visible.map { it.second.kind }).map { raw ->
+        openUiChartKind(raw, drawSliceCount, drawPieSum)
+    }
+    val pieIsolated = drawKinds.size == 1 && drawKinds.first() == "pie" &&
+        (chosenKind == "pie" || visible.any { it.second.kind == "pie" } || chosenKind == "mix")
+    val cartesian = drawKinds.none { it == "pie" }
+    var readout by remember(node.id, windowSize, hidden, chosenKind) { mutableStateOf<String?>(null) }
+    var hit by remember(node.id, windowSize, hidden, chosenKind) { mutableStateOf<Pair<Int, Int>?>(null) }
+    var brush by remember(node.id, windowSize, chosenKind) { mutableStateOf<Pair<Int, Int>?>(null) }
     val colors = ion.series
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!readout.isNullOrBlank()) {
@@ -515,6 +552,7 @@ private fun OpenUiChart(
                             chosenKind = id
                             readout = null
                             hit = null
+                            brush = null
                         }
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                 )
@@ -528,6 +566,7 @@ private fun OpenUiChart(
                         hidden = if (off) hidden - i else hidden + i
                         readout = null
                         hit = null
+                        brush = null
                     },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -550,25 +589,42 @@ private fun OpenUiChart(
             Text("没有可显示的数据", color = ion.text2, style = MaterialTheme.typography.bodySmall)
         } else {
             OpenUiChartCanvas(
-                kind = kind,
-                series = visible.map { it.second },
-                colorIndexes = visible.map { it.first },
+                kinds = if (pieIsolated) listOf("pie") else drawKinds,
+                series = if (pieIsolated) visible.take(1).map { it.second } else visible.map { it.second },
+                colorIndexes = if (pieIsolated) visible.take(1).map { it.first } else visible.map { it.first },
                 labels = labels,
                 unit = unit,
                 ion = ion,
                 hit = hit,
+                brush = if (cartesian) brush else null,
                 onReadout = { seriesIndex, index ->
                     if (seriesIndex < 0 || index < 0) {
                         readout = null
                         hit = null
+                        brush = null
                         return@OpenUiChartCanvas
                     }
                     val drawn = visible.getOrNull(seriesIndex)?.second ?: return@OpenUiChartCanvas
                     val value = drawn.values.getOrNull(index) ?: return@OpenUiChartCanvas
-                    val label = if (kind == "pie") drawn.name else labels.getOrElse(index) { "" }
-                    val name = if (kind == "pie") "" else drawn.name
+                    val label = if (pieIsolated) drawn.name else labels.getOrElse(index) { "" }
+                    val name = if (pieIsolated) "" else drawn.name
                     readout = openUiChartReadout(label, name, value, unit)
                     hit = seriesIndex to index
+                },
+                onBrush = { span, released ->
+                    if (!cartesian) return@OpenUiChartCanvas
+                    if (!released) {
+                        brush = span
+                        return@OpenUiChartCanvas
+                    }
+                    brush = null
+                    readout = null
+                    hit = null
+                    if (span == null) return@OpenUiChartCanvas
+                    val (start, count) = openUiChartBrush(span.first, span.second, labels.size.coerceAtLeast(1))
+                    if (count >= labels.size && start == 0) return@OpenUiChartCanvas
+                    brushOrigin = (tailStart + start).coerceIn(0, (pointCount - 1).coerceAtLeast(0))
+                    window = count.toFloat().coerceAtLeast(1f)
                 },
             )
             val ticks = chartAxisLabels(labels)
@@ -586,7 +642,10 @@ private fun OpenUiChart(
                 value = window.coerceIn(range.min, range.max.coerceAtMost(pointCount.toFloat())),
                 onValueChange = {
                     window = it
+                    brushOrigin = null
                     readout = null
+                    hit = null
+                    brush = null
                 },
                 valueRange = range.min..range.max.coerceAtLeast(range.min),
                 steps = steps.coerceAtMost(pointCount - 1),
@@ -601,7 +660,14 @@ private fun OpenUiChart(
                     .background(ion.raised)
                     .border(1.dp, ion.lineStrong, RoundedCornerShape(999.dp))
                     .clickable {
-                        val sent = onChartApply(node.id, openUiChartApplyValues(windowSize, chosenKind))
+                        val sent = onChartApply(
+                            node.id,
+                            openUiChartApplyValues(
+                                window = windowSize,
+                                kind = chosenKind,
+                                start = if (cartesian) brushOrigin else null,
+                            ),
+                        )
                         if (!sent) onNotice("无法发给模型")
                     }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
@@ -619,51 +685,92 @@ private fun chartAxisLabels(labels: List<String>): List<String> {
 
 @Composable
 private fun OpenUiChartCanvas(
-    kind: String,
+    kinds: List<String>,
     series: List<com.luckyagent.android.data.openui.OpenUiChartSeries>, // visible series in draw order
     colorIndexes: List<Int>,
     labels: List<String>,
     unit: String,
     ion: IonPalette,
     hit: Pair<Int, Int>? = null,
+    brush: Pair<Int, Int>? = null,
     onReadout: (seriesIndex: Int, index: Int) -> Unit,
+    onBrush: (span: Pair<Int, Int>?, released: Boolean) -> Unit = { _, _ -> },
 ) {
-    val finite = series.flatMap { it.values }.filter { !it.isNaN() }
-    val max = (finite.maxOrNull() ?: 0f).coerceAtLeast(0f)
-    val min = (finite.minOrNull() ?: 0f).coerceAtMost(0f)
-    val span = (max - min).let { if (it == 0f) 1f else it }
+    val pie = kinds.firstOrNull() == "pie" && kinds.size <= 1
+    val leftSeries = series.filterIndexed { i, _ -> kinds.getOrElse(i) { "bar" } != "pie" && series.getOrNull(i)?.yAxis != "right" }
+    val rightSeries = series.filterIndexed { i, _ -> kinds.getOrElse(i) { "bar" } != "pie" && series.getOrNull(i)?.yAxis == "right" }
+    val leftFinite = (if (rightSeries.isEmpty()) series else leftSeries.ifEmpty { series }).flatMap { it.values }.filter { !it.isNaN() }
+    val rightFinite = rightSeries.flatMap { it.values }.filter { !it.isNaN() }
+    val leftMax = (leftFinite.maxOrNull() ?: 0f).coerceAtLeast(0f)
+    val leftMin = (leftFinite.minOrNull() ?: 0f).coerceAtMost(0f)
+    val leftSpan = (leftMax - leftMin).let { if (it == 0f) 1f else it }
+    val rightMax = (rightFinite.maxOrNull() ?: 0f).coerceAtLeast(0f)
+    val rightMin = (rightFinite.minOrNull() ?: 0f).coerceAtMost(0f)
+    val rightSpan = (rightMax - rightMin).let { if (it == 0f) 1f else it }
     val groups = series.maxOf { it.values.size }.coerceAtLeast(1)
     val colors = ion.series
-    val mid = min + span / 2f
+    val mid = leftMin + leftSpan / 2f
     Row(Modifier.fillMaxWidth().height(148.dp)) {
         Column(
             Modifier.width(44.dp).fillMaxHeight().padding(bottom = 8.dp, top = 8.dp),
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.End,
         ) {
-            Text(chartTickLabel(max, unit), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, maxLines = 1)
+            Text(chartTickLabel(leftMax, unit), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, maxLines = 1)
             Text(formatChartTick(mid), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, maxLines = 1)
-            Text(formatChartTick(min), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, maxLines = 1)
+            Text(formatChartTick(leftMin), color = ion.text3, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, maxLines = 1)
         }
         Canvas(
             Modifier
                 .weight(1f)
                 .fillMaxHeight()
                 .padding(start = 8.dp)
-                .pointerInput(kind, groups, series) {
+                .pointerInput(kinds, groups, series, pie) {
+                    if (!pie) {
+                        var anchor = 0
+                        var span = 0 to 0
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                val pad = 8.dp.toPx()
+                                val w = (size.width - pad).coerceAtLeast(1f)
+                                val x = ((offset.x - pad) / w).coerceIn(0f, 0.999999f)
+                                anchor = (x * groups).toInt().coerceIn(0, groups - 1)
+                                span = anchor to anchor
+                                onBrush(span, false)
+                            },
+                            onDrag = { change, _ ->
+                                val pad = 8.dp.toPx()
+                                val w = (size.width - pad).coerceAtLeast(1f)
+                                val x = ((change.position.x - pad) / w).coerceIn(0f, 0.999999f)
+                                val index = (x * groups).toInt().coerceIn(0, groups - 1)
+                                span = anchor to index
+                                onBrush(span, false)
+                            },
+                            onDragEnd = { onBrush(span, true) },
+                            onDragCancel = { onBrush(null, true) },
+                        )
+                    }
+                }
+                .pointerInput(kinds, groups, series) {
                     detectTapGestures { offset ->
                         val pad = 8.dp.toPx()
                         val w = (size.width - pad).coerceAtLeast(1f)
                         val h = (size.height - pad * 2).coerceAtLeast(1f)
-                        val hit = openUiChartHit(
-                            kind = kind,
-                            seriesCount = series.size,
-                            groups = groups,
-                            tapX = (offset.x - pad) / w,
-                            tapY = (offset.y - pad) / h,
-                            values = series.map { it.values },
-                            xs = series.map { it.xs },
-                        )
+                        val tapX = (offset.x - pad) / w
+                        val tapY = (offset.y - pad) / h
+                        val hit = if (kinds.size > 1 && kinds.toSet().size > 1) {
+                            openUiChartMixHit(kinds, groups, tapX, tapY, series.map { it.values }, series.map { it.xs })
+                        } else {
+                            openUiChartHit(
+                                kind = kinds.firstOrNull() ?: "bar",
+                                seriesCount = series.size,
+                                groups = groups,
+                                tapX = tapX,
+                                tapY = tapY,
+                                values = series.map { it.values },
+                                xs = series.map { it.xs },
+                            )
+                        }
                         if (hit == null) onReadout(-1, -1) else onReadout(hit.first, hit.second)
                     }
                 },
@@ -673,8 +780,10 @@ private fun OpenUiChartCanvas(
             val h = size.height - pad * 2
             val originX = pad
             val originY = pad + h
+            val min = leftMin
+            val span = leftSpan
             val zeroY = originY - ((0f - min) / span) * h
-            if (kind != "pie") {
+            if (!pie) {
                 drawLine(ion.line, Offset(originX, pad), Offset(originX, originY), strokeWidth = 1.dp.toPx())
                 drawLine(ion.line, Offset(originX, pad), Offset(originX + w, pad), strokeWidth = 1.dp.toPx())
                 drawLine(ion.line, Offset(originX, originY - h / 2f), Offset(originX + w, originY - h / 2f), strokeWidth = 1.dp.toPx())
@@ -685,48 +794,66 @@ private fun OpenUiChartCanvas(
                 val index = colorIndexes.getOrElse(s) { s }
                 return if (index == 0) ion.clay else colors[index % colors.size]
             }
-            when (kind) {
-                "pie" -> {
-                    val slices = series.first().values.map { if (it.isNaN() || it < 0f) 0f else it }
-                    val total = slices.sum().coerceAtLeast(0.0001f)
-                    var start = -90f
-                    slices.forEachIndexed { i, v ->
-                        val sweep = 360f * (v / total)
-                        val marked = hit?.first == 0 && hit.second == i
-                        val shift = if (marked) 6.dp.toPx() else 0f
-                        val angle = Math.toRadians((start + sweep / 2f).toDouble())
-                        drawArc(
-                            color = colors[i % colors.size].let { if (i == 0) ion.clay else it },
-                            startAngle = start,
-                            sweepAngle = sweep,
-                            useCenter = true,
-                            topLeft = Offset(originX + w * 0.25f + kotlin.math.cos(angle).toFloat() * shift, pad + kotlin.math.sin(angle).toFloat() * shift),
-                            size = Size(h, h),
-                            style = if (marked) Stroke(width = 2.dp.toPx()) else Fill,
-                        )
-                        start += sweep
+            fun scaleOf(s: Int): Triple<Float, Float, Float> {
+                val right = series.getOrNull(s)?.yAxis == "right" && rightSeries.isNotEmpty()
+                return if (right) Triple(rightMin, rightMax, rightSpan) else Triple(leftMin, leftMax, leftSpan)
+            }
+            if (!pie && brush != null) {
+                val a = minOf(brush.first, brush.second).coerceIn(0, groups - 1)
+                val b = maxOf(brush.first, brush.second).coerceIn(0, groups - 1)
+                val slot = w / groups
+                drawRoundRect(
+                    ion.clay.copy(alpha = 0.18f),
+                    Offset(originX + a * slot, pad),
+                    Size(slot * (b - a + 1), h),
+                    CornerRadius(2.dp.toPx(), 2.dp.toPx()),
+                )
+            }
+            if (pie) {
+                val slices = series.first().values.map { if (it.isNaN() || it < 0f) 0f else it }
+                val total = slices.sum().coerceAtLeast(0.0001f)
+                var start = -90f
+                slices.forEachIndexed { i, v ->
+                    val sweep = 360f * (v / total)
+                    val marked = hit?.first == 0 && hit.second == i
+                    val shift = if (marked) 6.dp.toPx() else 0f
+                    val angle = Math.toRadians((start + sweep / 2f).toDouble())
+                    drawArc(
+                        color = colors[i % colors.size].let { if (i == 0) ion.clay else it },
+                        startAngle = start,
+                        sweepAngle = sweep,
+                        useCenter = true,
+                        topLeft = Offset(originX + w * 0.25f + kotlin.math.cos(angle).toFloat() * shift, pad + kotlin.math.sin(angle).toFloat() * shift),
+                        size = Size(h, h),
+                        style = if (marked) Stroke(width = 2.dp.toPx()) else Fill,
+                    )
+                    start += sweep
+                }
+            } else {
+                val barIndexes = kinds.mapIndexedNotNull { i, kind -> if (kind == "bar") i else null }
+                val slot = w / groups
+                val inner = slot * 0.72f
+                val gap = 2.dp.toPx()
+                val barW = ((inner - gap * (barIndexes.size - 1).coerceAtLeast(0)) / barIndexes.size.coerceAtLeast(1)).coerceAtLeast(3f)
+                val radius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+                barIndexes.forEachIndexed { order, s ->
+                    val ser = series.getOrNull(s) ?: return@forEachIndexed
+                    val (sMin, _, sSpan) = scaleOf(s)
+                    val sZero = originY - ((0f - sMin) / sSpan) * h
+                    ser.values.forEachIndexed { i, v ->
+                        if (v.isNaN()) return@forEachIndexed
+                        val y = originY - ((v - sMin) / sSpan) * h
+                        val top = minOf(y, sZero)
+                        val bh = kotlin.math.abs(sZero - y).coerceAtLeast(1f)
+                        val x = originX + i * slot + (slot - inner) / 2 + order * (barW + gap)
+                        val marked = hit?.first == s && hit.second == i
+                        drawRoundRect(if (marked) ion.clayEmphasis else colorAt(s), Offset(x, top), Size(barW, bh), radius)
                     }
                 }
-                "bar" -> {
-                    val slot = w / groups
-                    val inner = slot * 0.72f
-                    val gap = 2.dp.toPx()
-                    val barW = ((inner - gap * (series.size - 1)) / series.size).coerceAtLeast(3f)
-                    val radius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
-                    series.forEachIndexed { s, ser ->
-                        ser.values.forEachIndexed { i, v ->
-                            if (v.isNaN()) return@forEachIndexed
-                            val y = originY - ((v - min) / span) * h
-                            val top = minOf(y, zeroY)
-                            val bh = kotlin.math.abs(zeroY - y).coerceAtLeast(1f)
-                            val x = originX + i * slot + (slot - inner) / 2 + s * (barW + gap)
-                            val marked = hit?.first == s && hit.second == i
-                            drawRoundRect(if (marked) ion.clayEmphasis else colorAt(s), Offset(x, top), Size(barW, bh), radius)
-                        }
-                    }
-                }
-                "scatter" -> {
-                    val finiteX = series.flatMap { ser ->
+                val scatterIndexes = kinds.mapIndexedNotNull { i, kind -> if (kind == "scatter") i else null }
+                if (scatterIndexes.isNotEmpty()) {
+                    val finiteX = scatterIndexes.flatMap { s ->
+                        val ser = series.getOrNull(s) ?: return@flatMap emptyList()
                         ser.values.mapIndexedNotNull { i, v ->
                             if (v.isNaN()) null else ser.xs.getOrNull(i)?.takeUnless { it.isNaN() } ?: i.toFloat()
                         }
@@ -737,67 +864,74 @@ private fun OpenUiChartCanvas(
                         val rawX = ser.xs.getOrNull(i)?.takeUnless { it.isNaN() } ?: i.toFloat()
                         return originX + w * ((rawX - minX) / spanX)
                     }
-                    hit?.let { (s, i) ->
-                        val ser = series.getOrNull(s) ?: return@let
-                        val x = plotX(ser, i)
-                        drawLine(
-                            ion.lineStrong,
-                            Offset(x, pad),
-                            Offset(x, originY),
-                            strokeWidth = 1.dp.toPx(),
-                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx())),
-                        )
-                    }
-                    series.forEachIndexed { s, ser ->
+                    scatterIndexes.forEach { s ->
+                        val ser = series.getOrNull(s) ?: return@forEach
+                        val (sMin, _, sSpan) = scaleOf(s)
                         ser.values.forEachIndexed { i, v ->
                             if (v.isNaN()) return@forEachIndexed
                             val marked = hit?.first == s && hit.second == i
                             val x = plotX(ser, i)
-                            val y = originY - ((v - min) / span) * h
+                            val y = originY - ((v - sMin) / sSpan) * h
                             drawCircle(if (marked) ion.clayEmphasis else colorAt(s), radius = if (marked) 6.dp.toPx() else 3.5.dp.toPx(), center = Offset(x, y))
                         }
                     }
                 }
-                else -> {
-                    val denom = (groups - 1).coerceAtLeast(1)
-                    hit?.let { (_, i) ->
+                val pathIndexes = kinds.mapIndexedNotNull { i, kind -> if (kind == "line" || kind == "area") i else null }
+                val denom = (groups - 1).coerceAtLeast(1)
+                pathIndexes.forEach { s ->
+                    val ser = series.getOrNull(s) ?: return@forEach
+                    val kind = kinds.getOrElse(s) { "line" }
+                    val (sMin, _, sSpan) = scaleOf(s)
+                    val sZero = originY - ((0f - sMin) / sSpan) * h
+                    val path = Path()
+                    val fill = Path().apply { fillType = PathFillType.NonZero }
+                    ser.values.forEachIndexed { i, v ->
+                        val value = if (v.isNaN()) sMin else v
                         val x = originX + w * i / denom
-                        drawLine(
-                            ion.lineStrong,
-                            Offset(x, pad),
-                            Offset(x, originY),
-                            strokeWidth = 1.dp.toPx(),
-                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx())),
-                        )
+                        val y = originY - ((value - sMin) / sSpan) * h
+                        if (i == 0) {
+                            path.moveTo(x, y)
+                            fill.moveTo(x, sZero)
+                            fill.lineTo(x, y)
+                        } else {
+                            path.lineTo(x, y)
+                            fill.lineTo(x, y)
+                        }
+                        val marked = hit?.first == s && hit.second == i
+                        drawCircle(if (marked) ion.clayEmphasis else colorAt(s), radius = if (marked) 6.dp.toPx() else 3.dp.toPx(), center = Offset(x, y))
                     }
-                    series.forEachIndexed { s, ser ->
-                        val path = Path()
-                        val fill = Path().apply { fillType = PathFillType.NonZero }
-                        ser.values.forEachIndexed { i, v ->
-                            val value = if (v.isNaN()) min else v
-                            val x = originX + w * i / denom
-                            val y = originY - ((value - min) / span) * h
-                            if (i == 0) {
-                                path.moveTo(x, y)
-                                fill.moveTo(x, zeroY)
-                                fill.lineTo(x, y)
-                            } else {
-                                path.lineTo(x, y)
-                                fill.lineTo(x, y)
+                    if (ser.values.isNotEmpty()) {
+                        val lastX = originX + w * ser.values.lastIndex / denom
+                        fill.lineTo(lastX, sZero)
+                        fill.close()
+                    }
+                    if (kind == "area") drawPath(fill, colorAt(s).copy(alpha = 0.18f))
+                    drawPath(path, colorAt(s), style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+                }
+                hit?.let { (s, i) ->
+                    if (kinds.getOrElse(s) { "" } == "bar") return@let
+                    val x = if (kinds.getOrElse(s) { "" } == "scatter") {
+                        val ser = series.getOrNull(s) ?: return@let
+                        val finiteX = scatterIndexes.flatMap { si ->
+                            val row = series.getOrNull(si) ?: return@flatMap emptyList()
+                            row.values.mapIndexedNotNull { pi, v ->
+                                if (v.isNaN()) null else row.xs.getOrNull(pi)?.takeUnless { it.isNaN() } ?: pi.toFloat()
                             }
-                            val marked = hit?.first == s && hit.second == i
-                            drawCircle(if (marked) ion.clayEmphasis else colorAt(s), radius = if (marked) 6.dp.toPx() else 3.dp.toPx(), center = Offset(x, y))
                         }
-                        if (ser.values.isNotEmpty()) {
-                            val lastX = originX + w * (ser.values.lastIndex) / denom
-                            fill.lineTo(lastX, zeroY)
-                            fill.close()
-                        }
-                        if (kind == "area") {
-                            drawPath(fill, colorAt(s).copy(alpha = 0.18f))
-                        }
-                        drawPath(path, colorAt(s), style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+                        val minX = finiteX.minOrNull() ?: 0f
+                        val spanX = ((finiteX.maxOrNull() ?: minX) - minX).let { if (it == 0f) 1f else it }
+                        val rawX = ser.xs.getOrNull(i)?.takeUnless { it.isNaN() } ?: i.toFloat()
+                        originX + w * ((rawX - minX) / spanX)
+                    } else {
+                        originX + w * i / denom
                     }
+                    drawLine(
+                        ion.lineStrong,
+                        Offset(x, pad),
+                        Offset(x, originY),
+                        strokeWidth = 1.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx())),
+                    )
                 }
             }
         }
@@ -821,29 +955,57 @@ private fun OpenUiMap(node: OpenUiNode, ion: IonPalette) {
         Text("地图", color = ion.text2, style = MaterialTheme.typography.bodySmall)
         return
     }
-    val located = points.filter { it.lat != null && it.lng != null }
+    var selected by remember(node.id) { mutableStateOf<Int?>(null) }
+    var expanded by remember(node.id) { mutableStateOf(false) }
+    val located = points.mapIndexedNotNull { index, point ->
+        if (point.lat != null && point.lng != null) index to point else null
+    }
+    val shown = if (expanded) points.take(OpenUiListExpandedItems) else points.take(OpenUiListCollapsedItems)
+    val extra = (points.size - shown.size).coerceAtLeast(0)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (located.size >= 1) {
-            val minLat = located.minOf { it.lat!! }
-            val maxLat = located.maxOf { it.lat!! }
-            val minLng = located.minOf { it.lng!! }
-            val maxLng = located.maxOf { it.lng!! }
+            val minLat = located.minOf { it.second.lat!! }
+            val maxLat = located.maxOf { it.second.lat!! }
+            val minLng = located.minOf { it.second.lng!! }
+            val maxLng = located.maxOf { it.second.lng!! }
             val dLat = (maxLat - minLat).let { if (it == 0.0) 1.0 else it }
             val dLng = (maxLng - minLng).let { if (it == 0.0) 1.0 else it }
             val pin = ion.clay
             Canvas(
                 Modifier
                     .fillMaxWidth()
-                    .height(120.dp),
+                    .height(120.dp)
+                    .pointerInput(located, minLat, maxLat, minLng, maxLng) {
+                        detectTapGestures { offset ->
+                            val pad = 14.dp.toPx()
+                            val w = (size.width - pad * 2).coerceAtLeast(1f)
+                            val h = (size.height - pad * 2).coerceAtLeast(1f)
+                            var best = -1
+                            var bestDist = Float.POSITIVE_INFINITY
+                            located.forEach { (index, p) ->
+                                val x = pad + (((p.lng!! - minLng) / dLng) * w).toFloat()
+                                val y = pad + h - (((p.lat!! - minLat) / dLat) * h).toFloat()
+                                val dist = (offset.x - x) * (offset.x - x) + (offset.y - y) * (offset.y - y)
+                                if (dist < bestDist) {
+                                    bestDist = dist
+                                    best = index
+                                }
+                            }
+                            val hitRadius = 18.dp.toPx()
+                            selected = if (best >= 0 && bestDist <= hitRadius * hitRadius) best else null
+                        }
+                    },
             ) {
                 val pad = 14.dp.toPx()
                 val w = size.width - pad * 2
                 val h = size.height - pad * 2
-                located.forEach { p ->
+                located.forEach { (index, p) ->
+                    val marked = index == selected
                     val x = pad + (((p.lng!! - minLng) / dLng) * w).toFloat()
                     val y = pad + h - (((p.lat!! - minLat) / dLat) * h).toFloat()
-                    drawCircle(color = pin.copy(alpha = 0.22f), radius = 9.dp.toPx(), center = Offset(x, y))
-                    drawCircle(color = pin, radius = 4.dp.toPx(), center = Offset(x, y))
+                    val color = if (marked) ion.clayEmphasis else pin
+                    drawCircle(color = color.copy(alpha = 0.22f), radius = if (marked) 14.dp.toPx() else 9.dp.toPx(), center = Offset(x, y))
+                    drawCircle(color = color, radius = if (marked) 6.dp.toPx() else 4.dp.toPx(), center = Offset(x, y))
                 }
             }
             Text(
@@ -853,19 +1015,31 @@ private fun OpenUiMap(node: OpenUiNode, ion: IonPalette) {
             )
         }
         val handler = LocalUriHandler.current
-        points.take(8).forEach { p ->
+        shown.forEachIndexed { index, p ->
             val coord = listOfNotNull(p.lat, p.lng).joinToString(", ")
             val label = if (coord.isBlank()) p.name else "${p.name}  $coord"
             val geo = if (p.lat != null && p.lng != null) "geo:${p.lat},${p.lng}?q=${p.lat},${p.lng}(${p.name})" else null
+            val marked = index == selected
             Text(
                 label,
-                color = ion.text,
+                color = if (marked) ion.clayEmphasis else ion.text,
                 style = MaterialTheme.typography.bodySmall,
-                modifier = if (geo != null) Modifier.clickable { runCatching { handler.openUri(geo) } } else Modifier,
+                fontWeight = if (marked) FontWeight.Medium else FontWeight.Normal,
+                modifier = Modifier.clickable {
+                    selected = index
+                    if (geo != null) runCatching { handler.openUri(geo) }
+                },
             )
         }
-        if (points.size > 8) {
-            Text("另有 ${points.size - 8} 个点", color = ion.text3, style = MaterialTheme.typography.labelSmall)
+        if (extra > 0 && !expanded) {
+            Text(
+                "其余 $extra 个点",
+                color = ion.clayEmphasis,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.clickable { expanded = true },
+            )
+        } else if (extra > 0) {
+            Text("仍有 $extra 个点未显示", color = ion.text3, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
