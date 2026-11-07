@@ -47,6 +47,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import com.luckyagent.android.ui.util.FileBubbleAction
+import com.luckyagent.android.ui.util.fileBubbleAction
+import com.luckyagent.android.ui.util.fileBubbleSubtitle
+import com.luckyagent.android.ui.util.lockDownloadTotal
+import com.luckyagent.android.ui.util.middleEllipsisFileName
+import com.luckyagent.android.ui.util.sanitizeFileName
 import com.luckyagent.android.ui.MinMainContentWidth
 import com.luckyagent.android.ui.AppNavRailWidth
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -1584,6 +1590,8 @@ private fun ChatConversation(
                                 imageBaseUrl = state.settings.apiBase,
                                 surfaceActive = bubbleSurfaceActive(listState, item.key),
                                 onDownload = { media -> vm.downloadAttachment(context, media) },
+                                onCancelDownload = { media -> vm.cancelAttachmentDownload(media) },
+                                onOpenFile = { media -> openSavedFile(context, vm, media) },
                                 downloadFor = { media -> vm.downloadUiFor(media) },
                                 onQuote = { vm.quoteMessage(it) },
                                 onCopy = { bubble ->
@@ -1619,6 +1627,8 @@ private fun ChatConversation(
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = state.settings.apiBase,
                                 onDownload = { media -> vm.downloadAttachment(context, media) },
+                                onCancelDownload = { media -> vm.cancelAttachmentDownload(media) },
+                                onOpenFile = { media -> openSavedFile(context, vm, media) },
                                 downloadFor = { media -> vm.downloadUiFor(media) },
                                 onQuote = { vm.quoteMessage(it) },
                                 onCopy = { bubble ->
@@ -1812,6 +1822,8 @@ private fun ChatConversation(
                 imageBaseUrl = state.settings.apiBase,
                 onDismiss = { showThinkingSheet = false },
                 onDownload = { media -> vm.downloadAttachment(context, media) },
+                onCancelDownload = { media -> vm.cancelAttachmentDownload(media) },
+                onOpenFile = { media -> openSavedFile(context, vm, media) },
                 downloadFor = { media -> vm.downloadUiFor(media) },
                 onQuote = { vm.quoteMessage(it) },
                 onCopy = { bubble ->
@@ -1831,6 +1843,16 @@ private fun ChatConversation(
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 88.dp),
         )
+        state.fileOpenError?.let { message ->
+            AlertDialog(
+                onDismissRequest = vm::dismissFileOpenError,
+                title = { Text("无法打开") },
+                text = { Text(message) },
+                confirmButton = {
+                    TextButton(onClick = vm::dismissFileOpenError) { Text("知道了") }
+                },
+            )
+        }
     }
 }
 
@@ -2281,6 +2303,8 @@ private fun BubbleRow(
     imageBaseUrl: String,
     surfaceActive: Boolean = true,
     onDownload: (ChatMedia) -> Unit,
+    onCancelDownload: (ChatMedia) -> Unit = {},
+    onOpenFile: (ChatMedia) -> Unit = {},
     downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
@@ -2403,6 +2427,8 @@ private fun BubbleRow(
                                         imageBaseUrl = imageBaseUrl,
                                         onDownload = onDownload,
                                         download = downloadFor(media),
+                                        onCancelDownload = onCancelDownload,
+                                        onOpenFile = onOpenFile,
                                     )
                                 }
                             }
@@ -2413,6 +2439,8 @@ private fun BubbleRow(
                                     imageBaseUrl = imageBaseUrl,
                                     onDownload = onDownload,
                                     download = downloadFor(media),
+                                    onCancelDownload = onCancelDownload,
+                                    onOpenFile = onOpenFile,
                                 )
                             }
                         }
@@ -2964,6 +2992,8 @@ private fun ProcessTimeline(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
+    onCancelDownload: (ChatMedia) -> Unit = {},
+    onOpenFile: (ChatMedia) -> Unit = {},
     downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
@@ -3020,6 +3050,8 @@ private fun ThinkingSheet(
     imageBaseUrl: String,
     onDismiss: () -> Unit,
     onDownload: (ChatMedia) -> Unit,
+    onCancelDownload: (ChatMedia) -> Unit = {},
+    onOpenFile: (ChatMedia) -> Unit = {},
     downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
@@ -3090,6 +3122,8 @@ private fun ThinkingSheet(
                         imageHeaders,
                         imageBaseUrl,
                         onDownload,
+                        onCancelDownload,
+                        onOpenFile,
                         downloadFor,
                         onQuote,
                         onCopy,
@@ -3136,6 +3170,8 @@ private fun ToolPart(
     imageHeaders: Map<String, String>,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
+    onCancelDownload: (ChatMedia) -> Unit = {},
+    onOpenFile: (ChatMedia) -> Unit = {},
     downloadFor: (ChatMedia) -> AttachmentDownloadUi? = { null },
     onQuote: (ChatBubble) -> Unit,
     onCopy: (ChatBubble) -> Unit,
@@ -3215,7 +3251,11 @@ private fun ToolPart(
                 }
             }
             bubble.attachments.forEach { media ->
-                ChatMediaPreview(media, imageHeaders, imageBaseUrl, onDownload, downloadFor(media))
+                ChatMediaPreview(
+                    media, imageHeaders, imageBaseUrl, onDownload, downloadFor(media),
+                    onCancelDownload = onCancelDownload,
+                    onOpenFile = onOpenFile,
+                )
             }
         }
     }
@@ -4659,6 +4699,8 @@ internal fun ChatMediaPreview(
     onDownload: (ChatMedia) -> Unit,
     download: AttachmentDownloadUi? = null,
     compact: Boolean = false,
+    onCancelDownload: (ChatMedia) -> Unit = {},
+    onOpenFile: (ChatMedia) -> Unit = {},
 ) {
     val descriptor = media.descriptor
     val context = LocalContext.current
@@ -4754,10 +4796,10 @@ internal fun ChatMediaPreview(
             VideoAttachmentCard(media, imageBaseUrl, player, onDownload, download)
         }
         kind == "html" -> Column {
-            AttachmentFileCard(media, kind, imageBaseUrl, onDownload, download)
+            AttachmentFileCard(media, kind, imageBaseUrl, onDownload, onCancelDownload, onOpenFile, download)
             TextButton(enabled = sourceUri != null, onClick = { showHtmlViewer = true }) { Text("预览 HTML") }
         }
-        else -> AttachmentFileCard(media, kind, imageBaseUrl, onDownload, download)
+        else -> AttachmentFileCard(media, kind, imageBaseUrl, onDownload, onCancelDownload, onOpenFile, download)
     }
 
     if (showImageViewer && sourceUri != null) {
@@ -5043,6 +5085,11 @@ private fun FullscreenImagePreview(
 internal fun canDownload(media: ChatMedia, apiBase: String): Boolean =
     canDownloadAttachment(media.descriptor.fileUrl, media.descriptor.filePath, apiBase)
 
+private fun openSavedFile(context: Context, vm: AppViewModel, media: ChatMedia) {
+    val saved = vm.downloadUiFor(media)?.savedUri ?: return
+    vm.openDownloadedAttachment(context, saved, media.descriptor.mimeType)
+}
+
 @Composable
 private fun AttachmentDownloadButton(
     media: ChatMedia,
@@ -5104,37 +5151,116 @@ private fun AttachmentFileCard(
     kind: String,
     imageBaseUrl: String,
     onDownload: (ChatMedia) -> Unit,
+    onCancel: (ChatMedia) -> Unit,
+    onOpen: (ChatMedia) -> Unit,
     download: AttachmentDownloadUi? = null,
 ) {
     val descriptor = media.descriptor
+    val safeName = sanitizeFileName(descriptor.fileName)
+    val shownName = middleEllipsisFileName(safeName, 36)
+    val action = fileBubbleAction(download)
+    var lockedTotal by remember(media.descriptor.fileUrl, media.descriptor.filePath, safeName) { mutableStateOf<Long?>(null) }
+    val reportedTotal = download?.bytesTotal
+    if (reportedTotal != null && reportedTotal > 0L && lockedTotal == null) {
+        lockedTotal = lockDownloadTotal(lockedTotal, reportedTotal)
+    }
+    val subtitle = fileBubbleSubtitle(descriptor.fileSize, descriptor.mimeType, safeName, download, lockedTotal)
+    val openReady = action == FileBubbleAction.Open
+    val fraction = download?.percent?.let { it / 100f }
     Column(
         modifier = Modifier
+            .widthIn(max = 320.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(CloverSurface2)
-            .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            .clickable(enabled = openReady) { onOpen(media) }
+            .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                fileVisualIcon(fileVisualKind(descriptor.fileName, descriptor.mimeType)),
-                contentDescription = null,
-                tint = CloverText2,
-                modifier = Modifier.size(22.dp),
+            FileBubbleButton(
+                action = action,
+                progress = if (action == FileBubbleAction.Cancel) fraction else null,
+                enabled = canDownload(media, imageBaseUrl) || openReady,
+                onClick = {
+                    when (action) {
+                        FileBubbleAction.Download, FileBubbleAction.Retry -> onDownload(media)
+                        FileBubbleAction.Cancel -> onCancel(media)
+                        FileBubbleAction.Open -> onOpen(media)
+                    }
+                },
             )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = descriptor.fileName ?: "附件",
-                style = MaterialTheme.typography.bodyMedium,
-                color = CloverText2,
-                modifier = Modifier.weight(1f),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Column(horizontalAlignment = Alignment.End) {
-                Text(mediaTypeLabel(kind, descriptor), style = MaterialTheme.typography.labelSmall, color = CloverText3)
-                AttachmentDownloadButton(media, imageBaseUrl, onDownload, download)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = shownName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = CloverText2,
+                    maxLines = 2,
+                    overflow = TextOverflow.Clip,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (action == FileBubbleAction.Retry) CloverError else CloverText3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
-        AttachmentDownloadStatus(download, modifier = Modifier.padding(end = 8.dp))
+    }
+}
+
+@Composable
+private fun FileBubbleButton(
+    action: FileBubbleAction,
+    progress: Float?,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val label = when (action) {
+        FileBubbleAction.Download -> "下载"
+        FileBubbleAction.Cancel -> "取消下载"
+        FileBubbleAction.Open -> "打开文件"
+        FileBubbleAction.Retry -> "重试下载"
+    }
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(CloverSurface)
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (action == FileBubbleAction.Cancel) {
+            Canvas(Modifier.size(28.dp)) {
+                val stroke = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+                drawArc(
+                    color = CloverLine,
+                    startAngle = 0f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = stroke,
+                )
+                val sweep = ((progress ?: 0f).coerceIn(0f, 1f)) * 360f
+                if (sweep > 0f) {
+                    drawArc(
+                        color = CloverAccent,
+                        startAngle = -90f,
+                        sweepAngle = sweep,
+                        useCenter = false,
+                        style = stroke,
+                    )
+                }
+            }
+            Icon(Icons.Outlined.Close, contentDescription = null, tint = CloverText2, modifier = Modifier.size(16.dp))
+        } else {
+            val icon = if (action == FileBubbleAction.Open) {
+                Icons.Outlined.InsertDriveFile
+            } else {
+                Icons.Outlined.Download
+            }
+            Icon(icon, contentDescription = null, tint = CloverText2, modifier = Modifier.size(20.dp))
+        }
     }
 }
 

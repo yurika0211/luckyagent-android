@@ -287,6 +287,8 @@ data class AttachmentDownloadUi(
     val bytesTotal: Long? = null,
     val bytesPerSecond: Long = 0L,
     val error: String? = null,
+    /** Local uri after a successful save. The file card opens this. */
+    val savedUri: String? = null,
 ) {
     val percent: Int?
         get() = downloadPercent(bytesCopied, bytesTotal)
@@ -387,7 +389,11 @@ data class AppUiState(
     val attachmentNotice: AttachmentNotice? = null,
     /** One download at a time. Key is [attachmentDownloadKey]. */
     val attachmentDownloadKey: String? = null,
+    /** Per-file progress so a later download does not erase an earlier card. */
+    val attachmentDownloads: Map<String, AttachmentDownloadUi> = emptyMap(),
     val attachmentDownload: AttachmentDownloadUi = AttachmentDownloadUi(),
+    /** Dialog when the system has no app for a downloaded file. Includes the mime. */
+    val fileOpenError: String? = null,
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
     val drawerOpenHint: Boolean = false,
@@ -558,6 +564,7 @@ class AppViewModel(
     private var appInForeground = false
     private var updateDownloadJob: Job? = null
     private var attachmentNoticeJob: Job? = null
+    private var attachmentDownloadJob: Job? = null
     private var pluginsLoadJob: Job? = null
     private var pluginsMutationJob: Job? = null
     /** In-flight slash command; cancelled when the phone leaves the computer connection. */
@@ -4444,7 +4451,25 @@ class AppViewModel(
         container.wsClient.connect(currentSessionId(), force = force)
     }
 
+    fun cancelAttachmentDownload(media: ChatMedia) {
+        val key = attachmentDownloadKey(media)
+        val current = _ui.value
+        if (current.attachmentDownloadKey == key) {
+            attachmentDownloadJob?.cancel()
+            attachmentDownloadJob = null
+        }
+        _ui.update { state ->
+            state.copy(
+                attachmentDownloadKey = if (state.attachmentDownloadKey == key) null else state.attachmentDownloadKey,
+                attachmentDownload = if (state.attachmentDownloadKey == key) AttachmentDownloadUi() else state.attachmentDownload,
+                attachmentDownloads = state.attachmentDownloads - key,
+            )
+        }
+    }
+
     fun downloadAttachment(context: Context, media: ChatMedia) {
+        val key = attachmentDownloadKey(media)
+        if (_ui.value.attachmentDownloads[key]?.phase == AttachmentDownloadPhase.Running) return
         if (_ui.value.attachmentDownload.phase == AttachmentDownloadPhase.Running) return
         val descriptor = media.descriptor
         val downloadUrl = descriptor.fileUrl?.takeIf { it.isNotBlank() }
@@ -4453,12 +4478,13 @@ class AppViewModel(
             publishAttachmentNotice("附件没有可下载的地址", isError = true)
             return
         }
-        val downloadDescriptor = if (descriptor.fileUrl == downloadUrl) descriptor else descriptor.copy(fileUrl = downloadUrl)
-        val key = attachmentDownloadKey(media)
+        val safeName = com.luckyagent.android.ui.util.sanitizeFileName(descriptor.fileName)
+        val downloadDescriptor = (if (descriptor.fileUrl == downloadUrl) descriptor else descriptor.copy(fileUrl = downloadUrl))
+            .copy(fileName = safeName)
         val appContext = context.applicationContext
         val startedAt = android.os.SystemClock.elapsedRealtime()
         _ui.update { attachmentRunningUpdate(it, key) }
-        viewModelScope.launch {
+        attachmentDownloadJob = viewModelScope.launch {
             container.api.downloadAttachment(appContext, downloadDescriptor) { copied, total ->
                 val elapsed = (android.os.SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1L)
                 val progress = AttachmentDownloadUi(
@@ -4469,19 +4495,27 @@ class AppViewModel(
                 )
                 _ui.update { state ->
                     if (state.attachmentDownloadKey != key) state
-                    else state.copy(attachmentDownload = progress)
+                    else state.copy(
+                        attachmentDownload = progress,
+                        attachmentDownloads = state.attachmentDownloads + (key to progress),
+                    )
                 }
             }
                 .onSuccess { saved ->
                     _ui.update { state ->
                         if (state.attachmentDownloadKey != key) state
-                        else state.copy(
-                            attachmentDownload = state.attachmentDownload.copy(
+                        else {
+                            val done = state.attachmentDownload.copy(
                                 phase = AttachmentDownloadPhase.Done,
                                 bytesPerSecond = 0L,
                                 error = null,
-                            ),
-                        )
+                                savedUri = saved.uri.toString(),
+                            )
+                            state.copy(
+                                attachmentDownload = done,
+                                attachmentDownloads = state.attachmentDownloads + (key to done),
+                            )
+                        }
                     }
                     publishAttachmentNotice(
                         text = "下载完成 · ${saved.displayName} · ${attachmentDownloadLocation(appContext, saved.displayName)}",
@@ -4501,6 +4535,11 @@ class AppViewModel(
                                 bytesPerSecond = 0L,
                                 error = message,
                             ),
+                            attachmentDownloads = state.attachmentDownloads + (key to state.attachmentDownload.copy(
+                                phase = AttachmentDownloadPhase.Failed,
+                                bytesPerSecond = 0L,
+                                error = message,
+                            )),
                         )
                     }
                     publishAttachmentNotice("下载失败 · $message", isError = true)
@@ -4510,8 +4549,10 @@ class AppViewModel(
 
     fun downloadUiFor(media: ChatMedia): AttachmentDownloadUi? {
         val state = _ui.value
+        val key = attachmentDownloadKey(media)
+        state.attachmentDownloads[key]?.let { return it }
         if (state.attachmentDownload.phase == AttachmentDownloadPhase.Idle) return null
-        if (state.attachmentDownloadKey != attachmentDownloadKey(media)) return null
+        if (state.attachmentDownloadKey != key) return null
         return state.attachmentDownload
     }
 
@@ -4562,16 +4603,25 @@ class AppViewModel(
         }
 
     fun openDownloadedAttachment(context: Context, uriString: String, mimeType: String?) {
-        runCatching {
+        val opened = runCatching {
             val uri = Uri.parse(uriString)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, mimeType?.takeIf { it.isNotBlank() } ?: "*/*")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(intent)
-        }.onFailure { error ->
-            publishAttachmentNotice("打开失败 · ${error.message ?: "没有可用的查看应用"}", isError = true)
         }
+        if (opened.isFailure) {
+            val message = com.luckyagent.android.ui.util.openFailureMessage(
+                mimeType,
+                opened.exceptionOrNull()?.message ?: "没有可用的查看应用",
+            )
+            _ui.update { it.copy(fileOpenError = message) }
+        }
+    }
+
+    fun dismissFileOpenError() {
+        _ui.update { it.copy(fileOpenError = null) }
     }
 
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = container.settingsRepository.scrollAnchor(sessionId)
