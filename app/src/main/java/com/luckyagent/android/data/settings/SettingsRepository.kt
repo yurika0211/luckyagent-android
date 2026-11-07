@@ -61,6 +61,10 @@ data class ClientSettings(
     val standaloneSessionId: String = "standalone-main",
     /** Chat-top session card. Hidden until the composer plus menu turns it on. */
     val showSessionCard: Boolean = false,
+    /** Times the hold-to-talk lock hint has been shown. Stops after 3. */
+    val voiceLockHintShown: Int = 0,
+    /** Pause hint is shown once, then stored. */
+    val voicePauseHintSeen: Boolean = false,
 )
 
 /**
@@ -132,6 +136,8 @@ class SettingsRepository(context: Context) {
             standaloneModel = prefs.getString(KEY_STANDALONE_MODEL, "") ?: "",
             standaloneSessionId = prefs.getString(KEY_STANDALONE_SESSION, "standalone-main") ?: "standalone-main",
             showSessionCard = prefs.getBoolean(KEY_SHOW_SESSION_CARD, false),
+            voiceLockHintShown = prefs.getInt(KEY_VOICE_LOCK_HINT, 0).coerceIn(0, 3),
+            voicePauseHintSeen = prefs.getBoolean(KEY_VOICE_PAUSE_HINT, false),
         )
     }
 
@@ -209,6 +215,8 @@ class SettingsRepository(context: Context) {
             if (next.standaloneModel != previous.standaloneModel) putString(KEY_STANDALONE_MODEL, next.standaloneModel)
             if (next.standaloneSessionId != previous.standaloneSessionId) putString(KEY_STANDALONE_SESSION, next.standaloneSessionId)
             if (next.showSessionCard != previous.showSessionCard) putBoolean(KEY_SHOW_SESSION_CARD, next.showSessionCard)
+            if (next.voiceLockHintShown != previous.voiceLockHintShown) putInt(KEY_VOICE_LOCK_HINT, next.voiceLockHintShown.coerceIn(0, 3))
+            if (next.voicePauseHintSeen != previous.voicePauseHintSeen) putBoolean(KEY_VOICE_PAUSE_HINT, next.voicePauseHintSeen)
         }.apply()
         _settings.value = next
     }
@@ -344,6 +352,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_HIDDEN_SESSION_CARDS = "hidden_session_cards"
         private const val KEY_HIDDEN_MESSAGES = "hidden_messages"
         private const val KEY_SHOW_SESSION_CARD = "show_session_card"
+        private const val KEY_VOICE_LOCK_HINT = "voice_lock_hint_shown"
+        private const val KEY_VOICE_PAUSE_HINT = "voice_pause_hint_seen"
     }
 }
 

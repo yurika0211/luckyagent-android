@@ -47,6 +47,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import com.luckyagent.android.ui.util.HoldTalkGesture
+import com.luckyagent.android.ui.util.HoldTalkPhase
+import com.luckyagent.android.ui.util.holdTalkLockProgress
+import com.luckyagent.android.ui.util.holdTalkPhase
+import com.luckyagent.android.ui.util.holdTalkReleaseSends
+import com.luckyagent.android.ui.util.holdTalkTapWasAccidental
+import com.luckyagent.android.ui.util.nextLockHintCount
+import com.luckyagent.android.ui.util.nextPauseHintSeen
 import com.luckyagent.android.ui.util.FileBubbleAction
 import com.luckyagent.android.ui.util.fileBubbleAction
 import com.luckyagent.android.ui.util.fileBubbleSubtitle
@@ -116,6 +124,7 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
@@ -167,6 +176,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
@@ -175,7 +185,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -785,6 +800,10 @@ fun ChatScreen(
     var pendingCameraTarget by remember { mutableStateOf<CaptureTarget?>(null) }
     var pendingVoiceTarget by remember { mutableStateOf<CaptureTarget?>(null) }
     var isRecordingVoice by remember { mutableStateOf(false) }
+    var voiceLocked by remember { mutableStateOf(false) }
+    var voicePaused by remember { mutableStateOf(false) }
+    var holdPhase by remember { mutableStateOf(HoldTalkPhase.Idle) }
+    var lockProgress by remember { mutableFloatStateOf(0f) }
     var recordingStartedAtMs by remember { mutableStateOf<Long?>(null) }
     var recordingElapsedSec by remember { mutableStateOf(0) }
     var captureHint by remember { mutableStateOf<String?>(null) }
@@ -870,6 +889,10 @@ fun ChatScreen(
         val target = pendingVoiceTarget
         pendingVoiceTarget = null
         isRecordingVoice = false
+        voiceLocked = false
+        voicePaused = false
+        holdPhase = HoldTalkPhase.Idle
+        lockProgress = 0f
         recordingStartedAtMs = null
         recordingElapsedSec = 0
         if (cancel) {
@@ -880,12 +903,22 @@ fun ChatScreen(
         }
         val file = voiceRecorder.stop()
         if (file != null && target != null) {
-            vm.addPickedMedia(context.contentResolver, listOf(target.uri))
+            vm.sendVoiceMessage(context.contentResolver, target.uri, target.displayName, target.mimeType)
             captureHint = null
         } else {
             target?.file?.delete()
             captureHint = "录音太短或失败"
         }
+    }
+
+    fun noteLockHint() {
+        val next = nextLockHintCount(state.settings.voiceLockHintShown) ?: return
+        vm.updateSettings { it.copy(voiceLockHintShown = next) }
+    }
+
+    fun notePauseHint() {
+        if (!nextPauseHintSeen(state.settings.voicePauseHintSeen)) return
+        vm.updateSettings { it.copy(voicePauseHintSeen = true) }
     }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -1038,8 +1071,40 @@ fun ChatScreen(
                         vm.expandComposer()
                     },
                     isRecordingVoice = isRecordingVoice,
+                    voiceLocked = voiceLocked,
+                    voicePaused = voicePaused,
+                    holdPhase = holdPhase,
+                    lockProgress = lockProgress,
                     recordingElapsedSec = recordingElapsedSec,
                     captureHint = captureHint,
+                    onHoldTalk = { phase, progress, pastSlop ->
+                        holdPhase = phase
+                        lockProgress = progress
+                        if (phase == HoldTalkPhase.Locking && progress >= 1f && !voiceLocked) {
+                            voiceLocked = true
+                            noteLockHint()
+                        }
+                        if (pastSlop && !isRecordingVoice) requestVoiceCapture()
+                    },
+                    micGranted = hasPermission(Manifest.permission.RECORD_AUDIO),
+                    onHoldRelease = { phase, pastSlop ->
+                        if (voiceLocked) return@ChatConversation
+                        if (holdTalkTapWasAccidental(phase, pastSlop)) {
+                            holdPhase = HoldTalkPhase.Idle
+                            return@ChatConversation
+                        }
+                        stopVoiceCapture(cancel = !holdTalkReleaseSends(phase))
+                    },
+                    onPauseVoice = {
+                        if (voicePaused) {
+                            voiceRecorder.resume()
+                            voicePaused = false
+                        } else {
+                            voiceRecorder.pause()
+                            voicePaused = true
+                            notePauseHint()
+                        }
+                    },
                     onStopVoice = { stopVoiceCapture(cancel = false) },
                     onCancelVoice = { stopVoiceCapture(cancel = true) },
                     modifier = Modifier.weight(1f),
@@ -1091,8 +1156,40 @@ fun ChatScreen(
                             vm.expandComposer()
                         },
                         isRecordingVoice = isRecordingVoice,
+                        voiceLocked = voiceLocked,
+                        voicePaused = voicePaused,
+                        holdPhase = holdPhase,
+                        lockProgress = lockProgress,
                         recordingElapsedSec = recordingElapsedSec,
                         captureHint = captureHint,
+                        onHoldTalk = { phase, progress, pastSlop ->
+                            holdPhase = phase
+                            lockProgress = progress
+                            if (phase == HoldTalkPhase.Locking && progress >= 1f && !voiceLocked) {
+                                voiceLocked = true
+                                noteLockHint()
+                            }
+                            if (pastSlop && !isRecordingVoice) requestVoiceCapture()
+                        },
+                        micGranted = hasPermission(Manifest.permission.RECORD_AUDIO),
+                        onHoldRelease = { phase, pastSlop ->
+                            if (voiceLocked) return@ChatConversation
+                            if (holdTalkTapWasAccidental(phase, pastSlop)) {
+                                holdPhase = HoldTalkPhase.Idle
+                                return@ChatConversation
+                            }
+                            stopVoiceCapture(cancel = !holdTalkReleaseSends(phase))
+                        },
+                        onPauseVoice = {
+                            if (voicePaused) {
+                                voiceRecorder.resume()
+                                voicePaused = false
+                            } else {
+                                voiceRecorder.pause()
+                                voicePaused = true
+                                notePauseHint()
+                            }
+                        },
                         onStopVoice = { stopVoiceCapture(cancel = false) },
                         onCancelVoice = { stopVoiceCapture(cancel = true) },
                         modifier = Modifier.fillMaxSize().background(CloverBg),
@@ -1289,8 +1386,16 @@ private fun ChatConversation(
     onFilePick: () -> Unit,
     onExpandDraft: () -> Unit,
     isRecordingVoice: Boolean,
+    voiceLocked: Boolean,
+    voicePaused: Boolean,
+    holdPhase: HoldTalkPhase,
+    lockProgress: Float,
     recordingElapsedSec: Int,
     captureHint: String?,
+    onHoldTalk: (HoldTalkPhase, Float, Boolean) -> Unit,
+    onHoldRelease: (HoldTalkPhase, Boolean) -> Unit,
+    micGranted: Boolean,
+    onPauseVoice: () -> Unit,
     onStopVoice: () -> Unit,
     onCancelVoice: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1779,8 +1884,16 @@ private fun ChatConversation(
             onRetryMedia = { id -> vm.retryPendingMedia(context.contentResolver, id) },
             onClearQuote = vm::clearQuote,
             isRecordingVoice = isRecordingVoice,
+            voiceLocked = voiceLocked,
+            voicePaused = voicePaused,
+            holdPhase = holdPhase,
+            lockProgress = lockProgress,
             recordingElapsedSec = recordingElapsedSec,
             captureHint = captureHint,
+            onHoldTalk = onHoldTalk,
+            onHoldRelease = onHoldRelease,
+            micGranted = micGranted,
+            onPauseVoice = onPauseVoice,
             onStopVoice = onStopVoice,
             onCancelVoice = onCancelVoice,
         )
@@ -3291,8 +3404,16 @@ private fun ComposerBar(
     onRetryMedia: (String) -> Unit,
     onClearQuote: () -> Unit,
     isRecordingVoice: Boolean,
+    voiceLocked: Boolean,
+    voicePaused: Boolean,
+    holdPhase: HoldTalkPhase,
+    lockProgress: Float,
     recordingElapsedSec: Int,
     captureHint: String?,
+    onHoldTalk: (HoldTalkPhase, Float, Boolean) -> Unit,
+    onHoldRelease: (HoldTalkPhase, Boolean) -> Unit,
+    micGranted: Boolean,
+    onPauseVoice: () -> Unit,
     onStopVoice: () -> Unit,
     onCancelVoice: () -> Unit,
 ) {
@@ -3408,23 +3529,45 @@ private fun ComposerBar(
             }
         }
         if (isRecordingVoice) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                CloverPulseIndicator(tint = CloverError)
-                Icon(Icons.Outlined.Mic, contentDescription = null, tint = CloverError, modifier = Modifier.size(18.dp))
-                Text(
-                    text = "录音中 ${formatElapsed(recordingElapsedSec)}",
-                    color = CloverText2,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                VoiceWaveform(Modifier.weight(1f))
-                TextButton(onClick = onCancelVoice) { Text("取消") }
-                TextButton(onClick = onStopVoice) { Text("完成") }
+            val slideLabel = when {
+                voiceLocked -> if (voicePaused) "已暂停" else "已锁定"
+                holdPhase == HoldTalkPhase.CancelArmed -> "松手取消"
+                else -> "左滑取消"
+            }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 3.dp)) {
+                if (!voiceLocked && state.settings.voiceLockHintShown < 3) {
+                    Text("上滑可锁定", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+                }
+                if (voiceLocked && voicePaused && !state.settings.voicePauseHintSeen) {
+                    Text("暂停后可继续", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CloverPulseIndicator(tint = CloverError)
+                    Icon(
+                        if (voiceLocked) Icons.Outlined.Lock else Icons.Outlined.Mic,
+                        contentDescription = null,
+                        tint = CloverError,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .graphicsLayer {
+                                translationY = if (voiceLocked) 0f else -lockProgress * 18.dp.toPx()
+                            },
+                    )
+                    Text(
+                        text = "$slideLabel ${formatElapsed(recordingElapsedSec)}",
+                        color = CloverText2,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    VoiceWaveform(Modifier.weight(1f))
+                    if (voiceLocked) {
+                        TextButton(onClick = onPauseVoice) { Text(if (voicePaused) "继续" else "暂停") }
+                        TextButton(onClick = onStopVoice) { Text("结束") }
+                    }
+                }
             }
             Spacer(Modifier.height(8.dp))
         } else if (!expandError.isNullOrBlank()) {
@@ -3581,12 +3724,15 @@ private fun ComposerBar(
                     onClick = { showContextSheet = true },
                 )
             }
-            IconButton(
-                onClick = onVoiceCapture,
-                modifier = Modifier.size(42.dp),
-            ) {
-                Icon(Icons.Outlined.Mic, contentDescription = "录音", tint = CloverText2)
-            }
+            HoldTalkButton(
+                recording = isRecordingVoice,
+                locked = voiceLocked,
+                cancelArmed = holdPhase == HoldTalkPhase.CancelArmed,
+                micGranted = micGranted,
+                onGesture = onHoldTalk,
+                onRelease = onHoldRelease,
+                onNeedPermission = onVoiceCapture,
+            )
             // Same source of truth as the label above; recomputing the condition
             // here is how the text and the spinner drift apart.
             if (activityLabel == ComposerActivityLabel.Executing) {
@@ -3669,6 +3815,66 @@ private fun LuckyComposerControl(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HoldTalkButton(
+    recording: Boolean,
+    locked: Boolean,
+    cancelArmed: Boolean,
+    micGranted: Boolean,
+    onGesture: (HoldTalkPhase, Float, Boolean) -> Unit,
+    onRelease: (HoldTalkPhase, Boolean) -> Unit,
+    onNeedPermission: () -> Unit,
+) {
+    val viewConfiguration = LocalViewConfiguration.current
+    Box(
+        Modifier
+            .size(42.dp)
+            .pointerInput(locked, micGranted) {
+                val slop = viewConfiguration.touchSlop
+                val cancelPx = 72.dp.toPx()
+                val lockPx = 96.dp.toPx()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (!micGranted) {
+                        onNeedPermission()
+                        return@awaitEachGesture
+                    }
+                    var dx = 0f
+                    var dy = 0f
+                    var pastSlop = false
+                    var phase = HoldTalkPhase.Idle
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        val delta = change.positionChange()
+                        dx += delta.x
+                        dy += delta.y
+                        if (kotlin.math.hypot(dx.toDouble(), dy.toDouble()) >= slop) pastSlop = true
+                        phase = holdTalkPhase(
+                            HoldTalkGesture(dx, dy, slop, cancelPx, lockPx),
+                            locked = locked,
+                        )
+                        onGesture(phase, holdTalkLockProgress(dy, lockPx), pastSlop)
+                        change.consume()
+                    }
+                    onRelease(phase, pastSlop)
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Outlined.Mic,
+            contentDescription = "按住说话",
+            tint = when {
+                cancelArmed -> CloverError
+                recording -> CloverAccent
+                else -> CloverText2
+            },
+        )
     }
 }
 
