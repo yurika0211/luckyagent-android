@@ -181,7 +181,15 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.runtime.key
+import androidx.compose.animation.core.animateFloatAsState
+import com.luckyagent.android.ui.util.bubbleDrawHeight
+import com.luckyagent.android.ui.util.bubblePieces
+import com.luckyagent.android.ui.util.bubbleTransitionDone
+import com.luckyagent.android.ui.util.pieceHash
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
@@ -1824,6 +1832,8 @@ private fun ChatConversation(
                                 onOpenUiChartApply = vm::sendOpenUiChartApply,
                                 openUiSelection = state.openUiSelection,
                                 highlighted = item.key == activeHitId,
+                                growing = item.bubble.streaming,
+                                dragging = listState.isScrollInProgress,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
@@ -2581,6 +2591,8 @@ private fun BubbleRow(
     onOpenUiChartApply: (treeId: String, widgetId: String, values: Map<String, String>) -> Boolean = { _, _, _ -> false },
     openUiSelection: Map<String, String> = emptyMap(),
     highlighted: Boolean = false,
+    growing: Boolean = false,
+    dragging: Boolean = false,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2634,29 +2646,84 @@ private fun BubbleRow(
                             Spacer(Modifier.height(8.dp))
                         }
                         if (bubble.content.isNotBlank()) {
-                            val textModifier = Modifier
-                                .clip(RoundedCornerShape(18.dp))
-                                .then(
-                                    if (isUser) {
-                                        Modifier
-                                            .background(CloverUserBubble.copy(alpha = bubbleOpacity.coerceIn(0, 100) / 100f))
-                                            .padding(horizontal = 12.dp, vertical = 10.dp)
-                                    } else {
-                                        Modifier.padding(vertical = 2.dp)
-                                    },
-                                )
-                            Box(
-                                textModifier.pointerInput(bubble.id) {
-                                    detectTapGestures(onLongPress = { menuExpanded = true })
+                            val pieces = bubblePieces(bubble.content)
+                            val density = LocalDensity.current
+                            var fromHeight by remember(bubble.id) { mutableStateOf(0) }
+                            var toHeight by remember(bubble.id) { mutableStateOf(0) }
+                            var growTarget by remember(bubble.id) { mutableStateOf(1f) }
+                            val animating = growing && !dragging && fromHeight > 0 && toHeight > fromHeight
+                            val progress by animateFloatAsState(
+                                targetValue = if (animating) growTarget else 1f,
+                                animationSpec = tween(if (dragging || !growing) 0 else 180),
+                                label = "bubble-grow",
+                                finishedListener = { finished ->
+                                    if (finished <= 0f && animating) growTarget = 1f
+                                    if (bubbleTransitionDone(finished)) fromHeight = 0
                                 },
+                            )
+                            val drawHeight = bubbleDrawHeight(
+                                previous = fromHeight,
+                                next = toHeight,
+                                progress = progress,
+                                dragging = dragging,
+                            )
+                            val clipShape = RoundedCornerShape(18.dp)
+                            Box(
+                                Modifier
+                                    .clip(clipShape)
+                                    .then(
+                                        if (animating && drawHeight > 0) {
+                                            Modifier.height(with(density) { drawHeight.toDp() })
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
+                                    .then(
+                                        if (isUser) {
+                                            Modifier.background(
+                                                CloverUserBubble.copy(alpha = bubbleOpacity.coerceIn(0, 100) / 100f),
+                                            )
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
+                                    .pointerInput(bubble.id) {
+                                        detectTapGestures(onLongPress = { menuExpanded = true })
+                                    },
                             ) {
-                                MarkdownText(
-                                    markdown = bubble.content,
-                                    imageHeaders = imageHeaders,
-                                    imageBaseUrl = imageBaseUrl,
-                                    streaming = bubble.streaming,
-                                    active = surfaceActive,
-                                )
+                                Column(
+                                    Modifier
+                                        .onGloballyPositioned { coordinates ->
+                                            val measured = coordinates.size.height
+                                            if (measured <= 0 || dragging || !growing) return@onGloballyPositioned
+                                            if (fromHeight <= 0 || bubbleTransitionDone(progress)) {
+                                                fromHeight = toHeight.takeIf { it > 0 } ?: measured
+                                            }
+                                            if (measured != toHeight) {
+                                                toHeight = measured
+                                                growTarget = 0f
+                                            }
+                                        }
+                                        .then(
+                                            if (isUser) {
+                                                Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                                            } else {
+                                                Modifier.padding(vertical = 2.dp)
+                                            },
+                                        ),
+                                ) {
+                                    pieces.forEach { piece ->
+                                        key(pieceHash(piece)) {
+                                            MarkdownText(
+                                                markdown = piece,
+                                                imageHeaders = imageHeaders,
+                                                imageBaseUrl = imageBaseUrl,
+                                                streaming = bubble.streaming && piece == pieces.last(),
+                                                active = surfaceActive,
+                                            )
+                                        }
+                                    }
+                                }
                             }
                             if (bubble.contentTruncated) {
                                 FullTextButton(bubble, expanding, onExpand)
