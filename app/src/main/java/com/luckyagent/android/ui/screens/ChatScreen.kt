@@ -650,6 +650,17 @@ private fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
     return live
 }
 
+/** Painted rows for [timeline], including the date and unread separators. */
+private fun paintedRows(timeline: List<ChatTimelineItem>, readCursorMessageId: String?): List<com.luckyagent.android.ui.util.TimelineRow> =
+    com.luckyagent.android.ui.util.paintedChatRows(
+        timeline.map { it.key },
+        timeline.map { item ->
+            val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
+            com.luckyagent.android.ui.util.messageDay(created)
+        },
+        readCursorMessageId,
+    )
+
 internal fun shouldFollowLatest(atBottom: Boolean, stuckToLastAutoScroll: Boolean): Boolean =
     atBottom || stuckToLastAutoScroll
 
@@ -1152,7 +1163,11 @@ fun ChatScreen(
                 HorizontalPager(
                     state = compactPagerState,
                     modifier = Modifier.fillMaxSize(),
-                    beyondViewportPageCount = 1,
+                    // Chat sits between navigation and the session list, so a
+                    // prefetch of 1 keeps all three pages composed. The chat page
+                    // owns the timeline and the streaming bubble, and both kept
+                    // running while the reader was on another page.
+                    beyondViewportPageCount = 0,
                     pageSpacing = 0.dp,
                 ) { page ->
                     if (page == CompactNavPage && navigationContent != null) {
@@ -1666,11 +1681,40 @@ private fun ChatConversation(
                     // a fling. One write after the finger stops is enough to restore.
                     if (!scrolling && restoredSession == state.settings.sessionId) {
                         val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()
-                        val messageId = (visible?.key as? String).orEmpty()
+                        val visibleKey = visible?.key as? String
+                        // The painted list inserts date and unread rows that the
+                        // message list does not have, so the stored index has to
+                        // count those rows too.
+                        val painted = com.luckyagent.android.ui.util.paintedChatRows(
+                            timeline.map { it.key },
+                            timeline.map { item ->
+                                val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
+                                com.luckyagent.android.ui.util.messageDay(created)
+                            },
+                            state.readCursorMessageId,
+                        )
+                        // The first painted row is often a separator, and those keys
+                        // are not messages. Store the message under it so the anchor
+                        // still resolves after the row list changes.
+                        val messageId = com.luckyagent.android.ui.util.firstMessageIdAt(
+                            painted,
+                            listState.firstVisibleItemIndex,
+                        )
+                        val anchorIndex = if (messageId.isEmpty()) {
+                            listState.firstVisibleItemIndex
+                        } else {
+                            painted.indexOfFirst { it.key == messageId }
+                                .takeIf { it >= 0 } ?: listState.firstVisibleItemIndex
+                        }
+                        val anchorOffset = if (visibleKey == messageId) {
+                            listState.firstVisibleItemScrollOffset
+                        } else {
+                            0
+                        }
                         vm.saveScrollAnchor(
                             state.settings.sessionId,
-                            listState.firstVisibleItemIndex,
-                            listState.firstVisibleItemScrollOffset,
+                            anchorIndex,
+                            anchorOffset,
                             messageId = messageId,
                         )
                         if (atBottom) {
@@ -1701,7 +1745,7 @@ private fun ChatConversation(
             if (state.historyPrefixPushes == appliedPrefixPush) return@LaunchedEffect
             appliedPrefixPush = state.historyPrefixPushes
             val (anchorKey, anchorOffset) = visibleAnchor.value ?: return@LaunchedEffect
-            val index = timeline.indexOfFirst { it.key == anchorKey }
+            val index = paintedRows(timeline, state.readCursorMessageId).indexOfFirst { it.key == anchorKey }
             if (index < 0) return@LaunchedEffect
             // Same row, new index. Jump without animation so the rows above the
             // viewport appear above it instead of pushing it down.
@@ -1717,10 +1761,15 @@ private fun ChatConversation(
             restoredSession = state.settings.sessionId
             val messageIds = timeline.map { it.key }
             val unreadAt = com.luckyagent.android.ui.util.firstUnreadIndex(messageIds, state.readCursorMessageId)
+            // The painted rows are what LazyColumn shows, so the restored index
+            // has to count the date and unread separators too.
+            val rows = paintedRows(timeline, state.readCursorMessageId)
+            val rowIds = rows.map { it.key }
             val (index, offset) = if (unreadAt >= 0) {
-                unreadAt to 0
+                val unreadRow = rows.indexOfFirst { it is com.luckyagent.android.ui.util.UnreadSeparatorRow }
+                (if (unreadRow >= 0) unreadRow else unreadAt) to 0
             } else {
-                com.luckyagent.android.ui.util.restoreScrollIndex(messageIds, record, timeline.lastIndex)
+                com.luckyagent.android.ui.util.restoreScrollIndex(rowIds, record, rowIds.lastIndex)
             }
             listState.scrollToItem(index, offset)
             lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
@@ -1733,7 +1782,7 @@ private fun ChatConversation(
                 (lastVisible.index >= layout.totalItemsCount - 2 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
             val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             if (shouldFollowLatest(atBottom, position == lastAutoScrollPosition)) {
-                listState.scrollToItem(timeline.lastIndex.coerceAtLeast(0))
+                listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
                 lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             }
         }
@@ -1785,12 +1834,9 @@ private fun ChatConversation(
                     vm.loadMoreHistory()
                 }
             }
-            LaunchedEffect(sessionSearchIndex, activeHitId) {
-                val id = activeHitId ?: return@LaunchedEffect
-                val index = timeline.indexOfFirst { it.key == id }
-                if (index >= 0) listState.animateScrollToItem(index)
             }
-        }
+        // Search jumps by the painted row, which is only known once displayRows
+        // exists. The index into the message list is short by every separator.
         var userDragging by remember { mutableStateOf(false) }
         var showFloatingDate by remember { mutableStateOf(false) }
         LaunchedEffect(listState.isScrollInProgress) {
@@ -1801,26 +1847,24 @@ private fun ChatConversation(
                 userDragging = false
             }
         }
-        val baseRows = com.luckyagent.android.ui.util.withUnreadSeparator(
-            timeline.map { it.key },
-            state.readCursorMessageId,
-        )
         val days = timeline.map { item ->
             val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
             com.luckyagent.android.ui.util.messageDay(created)
         }
-        val dateMarks = com.luckyagent.android.ui.util.dateRows(timeline.map { it.key }, days)
-        val displayRows = buildList {
-            baseRows.forEach { row ->
-                dateMarks.firstOrNull { it.beforeMessageId == row.key }?.let { mark ->
-                    add(com.luckyagent.android.ui.util.DateSeparatorRow(mark.key, mark.label))
-                }
-                add(row)
-            }
-        }
+        val displayRows = com.luckyagent.android.ui.util.paintedChatRows(
+            timeline.map { it.key },
+            days,
+            state.readCursorMessageId,
+        )
         val dayByMessageId = timeline.mapIndexedNotNull { index, item ->
             (item as? ChatTimelineItem.Message)?.let { item.key to days[index] }
         }.toMap()
+        LaunchedEffect(sessionSearchIndex, activeHitId) {
+            if (!sessionSearchOpen) return@LaunchedEffect
+            val id = activeHitId ?: return@LaunchedEffect
+            val index = displayRows.indexOfFirst { it.key == id }
+            if (index >= 0) listState.animateScrollToItem(index)
+        }
         val floatingLabel = com.luckyagent.android.ui.util.floatingDateLabel(
             com.luckyagent.android.ui.util.visibleMessageDay(
                 displayRows,

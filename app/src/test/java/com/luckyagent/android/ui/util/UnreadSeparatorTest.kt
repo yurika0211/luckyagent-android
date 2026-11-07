@@ -20,4 +20,24 @@ class UnreadSeparatorTest {
         assertEquals(1, jumpTargetIndex(withUnread, seenUnread = false))
         assertEquals(withUnread.lastIndex, jumpTargetIndex(withUnread, seenUnread = true))
     }
+
+    @Test
+    fun anchorSkipsASeparatorToTheMessageUnderIt() {
+        val rows = listOf(
+            DateSeparatorRow("day-1", "昨天"),
+            MessageRow("a"),
+            UnreadSeparatorRow("unread-b", 1, "b"),
+            MessageRow("b"),
+        )
+        val painted = paintedChatRows(
+            listOf("a", "b"),
+            listOf(java.time.LocalDate.of(2026, 11, 6), java.time.LocalDate.of(2026, 11, 7)),
+            "a",
+        )
+        assertTrue(painted.first() is DateSeparatorRow)
+        assertEquals("b", firstMessageIdAt(painted, painted.indexOfFirst { it is UnreadSeparatorRow }))
+        assertEquals("a", firstMessageIdAt(rows, 0))
+        assertEquals("b", firstMessageIdAt(rows, 2))
+        assertEquals("", firstMessageIdAt(emptyList(), 0))
+    }
 }
