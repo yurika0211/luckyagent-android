@@ -449,6 +449,12 @@ internal fun LinkedText(
         val handler = LocalUriHandler.current
         var browserUrl by remember { mutableStateOf<String?>(null) }
         browserUrl?.let { InAppBrowser(it) { browserUrl = null } }
+        val pages = text.getStringAnnotations("url", 0, text.length).map { it.item }.distinct()
+        pages.forEach { page ->
+            if (inAppBrowserUrl(page) != null && text.text.trim() == page) {
+                LinkPreviewCard(page) { browserUrl = page }
+            }
+        }
         ClickableText(
             text,
             style = style.copy(color = color),
