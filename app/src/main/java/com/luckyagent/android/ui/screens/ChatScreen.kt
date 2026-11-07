@@ -53,6 +53,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -5422,15 +5424,7 @@ private fun SessionDrawer(
 
         when {
             showInitialLoading -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    StartupWait(
-                        phase = StartupPhase.Sessions,
-                        next = StartupPhase.SessionsNext,
-                        onTimedOut = {
-                            TextButton(onClick = onRefresh) { Text("重试") }
-                        },
-                    )
-                }
+                SessionDrawerSkeleton()
             }
 
             showEmpty -> {
@@ -5599,6 +5593,69 @@ private fun SessionGroupHeader(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SessionDrawerSkeleton() {
+    val transition = rememberInfiniteTransition(label = "session-skeleton")
+    val shift by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = 1100), RepeatMode.Restart),
+        label = "session-skeleton-shift",
+    )
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val rows = (maxHeight / 56.dp).toInt().coerceIn(4, 12)
+        Column(Modifier.fillMaxSize()) {
+            repeat(rows) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(CloverLine),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth(0.62f)
+                                .height(12.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(CloverLine),
+                        )
+                        Box(
+                            Modifier
+                                .fillMaxWidth(0.38f)
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(CloverLine),
+                        )
+                    }
+                }
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxHeight()
+                .width(200.dp)
+                .graphicsLayer { translationX = (maxWidth.toPx() + 200.dp.toPx()) * shift - 200.dp.toPx() }
+                .background(
+                    Brush.horizontalGradient(
+                        0f to Color.Transparent,
+                        0.4f to Color.White.copy(alpha = 0.0f),
+                        0.6f to Color.White.copy(alpha = 0.45f),
+                        1f to Color.Transparent,
+                    ),
+                ),
+        )
     }
 }
 
