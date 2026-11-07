@@ -447,6 +447,8 @@ internal fun LinkedText(
         Text(text, style = style, color = color, modifier = modifier, softWrap = softWrap, overflow = overflow)
     } else {
         val handler = LocalUriHandler.current
+        var browserUrl by remember { mutableStateOf<String?>(null) }
+        browserUrl?.let { InAppBrowser(it) { browserUrl = null } }
         ClickableText(
             text,
             style = style.copy(color = color),
@@ -454,7 +456,10 @@ internal fun LinkedText(
             softWrap = softWrap,
             overflow = overflow,
             onClick = { offset ->
-                text.getStringAnnotations("url", offset, offset).firstOrNull()?.let { runCatching { handler.openUri(it.item) } }
+                text.getStringAnnotations("url", offset, offset).firstOrNull()?.let { link ->
+                    val page = inAppBrowserUrl(link.item)
+                    if (page != null) browserUrl = page else runCatching { handler.openUri(link.item) }
+                }
             },
         )
     }
