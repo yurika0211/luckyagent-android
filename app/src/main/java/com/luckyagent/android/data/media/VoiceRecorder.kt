@@ -51,6 +51,20 @@ class VoiceRecorder {
         }
     }
 
+    fun pause() {
+        val active = recorder ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            runCatching { active.pause() }
+        }
+    }
+
+    fun resume() {
+        val active = recorder ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            runCatching { active.resume() }
+        }
+    }
+
     fun cancel() {
         val file = output
         stopQuietly(deleteOutput = false)

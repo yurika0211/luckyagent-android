@@ -4624,6 +4624,30 @@ class AppViewModel(
         _ui.update { it.copy(fileOpenError = null) }
     }
 
+    /** Sends a finished voice note as a chat message. It does not stay in the composer. */
+    fun sendVoiceMessage(resolver: ContentResolver, uri: Uri, fileName: String, mimeType: String) {
+        if (_ui.value.settings.connectionMode == "standalone") return
+        viewModelScope.launch {
+            val uploaded = mediaUploadSemaphore.withPermit {
+                container.api.uploadAttachment(resolver, uri, fileName)
+            }
+            uploaded.onSuccess { descriptor ->
+                val media = ChatMedia(descriptor, uri.toString())
+                enqueueOutboundMessage(
+                    sessionId = currentSessionId(),
+                    displayText = "",
+                    message = "请查看附件",
+                    descriptors = listOf(descriptor),
+                    media = listOf(media),
+                    showUserBubble = true,
+                    clearComposer = false,
+                )
+            }.onFailure { error ->
+                _ui.update { it.copy(activityLine = error.message ?: "录音发送失败") }
+            }
+        }
+    }
+
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = container.settingsRepository.scrollAnchor(sessionId)
 
     fun saveScrollAnchor(sessionId: String, index: Int, offset: Int) {
