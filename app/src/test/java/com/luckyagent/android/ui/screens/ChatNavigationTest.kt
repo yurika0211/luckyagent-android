@@ -80,6 +80,15 @@ class ChatNavigationTest {
         assertFalse(com.luckyagent.android.data.settings.ClientSettings().showSessionCard)
     }
 
+    @Test fun compactPhonePagerLandsOnChatWithSessionsOnTheRight() {
+        assertEquals(0, CompactNavPage)
+        assertEquals(1, CompactChatPage)
+        assertEquals(3, compactPagerPageCount(hasNavigation = true))
+        assertEquals(2, compactSessionsPage(hasNavigation = true))
+        assertEquals(2, compactPagerPageCount(hasNavigation = false))
+        assertEquals(0, compactSessionsPage(hasNavigation = false))
+    }
+
     @Test fun navigationKeepsSessionProgressOffTheModuleList() {
         assertEquals(
             listOf(

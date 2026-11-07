@@ -609,6 +609,14 @@ internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<I
     return saved.first.coerceIn(0, lastIndex) to saved.second
 }
 
+/** Compact phone pager: navigation, chat (landing), sessions. */
+internal const val CompactNavPage = 0
+internal const val CompactChatPage = 1
+
+internal fun compactPagerPageCount(hasNavigation: Boolean): Int = if (hasNavigation) 3 else 2
+
+internal fun compactSessionsPage(hasNavigation: Boolean): Int = if (hasNavigation) 2 else 0
+
 /** Follow the newest row when the viewport was already on it, even if only its content changed. */
 /**
  * Whether a row that was live should stay live after the list settles.
@@ -947,10 +955,15 @@ fun ChatScreen(
     }
 
     var sessionPaneExpanded by rememberSaveable { mutableStateOf(true) }
-    // Phone home is the session list. Chat is a layer on top. Computer pages
-    // open as their own destination, not as a pager neighbor.
-    var chatOpen by rememberSaveable { mutableStateOf(false) }
-    var computerOpen by rememberSaveable { mutableStateOf(false) }
+    // Phones have navigation on the left, chat in the center, and sessions on
+    // the right. Layouts with a navigation rail retain the two-page session/chat surface.
+    val hasNavigation = navigationContent != null
+    val sessionsPage = compactSessionsPage(hasNavigation)
+    val compactPagerState = rememberPagerState(
+        initialPage = CompactChatPage,
+        pageCount = { compactPagerPageCount(hasNavigation) },
+    )
+    val compactPagerScope = rememberCoroutineScope()
     val sessionListState = rememberLazyListState()
     val sessionPaneWidth = 304.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
@@ -1003,18 +1016,21 @@ fun ChatScreen(
                 (maxWidth - sessionPaneWidth - (if (railOccupied) AppNavRailWidth else 0.dp)) >= MinMainContentWidth
 
         val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
-            val drawerOpen = usePermanentSessionPane && sessionPaneExpanded || !usePermanentSessionPane
+            val drawerOpen = usePermanentSessionPane && sessionPaneExpanded ||
+                !usePermanentSessionPane && compactPagerState.currentPage == sessionsPage
             SessionDrawer(
                 state = state,
                 drawerOpen = drawerOpen,
                 listState = sessionListState,
                 onClose = {
                     if (usePermanentSessionPane) sessionPaneExpanded = false
-                    else chatOpen = false
+                    else compactPagerScope.launch { compactPagerState.animateScrollToPage(CompactChatPage) }
                 },
                 onSelect = { id ->
                     vm.selectSession(id)
-                    if (!usePermanentSessionPane) chatOpen = true
+                    if (!usePermanentSessionPane) {
+                        compactPagerScope.launch { compactPagerState.animateScrollToPage(CompactChatPage) }
+                    }
                 },
                 onCreate = { requestCreateSession() },
                 onCreateInGroup = { name -> requestCreateSession(projectForNewSession(name)) },
@@ -1119,98 +1135,115 @@ fun ChatScreen(
                 )
             }
         } else {
+            val focusManager = LocalFocusManager.current
+            val keyboard = LocalSoftwareKeyboardController.current
+            LaunchedEffect(compactPagerState.settledPage) {
+                focusManager.clearFocus()
+                keyboard?.hide()
+            }
+            BackHandler(enabled = compactPagerState.currentPage != CompactChatPage) {
+                compactPagerScope.launch { compactPagerState.animateScrollToPage(CompactChatPage) }
+            }
+            val inheritedOpenNavigation = LocalOpenNavigationDrawer.current
             val openNavigation: (() -> Unit)? = if (navigationContent != null) {
-                { computerOpen = true }
-            } else LocalOpenNavigationDrawer.current
-            BackHandler(enabled = computerOpen) { computerOpen = false }
-            BackHandler(enabled = chatOpen && !computerOpen) { chatOpen = false }
+                { compactPagerScope.launch { compactPagerState.animateScrollToPage(CompactNavPage) }; Unit }
+            } else inheritedOpenNavigation
             CompositionLocalProvider(LocalOpenNavigationDrawer provides openNavigation) {
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .background(CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f))
-                        .windowInsetsPadding(WindowInsets.safeDrawing),
-                ) {
-                    sessionDrawer(false)
-                }
-                if (chatOpen) {
-                    ChatConversation(
-                        state = state,
-                        vm = vm,
-                        showSessionMenu = true,
-                        onOpenSessions = { chatOpen = false },
-                        onNewSession = { requestCreateSession() },
-                        onOpenSettings = onOpenSettings,
-                        showAttachmentOptions = showAttachmentOptions,
-                        onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
-                        onCameraCapture = {
-                            showAttachmentOptions = false
-                            requestCameraCapture()
-                        },
-                        onVoiceCapture = {
-                            showAttachmentOptions = false
-                            requestVoiceCapture()
-                        },
-                        onVisualPick = {
-                            showAttachmentOptions = false
-                            visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                        },
-                        onFilePick = {
-                            showAttachmentOptions = false
-                            filePicker.launch(arrayOf("*/*"))
-                        },
-                        onExpandDraft = {
-                            showAttachmentOptions = false
-                            vm.expandComposer()
-                        },
-                        isRecordingVoice = isRecordingVoice,
-                        voiceLocked = voiceLocked,
-                        voicePaused = voicePaused,
-                        holdPhase = holdPhase,
-                        lockProgress = lockProgress,
-                        recordingElapsedSec = recordingElapsedSec,
-                        captureHint = captureHint,
-                        onHoldTalk = { phase, progress, pastSlop ->
-                            holdPhase = phase
-                            lockProgress = progress
-                            if (phase == HoldTalkPhase.Locking && progress >= 1f && !voiceLocked) {
-                                voiceLocked = true
-                                noteLockHint()
-                            }
-                            if (pastSlop && !isRecordingVoice) requestVoiceCapture()
-                        },
-                        micGranted = hasPermission(Manifest.permission.RECORD_AUDIO),
-                        onHoldRelease = { phase, pastSlop ->
-                            if (voiceLocked) return@ChatConversation
-                            if (holdTalkTapWasAccidental(phase, pastSlop)) {
-                                holdPhase = HoldTalkPhase.Idle
-                                return@ChatConversation
-                            }
-                            stopVoiceCapture(cancel = !holdTalkReleaseSends(phase))
-                        },
-                        onPauseVoice = {
-                            if (voicePaused) {
-                                voiceRecorder.resume()
-                                voicePaused = false
-                            } else {
-                                voiceRecorder.pause()
-                                voicePaused = true
-                                notePauseHint()
-                            }
-                        },
-                        onStopVoice = { stopVoiceCapture(cancel = false) },
-                        onCancelVoice = { stopVoiceCapture(cancel = true) },
-                        modifier = Modifier.fillMaxSize().background(CloverBg),
-                    )
-                }
-                if (computerOpen && navigationContent != null) {
-                    Box(Modifier.fillMaxSize().background(CloverBg)) {
+                HorizontalPager(
+                    state = compactPagerState,
+                    modifier = Modifier.fillMaxSize(),
+                    beyondViewportPageCount = 1,
+                    pageSpacing = 0.dp,
+                ) { page ->
+                    if (page == CompactNavPage && navigationContent != null) {
                         navigationContent(
                             { destination ->
-                                computerOpen = false
-                                vm.navigate(destination)
+                                compactPagerScope.launch {
+                                    // Reset before leaving chat so returning never reopens navigation.
+                                    compactPagerState.scrollToPage(CompactChatPage)
+                                    vm.navigate(destination)
+                                }
                             },
-                            { computerOpen = false },
+                            { compactPagerScope.launch { compactPagerState.animateScrollToPage(CompactChatPage) } },
+                        )
+                    } else if (page == sessionsPage) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .background(CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f))
+                                .windowInsetsPadding(WindowInsets.safeDrawing),
+                        ) {
+                            sessionDrawer(true)
+                        }
+                    } else {
+                        ChatConversation(
+                            state = state,
+                            vm = vm,
+                            showSessionMenu = true,
+                            onOpenSessions = {
+                                compactPagerScope.launch { compactPagerState.animateScrollToPage(sessionsPage) }
+                            },
+                            onNewSession = { requestCreateSession() },
+                            onOpenSettings = onOpenSettings,
+                            showAttachmentOptions = showAttachmentOptions,
+                            onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
+                            onCameraCapture = {
+                                showAttachmentOptions = false
+                                requestCameraCapture()
+                            },
+                            onVoiceCapture = {
+                                showAttachmentOptions = false
+                                requestVoiceCapture()
+                            },
+                            onVisualPick = {
+                                showAttachmentOptions = false
+                                visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                            },
+                            onFilePick = {
+                                showAttachmentOptions = false
+                                filePicker.launch(arrayOf("*/*"))
+                            },
+                            onExpandDraft = {
+                                showAttachmentOptions = false
+                                vm.expandComposer()
+                            },
+                            isRecordingVoice = isRecordingVoice,
+                            voiceLocked = voiceLocked,
+                            voicePaused = voicePaused,
+                            holdPhase = holdPhase,
+                            lockProgress = lockProgress,
+                            recordingElapsedSec = recordingElapsedSec,
+                            captureHint = captureHint,
+                            onHoldTalk = { phase, progress, pastSlop ->
+                                holdPhase = phase
+                                lockProgress = progress
+                                if (phase == HoldTalkPhase.Locking && progress >= 1f && !voiceLocked) {
+                                    voiceLocked = true
+                                    noteLockHint()
+                                }
+                                if (pastSlop && !isRecordingVoice) requestVoiceCapture()
+                            },
+                            micGranted = hasPermission(Manifest.permission.RECORD_AUDIO),
+                            onHoldRelease = { phase, pastSlop ->
+                                if (voiceLocked) return@ChatConversation
+                                if (holdTalkTapWasAccidental(phase, pastSlop)) {
+                                    holdPhase = HoldTalkPhase.Idle
+                                    return@ChatConversation
+                                }
+                                stopVoiceCapture(cancel = !holdTalkReleaseSends(phase))
+                            },
+                            onPauseVoice = {
+                                if (voicePaused) {
+                                    voiceRecorder.resume()
+                                    voicePaused = false
+                                } else {
+                                    voiceRecorder.pause()
+                                    voicePaused = true
+                                    notePauseHint()
+                                }
+                            },
+                            onStopVoice = { stopVoiceCapture(cancel = false) },
+                            onCancelVoice = { stopVoiceCapture(cancel = true) },
                         )
                     }
                 }
@@ -1239,7 +1272,9 @@ fun ChatScreen(
                             if (title.isEmpty()) return@TextButton
                             vm.createSession(title, createSessionProject)
                             createSessionOpen = false
-                            if (!usePermanentSessionPane) chatOpen = true
+                            if (!usePermanentSessionPane) {
+                                compactPagerScope.launch { compactPagerState.animateScrollToPage(CompactChatPage) }
+                            }
                         },
                     ) { Text("创建") }
                 },
