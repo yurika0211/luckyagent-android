@@ -16,5 +16,8 @@ class UnreadSeparatorTest {
         assertEquals("b", separator.beforeMessageId)
         assertEquals(2, separator.count)
         assertTrue(withUnreadSeparator(ids, "c").none { it is UnreadSeparatorRow })
+        val withUnread = withUnreadSeparator(ids, "a")
+        assertEquals(1, jumpTargetIndex(withUnread, seenUnread = false))
+        assertEquals(withUnread.lastIndex, jumpTargetIndex(withUnread, seenUnread = true))
     }
 }

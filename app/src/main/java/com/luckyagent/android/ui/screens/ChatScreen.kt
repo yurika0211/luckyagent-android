@@ -1669,6 +1669,7 @@ private fun ChatConversation(
             }
         }
 
+        var jumpSawUnread by remember(state.settings.sessionId) { mutableStateOf(false) }
         val displayRows = com.luckyagent.android.ui.util.withUnreadSeparator(
             timeline.map { it.key },
             state.readCursorMessageId,
@@ -1838,7 +1839,11 @@ private fun ChatConversation(
                             .padding(horizontal = 14.dp)
                             .clickable {
                                 scrollScope.launch {
-                                    listState.animateScrollToItem(displayRows.lastIndex.coerceAtLeast(0))
+                                    val target = com.luckyagent.android.ui.util.jumpTargetIndex(displayRows, jumpSawUnread)
+                                    if (displayRows.getOrNull(target) is com.luckyagent.android.ui.util.UnreadSeparatorRow) {
+                                        jumpSawUnread = true
+                                    }
+                                    listState.animateScrollToItem(target.coerceAtLeast(0))
                                 }
                             },
                         contentAlignment = Alignment.Center,
@@ -1849,9 +1854,10 @@ private fun ChatConversation(
                             modifier = Modifier.size(16.dp),
                             tint = CloverText3,
                         )
-                        if (false) {
+                        val unreadCount = displayRows.filterIsInstance<com.luckyagent.android.ui.util.UnreadSeparatorRow>().firstOrNull()?.count ?: 0
+                        if (unreadCount > 0) {
                             Text(
-                                "",
+                                unreadCount.toString(),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = CloverAccent,
                                 modifier = Modifier.padding(start = 18.dp),
