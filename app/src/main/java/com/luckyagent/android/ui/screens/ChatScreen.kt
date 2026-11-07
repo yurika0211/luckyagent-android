@@ -1647,7 +1647,12 @@ private fun ChatConversation(
             val record = vm.scrollAnchorRecord(state.settings.sessionId)
             restoredSession = state.settings.sessionId
             val messageIds = timeline.map { it.key }
-            val (index, offset) = com.luckyagent.android.ui.util.restoreScrollIndex(messageIds, record, timeline.lastIndex)
+            val unreadAt = com.luckyagent.android.ui.util.firstUnreadIndex(messageIds, state.readCursorMessageId)
+            val (index, offset) = if (unreadAt >= 0) {
+                unreadAt to 0
+            } else {
+                com.luckyagent.android.ui.util.restoreScrollIndex(messageIds, record, timeline.lastIndex)
+            }
             listState.scrollToItem(index, offset)
             lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }
@@ -1664,6 +1669,10 @@ private fun ChatConversation(
             }
         }
 
+        val displayRows = com.luckyagent.android.ui.util.withUnreadSeparator(
+            timeline.map { it.key },
+            state.readCursorMessageId,
+        )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             PullToRefreshBox(
                 state = refreshState,
@@ -1678,6 +1687,7 @@ private fun ChatConversation(
                     )
                 },
             ) {
+                val timelineByKey = timeline.associateBy { it.key }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -1685,15 +1695,23 @@ private fun ChatConversation(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(
-                        items = timeline,
+                        items = displayRows,
                         key = { it.key },
-                        contentType = { item ->
-                            when (item) {
-                                is ChatTimelineItem.Message -> "message"
-                                is ChatTimelineItem.Process -> "process"
-                            }
+                        contentType = { row ->
+                            if (row is com.luckyagent.android.ui.util.UnreadSeparatorRow) "unread" else "message"
                         },
-                    ) { item ->
+                    ) { row ->
+                        if (row is com.luckyagent.android.ui.util.UnreadSeparatorRow) {
+                            Text(
+                                "${row.count} 条未读",
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                color = CloverAccent,
+                                style = MaterialTheme.typography.labelMedium,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            )
+                            return@items
+                        }
+                        val item = timelineByKey[row.key] ?: return@items
                         when (item) {
                             is ChatTimelineItem.Message -> BubbleRow(
                                 bubble = item.bubble,
@@ -1818,7 +1836,11 @@ private fun ChatConversation(
                         modifier = Modifier
                             .heightIn(min = 44.dp)
                             .padding(horizontal = 14.dp)
-                            .clickable { scrollScope.launch { listState.animateScrollToItem(timeline.size) } },
+                            .clickable {
+                                scrollScope.launch {
+                                    listState.animateScrollToItem(displayRows.lastIndex.coerceAtLeast(0))
+                                }
+                            },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
@@ -1827,9 +1849,9 @@ private fun ChatConversation(
                             modifier = Modifier.size(16.dp),
                             tint = CloverText3,
                         )
-                        if (unreadCount > 0) {
+                        if (false) {
                             Text(
-                                unreadCount.toString(),
+                                "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = CloverAccent,
                                 modifier = Modifier.padding(start = 18.dp),
