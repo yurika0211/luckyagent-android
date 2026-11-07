@@ -1696,19 +1696,23 @@ private fun ChatConversation(
         }
 
         var jumpSawUnread by remember(state.settings.sessionId) { mutableStateOf(false) }
+        val searchHits = if (!sessionSearchOpen) emptyList() else com.luckyagent.android.ui.util.sessionSearchHits(
+            state.bubbles.map { bubble ->
+                com.luckyagent.android.ui.util.SearchableMessage(
+                    id = bubble.id,
+                    text = bubble.content,
+                    fileNames = bubble.attachments.mapNotNull { it.descriptor.fileName },
+                    links = com.luckyagent.android.ui.util.searchableLinks(bubble.content),
+                )
+            },
+            sessionSearchQuery,
+            sessionSearchTab,
+        )
+        val activeHitId = searchHits.getOrNull(
+            Math.floorMod(sessionSearchIndex, searchHits.size.coerceAtLeast(1)),
+        )?.takeIf { searchHits.isNotEmpty() }?.messageId
         if (sessionSearchOpen) {
-            val hits = com.luckyagent.android.ui.util.sessionSearchHits(
-                state.bubbles.map { bubble ->
-                    com.luckyagent.android.ui.util.SearchableMessage(
-                        id = bubble.id,
-                        text = bubble.content,
-                        fileNames = bubble.attachments.mapNotNull { it.descriptor.fileName },
-                        links = com.luckyagent.android.ui.util.searchableLinks(bubble.content),
-                    )
-                },
-                sessionSearchQuery,
-                sessionSearchTab,
-            )
+            val hits = searchHits
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
                 listOf(
                     com.luckyagent.android.ui.util.SessionSearchTab.Messages to "消息",
@@ -1727,10 +1731,20 @@ private fun ChatConversation(
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
             )
-            LaunchedEffect(sessionSearchIndex, hits) {
-                if (hits.isEmpty()) return@LaunchedEffect
-                val hit = hits[Math.floorMod(sessionSearchIndex, hits.size)]
-                val index = timeline.indexOfFirst { it.key == hit.messageId }
+            LaunchedEffect(sessionSearchQuery, sessionSearchTab, hits.size, state.historyHasMore, state.historyLoadingMore) {
+                if (com.luckyagent.android.ui.util.searchNeedsOlderHistory(
+                        hits.size,
+                        sessionSearchQuery,
+                        state.historyHasMore,
+                        state.historyLoadingMore,
+                    )
+                ) {
+                    vm.loadMoreHistory()
+                }
+            }
+            LaunchedEffect(sessionSearchIndex, activeHitId) {
+                val id = activeHitId ?: return@LaunchedEffect
+                val index = timeline.indexOfFirst { it.key == id }
                 if (index >= 0) listState.animateScrollToItem(index)
             }
         }
@@ -1809,6 +1823,7 @@ private fun ChatConversation(
                                 onOpenUiNotice = vm::showSnackbar,
                                 onOpenUiChartApply = vm::sendOpenUiChartApply,
                                 openUiSelection = state.openUiSelection,
+                                highlighted = item.key == activeHitId,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
@@ -2565,6 +2580,7 @@ private fun BubbleRow(
     onOpenUiNotice: (String) -> Unit = {},
     onOpenUiChartApply: (treeId: String, widgetId: String, values: Map<String, String>) -> Boolean = { _, _, _ -> false },
     openUiSelection: Map<String, String> = emptyMap(),
+    highlighted: Boolean = false,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2600,7 +2616,8 @@ private fun BubbleRow(
                 Column(
                     Modifier
                         .widthIn(max = 520.dp)
-                        .padding(vertical = 2.dp),
+                        .padding(vertical = 2.dp)
+                        .then(if (highlighted) Modifier.background(CloverAccent.copy(alpha = .16f), RoundedCornerShape(12.dp)) else Modifier),
                     horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
                 ) {
                     if (!isUser && !bubble.role.equals("assistant", ignoreCase = true)) {

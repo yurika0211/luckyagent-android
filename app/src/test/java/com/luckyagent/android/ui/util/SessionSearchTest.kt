@@ -1,6 +1,7 @@
 package com.luckyagent.android.ui.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionSearchTest {
@@ -14,5 +15,8 @@ class SessionSearchTest {
         assertEquals(listOf("m1"), sessionSearchHits(messages, "photo", SessionSearchTab.Media).map { it.messageId })
         assertEquals(emptyList<String>(), sessionSearchHits(messages, "missing", SessionSearchTab.Links).map { it.messageId })
         assertEquals(listOf("https://example.com/a"), searchableLinks("see https://example.com/a"))
+        assertTrue(searchNeedsOlderHistory(0, "missing", hasMore = true, loading = false))
+        assertTrue(!searchNeedsOlderHistory(1, "example", hasMore = true, loading = false))
+        assertTrue(!searchNeedsOlderHistory(0, "missing", hasMore = false, loading = false))
     }
 }

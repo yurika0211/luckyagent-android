@@ -19,6 +19,10 @@ private val linkPattern = Regex("""https?://[^\s)]+""")
 
 fun searchableLinks(text: String): List<String> = linkPattern.findAll(text).map { it.value }.toList()
 
+/** Ask for an older page when this tab has no hit and history still continues. */
+fun searchNeedsOlderHistory(hitCount: Int, query: String, hasMore: Boolean, loading: Boolean): Boolean =
+    query.isNotBlank() && hitCount == 0 && hasMore && !loading
+
 fun sessionSearchHits(messages: List<SearchableMessage>, query: String, tab: SessionSearchTab): List<SessionSearchHit> {
     val needle = query.trim()
     if (needle.isEmpty()) return emptyList()
