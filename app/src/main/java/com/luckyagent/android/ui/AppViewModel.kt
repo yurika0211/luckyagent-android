@@ -394,6 +394,14 @@ data class AppUiState(
     val attachmentDownload: AttachmentDownloadUi = AttachmentDownloadUi(),
     /** Dialog when the system has no app for a downloaded file. Includes the mime. */
     val fileOpenError: String? = null,
+    /** Session ids whose local draft is newer than the last stored message. */
+    val draftSessionIds: Set<String> = emptySet(),
+    /** One-line draft preview keyed by session, for the list row. */
+    val draftPreviews: Map<String, String> = emptyMap(),
+    /** Last read message id for the open session. Other sessions stay in settings. */
+    val readCursorMessageId: String? = null,
+    /** Sessions that already have a stored read cursor. */
+    val readSessionIds: Set<String> = emptySet(),
     val isResponding: Boolean = false,
     val progressSteps: List<ChatProgressStep> = emptyList(),
     val drawerOpenHint: Boolean = false,
@@ -3558,7 +3566,10 @@ class AppViewModel(
         if (isStandaloneConnection()) return
         val target = id.ifBlank { "android-main" }
         val leaving = currentSessionId()
-        if (leaving != target) parkCurrentTurn(leaving)
+        if (leaving != target) {
+            persistComposerDraft()
+            parkCurrentTurn(leaving)
+        }
         val connection = container.settingsRepository.snapshot()
         historyJob?.cancel()
         contextInspectJob?.cancel()
@@ -3600,7 +3611,6 @@ class AppViewModel(
                 progressSteps = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.progressSteps else emptyList(),
                 liveSummary = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.liveSummary else null,
                 processNotice = if (parked != null && activeRuns[target]?.isNotEmpty() == true) parked.processNotice else null,
-                pendingQuote = null,
                 contextInspect = null,
 
                 sessionRecap = it.sessions.firstOrNull { session -> session.id == target }
@@ -3614,6 +3624,7 @@ class AppViewModel(
                 activityLine = "正在读取这轮对话",
             )
         }
+        restoreComposerDraft(target)
         container.wsClient.replaySession(target)
         dispatchPendingSessions()
         loadHistory(target)
@@ -4650,8 +4661,89 @@ class AppViewModel(
 
     fun scrollAnchor(sessionId: String): Pair<Int, Int>? = container.settingsRepository.scrollAnchor(sessionId)
 
-    fun saveScrollAnchor(sessionId: String, index: Int, offset: Int) {
-        container.settingsRepository.saveScrollAnchor(sessionId, index, offset)
+    fun scrollAnchorRecord(sessionId: String): com.luckyagent.android.ui.util.ScrollAnchor? =
+        container.settingsRepository.scrollAnchorRecord(sessionId)
+
+    fun saveScrollAnchor(sessionId: String, index: Int, offset: Int, messageId: String = "") {
+        container.settingsRepository.saveScrollAnchor(
+            sessionId,
+            com.luckyagent.android.ui.util.ScrollAnchor(messageId = messageId, index = index, offset = offset),
+        )
+    }
+
+    fun readCursorMessageId(sessionId: String): String? =
+        container.settingsRepository.readCursor(sessionId)?.messageId
+
+    fun saveReadCursor(sessionId: String, messageId: String) {
+        container.settingsRepository.saveReadCursor(sessionId, messageId)
+        if (sessionId == currentSessionId()) {
+            _ui.update { it.copy(readCursorMessageId = messageId, readSessionIds = it.readSessionIds + sessionId) }
+        } else {
+            _ui.update { it.copy(readSessionIds = it.readSessionIds + sessionId) }
+        }
+    }
+
+    fun sessionDraft(sessionId: String): com.luckyagent.android.ui.util.SessionDraft? =
+        container.settingsRepository.sessionDraft(sessionId)
+
+    fun persistComposerDraft() {
+        val state = _ui.value
+        val sessionId = state.settings.sessionId
+        if (sessionId.isBlank()) return
+        val media = state.pendingMedia.map { item ->
+            com.luckyagent.android.ui.util.draftMediaFrom(item.uri, item.fileName, item.mimeType, item.descriptor)
+        }
+        val quote = state.pendingQuote
+        val draft = com.luckyagent.android.ui.util.SessionDraft(
+            sessionId = sessionId,
+            text = state.composer,
+            quoteMessageId = quote?.messageId.orEmpty(),
+            quoteRole = quote?.role.orEmpty(),
+            quoteContent = quote?.content.orEmpty(),
+            media = media,
+            savedAtMs = System.currentTimeMillis(),
+        )
+        container.settingsRepository.saveSessionDraft(draft)
+        _ui.update { current ->
+            val preview = com.luckyagent.android.ui.util.draftPreview(draft)
+            val ids = if (draft.isEmpty()) current.draftSessionIds - sessionId else current.draftSessionIds + sessionId
+            val previews = if (preview.isEmpty()) current.draftPreviews - sessionId else current.draftPreviews + (sessionId to preview)
+            current.copy(draftSessionIds = ids, draftPreviews = previews)
+        }
+    }
+
+    private fun restoreComposerDraft(sessionId: String) {
+        val draft = container.settingsRepository.sessionDraft(sessionId)
+        val quote = draft?.takeIf { it.quoteMessageId.isNotBlank() }?.let {
+            MessageQuote(it.quoteMessageId, it.quoteRole, it.quoteContent)
+        }
+        val media = draft?.media.orEmpty().map { item ->
+            PendingMedia(
+                id = "draft-${item.uri.hashCode()}",
+                uri = item.uri,
+                fileName = item.fileName,
+                mimeType = item.mimeType,
+                descriptor = item.fileUrl?.let {
+                    com.luckyagent.android.data.api.MediaAttachment(
+                        type = "document",
+                        fileId = item.fileId,
+                        fileUrl = item.fileUrl,
+                        filePath = item.filePath,
+                        fileName = item.fileName,
+                        mimeType = item.mimeType,
+                        fileSize = item.fileSize,
+                    )
+                },
+            )
+        }
+        _ui.update {
+            it.copy(
+                composer = draft?.text.orEmpty(),
+                pendingQuote = quote,
+                pendingMedia = media,
+                readCursorMessageId = container.settingsRepository.readCursor(sessionId)?.messageId,
+            )
+        }
     }
 
     /**

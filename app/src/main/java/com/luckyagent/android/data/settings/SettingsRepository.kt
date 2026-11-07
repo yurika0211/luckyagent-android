@@ -5,6 +5,10 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.luckyagent.android.BuildConfig
+import com.luckyagent.android.ui.util.DraftMedia
+import com.luckyagent.android.ui.util.ReadCursor
+import com.luckyagent.android.ui.util.ScrollAnchor
+import com.luckyagent.android.ui.util.SessionDraft
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -281,22 +285,71 @@ class SettingsRepository(context: Context) {
     }
 
     /** Last visible chat position, keyed by session so switching chats keeps context. */
-    fun scrollAnchor(sessionId: String): Pair<Int, Int>? = synchronized(prefs) {
+    fun scrollAnchor(sessionId: String): Pair<Int, Int>? = scrollAnchorRecord(sessionId)?.let { it.index to it.offset }
+
+    fun scrollAnchorRecord(sessionId: String): ScrollAnchor? = synchronized(prefs) {
         if (sessionId.isBlank()) return@synchronized null
         val raw = prefs.getString(KEY_SCROLL_ANCHORS, null) ?: return@synchronized null
-        val anchor = runCatching { json.decodeFromString<Map<String, List<Int>>>(raw)[sessionId] }.getOrNull()
-            ?: return@synchronized null
-        if (anchor.size < 2) null else anchor[0].coerceAtLeast(0) to anchor[1].coerceAtLeast(0)
+        decodeScrollMap(raw)[sessionId]
     }
 
     fun saveScrollAnchor(sessionId: String, index: Int, offset: Int) {
+        saveScrollAnchor(sessionId, ScrollAnchor(index = index, offset = offset))
+    }
+
+    fun saveScrollAnchor(sessionId: String, anchor: ScrollAnchor) {
         if (sessionId.isBlank()) return
         synchronized(prefs) {
-            val current = prefs.getString(KEY_SCROLL_ANCHORS, null)
-                ?.let { runCatching { json.decodeFromString<Map<String, List<Int>>>(it) }.getOrDefault(emptyMap()) }
-                .orEmpty().toMutableMap()
-            current[sessionId] = listOf(index.coerceAtLeast(0), offset.coerceAtLeast(0))
+            val current = decodeScrollMap(prefs.getString(KEY_SCROLL_ANCHORS, null)).toMutableMap()
+            current[sessionId] = anchor.copy(index = anchor.index.coerceAtLeast(0), offset = anchor.offset.coerceAtLeast(0))
             prefs.edit().putString(KEY_SCROLL_ANCHORS, json.encodeToString(current)).apply()
+        }
+    }
+
+    private fun decodeScrollMap(raw: String?): Map<String, ScrollAnchor> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        runCatching { json.decodeFromString<Map<String, ScrollAnchor>>(raw) }.getOrNull()?.let { typed ->
+            if (typed.isNotEmpty()) return typed
+        }
+        val legacy = runCatching { json.decodeFromString<Map<String, List<Int>>>(raw) }.getOrNull() ?: return emptyMap()
+        return legacy.mapValues { (_, value) ->
+            ScrollAnchor(index = value.getOrElse(0) { 0 }, offset = value.getOrElse(1) { 0 })
+        }
+    }
+
+    fun sessionDraft(sessionId: String): SessionDraft? = synchronized(prefs) {
+        if (sessionId.isBlank()) return@synchronized null
+        val raw = prefs.getString(KEY_SESSION_DRAFTS, null) ?: return@synchronized null
+        runCatching { json.decodeFromString<Map<String, SessionDraft>>(raw)[sessionId] }.getOrNull()
+    }
+
+    fun saveSessionDraft(draft: SessionDraft) {
+        if (draft.sessionId.isBlank()) return
+        synchronized(prefs) {
+            val current = prefs.getString(KEY_SESSION_DRAFTS, null)
+                ?.let { runCatching { json.decodeFromString<Map<String, SessionDraft>>(it) }.getOrDefault(emptyMap()) }
+                .orEmpty().toMutableMap()
+            if (draft.isEmpty()) current.remove(draft.sessionId) else current[draft.sessionId] = draft
+            prefs.edit().putString(KEY_SESSION_DRAFTS, json.encodeToString(current)).apply()
+        }
+    }
+
+    fun readCursor(sessionId: String): ReadCursor? = synchronized(prefs) {
+        if (sessionId.isBlank()) return@synchronized null
+        val raw = prefs.getString(KEY_READ_CURSORS, null) ?: return@synchronized null
+        runCatching { json.decodeFromString<Map<String, String>>(raw)[sessionId] }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { ReadCursor(sessionId, it) }
+    }
+
+    fun saveReadCursor(sessionId: String, messageId: String) {
+        if (sessionId.isBlank() || messageId.isBlank()) return
+        synchronized(prefs) {
+            val current = prefs.getString(KEY_READ_CURSORS, null)
+                ?.let { runCatching { json.decodeFromString<Map<String, String>>(it) }.getOrDefault(emptyMap()) }
+                .orEmpty().toMutableMap()
+            current[sessionId] = messageId
+            prefs.edit().putString(KEY_READ_CURSORS, json.encodeToString(current)).apply()
         }
     }
 
@@ -327,6 +380,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_ACTIVE_ENDPOINT = "active_runtime_endpoint"
         private const val KEY_EVENT_CURSOR_PREFIX = "event_cursor_v2_"
         private const val KEY_SCROLL_ANCHORS = "scroll_anchors"
+        private const val KEY_SESSION_DRAFTS = "session_drafts"
+        private const val KEY_READ_CURSORS = "read_cursors"
         private const val KEY_NOTIFY_ON_CHAT_COMPLETED = "notify_on_chat_completed"
         private const val KEY_NOTIFY_ON_CRON = "notify_on_cron"
         private const val KEY_NOTIFY_ON_SUBAGENT = "notify_on_subagent"

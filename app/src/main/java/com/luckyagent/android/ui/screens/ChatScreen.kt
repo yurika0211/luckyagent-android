@@ -1596,11 +1596,18 @@ private fun ChatConversation(
                     // Writing the anchor on every pixel used to wake the VM during
                     // a fling. One write after the finger stops is enough to restore.
                     if (!scrolling && restoredSession == state.settings.sessionId) {
+                        val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+                        val messageId = (visible?.key as? String).orEmpty()
                         vm.saveScrollAnchor(
                             state.settings.sessionId,
                             listState.firstVisibleItemIndex,
                             listState.firstVisibleItemScrollOffset,
+                            messageId = messageId,
                         )
+                        if (atBottom) {
+                            val tail = timeline.lastOrNull()?.key
+                            if (!tail.isNullOrBlank()) vm.saveReadCursor(state.settings.sessionId, tail)
+                        }
                     }
                 }
         }
@@ -1637,9 +1644,10 @@ private fun ChatConversation(
         LaunchedEffect(state.settings.sessionId, timeline.size, timeline.lastOrNull()?.key) {
             if (timeline.isEmpty() || restoredSession == state.settings.sessionId) return@LaunchedEffect
             snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
-            val anchor = vm.scrollAnchor(state.settings.sessionId)
+            val record = vm.scrollAnchorRecord(state.settings.sessionId)
             restoredSession = state.settings.sessionId
-            val (index, offset) = openingScrollIndex(anchor, timeline.lastIndex)
+            val messageIds = timeline.map { it.key }
+            val (index, offset) = com.luckyagent.android.ui.util.restoreScrollIndex(messageIds, record, timeline.lastIndex)
             listState.scrollToItem(index, offset)
             lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }
@@ -1870,6 +1878,7 @@ private fun ChatConversation(
             state = state,
             vm = vm,
             onChange = vm::updateComposer,
+            onDraftChanged = vm::persistComposerDraft,
             onSend = vm::sendComposer,
             showAttachmentOptions = showAttachmentOptions,
             onToggleAttachment = onToggleAttachment,
@@ -3390,6 +3399,7 @@ private fun ComposerBar(
     state: AppUiState,
     vm: AppViewModel,
     onChange: (String) -> Unit,
+    onDraftChanged: () -> Unit = {},
     onSend: () -> Unit,
     showAttachmentOptions: Boolean,
     onToggleAttachment: () -> Unit,
@@ -3418,6 +3428,10 @@ private fun ComposerBar(
     onCancelVoice: () -> Unit,
 ) {
     var showContextSheet by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.composer, state.pendingQuote, state.pendingMedia) {
+        kotlinx.coroutines.delay(400)
+        onDraftChanged()
+    }
     val chatWorking = state.isResponding || state.bubbles.any { it.streaming }
     val activityLabel = composerActivityLabel(
         agentWorking = state.isResponding,
@@ -5840,8 +5854,19 @@ private fun SessionDrawer(
                         if (expanded) {
                             val scrolling = listState.isScrollInProgress
                             items(group.sessions, key = { it.id }) { session ->
-                                val prepared = remember(session.id, session.title, session.recap, session.pinned, session.messageCount, session.updatedAt, session.createdAt) {
-                                    sessionDrawerRowContent(session)
+                                val preview = state.draftPreviews[session.id]
+                                val prepared = remember(
+                                    session.id, session.title, session.recap, session.pinned,
+                                    session.messageCount, session.updatedAt, session.createdAt,
+                                    preview, state.readSessionIds, state.settings.sessionId,
+                                ) {
+                                    sessionDrawerRowContent(
+                                        session,
+                                        draftSummary = preview,
+                                        unread = session.id != state.settings.sessionId &&
+                                            (session.messageCount ?: 0) > 0 &&
+                                            session.id !in state.readSessionIds,
+                                    )
                                 }
                                 SessionDrawerRow(
                                     content = prepared,
@@ -6041,11 +6066,14 @@ private fun SessionDrawerRow(
                 Text(
                     content.title,
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    fontWeight = if (selected || content.unread) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                if (content.unread) {
+                    Text("未读", color = CloverAccent, style = MaterialTheme.typography.labelSmall)
+                }
                 if (working) {
                     Spacer(Modifier.width(6.dp))
                     SessionWorkingBadge()

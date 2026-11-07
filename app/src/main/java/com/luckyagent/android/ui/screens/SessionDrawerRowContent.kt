@@ -10,6 +10,7 @@ internal data class SessionDrawerRowContent(
     val meta: String,
     val pinned: Boolean,
     val fixedRole: Boolean,
+    val unread: Boolean = false,
 )
 
 internal fun clipSessionLine(value: String, limit: Int): String {
@@ -19,9 +20,14 @@ internal fun clipSessionLine(value: String, limit: Int): String {
 }
 
 /** Title, one-line summary, and meta are fixed before the row is composed. */
-internal fun sessionDrawerRowContent(session: RuntimeSession): SessionDrawerRowContent {
+internal fun sessionDrawerRowContent(
+    session: RuntimeSession,
+    draftSummary: String? = null,
+    unread: Boolean = false,
+): SessionDrawerRowContent {
     val title = session.title?.trim()?.takeIf { it.isNotEmpty() } ?: session.id
-    val summary = session.recap.orEmpty().lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
+    val summary = draftSummary?.takeIf { it.isNotEmpty() }
+        ?: session.recap.orEmpty().lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
     val meta = buildList {
         (session.updatedAt ?: session.createdAt)?.let { add(formatSessionRowTime(it)) }
         session.messageCount?.let { add("$it 条消息") }
@@ -33,6 +39,7 @@ internal fun sessionDrawerRowContent(session: RuntimeSession): SessionDrawerRowC
         meta = meta,
         pinned = session.pinned,
         fixedRole = isFixedRoleSession(session),
+        unread = unread,
     )
 }
 
