@@ -18,9 +18,16 @@ private const val MISSING = "—"
  * Formats LuckyAgent process RSS, CPU, ~/.luckyagent disk, and Go heap.
  * Absent keys stay as 「—」. Heap is never shown as RSS.
  */
-internal fun formatHostResources(system: JsonObject?): HostResourceLines {
+/** Whole milliseconds. A missing, negative, or non-finite sample is a dash. */
+internal fun formatRtt(rttMs: Long?): String {
+    if (rttMs == null || rttMs < 0L) return "延迟 $MISSING"
+    return "延迟 ${rttMs}ms"
+}
+
+internal fun formatHostResources(system: JsonObject?, rttMs: Long? = null): HostResourceLines {
+    val latency = formatRtt(if (system == null) null else rttMs)
     if (system == null) {
-        return HostResourceLines(listOf("主机资源暂无", "RSS $MISSING · CPU $MISSING", "磁盘 $MISSING"))
+        return HostResourceLines(listOf("主机资源暂无", "RSS $MISSING · CPU $MISSING · $latency", "磁盘 $MISSING"))
     }
     val rss = firstPresent(system, "process_rss_bytes", "rss_bytes", "rss_mb", "process_rss_mb")
     val cpu = firstPresent(system, "process_cpu_percent", "cpu_percent")
@@ -44,10 +51,10 @@ internal fun formatHostResources(system: JsonObject?): HostResourceLines {
         heap.key.endsWith("_bytes") -> "Go 堆 ${formatBytes(heap.value)}"
         else -> "Go 堆 ${formatCount(heap.value, "MB")}"
     }
-    val lines = mutableListOf("$rssText · $cpuText", diskText)
+    val lines = mutableListOf("$rssText · $cpuText · $latency", diskText)
     if (heapText != null) lines += heapText
     if (rss == null && cpu == null && disk == null && heap == null) {
-        return HostResourceLines(listOf("主机资源暂无", "RSS $MISSING · CPU $MISSING", "磁盘 $MISSING"))
+        return HostResourceLines(listOf("主机资源暂无", "RSS $MISSING · CPU $MISSING · $latency", "磁盘 $MISSING"))
     }
     return HostResourceLines(lines)
 }
@@ -67,9 +74,9 @@ private fun firstPresent(system: JsonObject, vararg keys: String): Reading? {
     return null
 }
 
-internal fun hostResourcesFromDetail(root: JsonObject?): HostResourceLines {
+internal fun hostResourcesFromDetail(root: JsonObject?, rttMs: Long? = null): HostResourceLines {
     val system = root?.get("system")?.let { runCatching { it.jsonObject }.getOrNull() }
-    return formatHostResources(system)
+    return formatHostResources(system, rttMs)
 }
 
 private fun formatBytes(value: Double): String {
