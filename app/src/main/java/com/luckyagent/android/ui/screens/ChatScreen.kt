@@ -181,10 +181,15 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.runtime.key
 import androidx.compose.animation.core.animateFloatAsState
+import com.luckyagent.android.ui.util.bubbleDrawHeight
+import com.luckyagent.android.ui.util.bubblePieces
+import com.luckyagent.android.ui.util.bubbleTransitionDone
+import com.luckyagent.android.ui.util.pieceHash
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
@@ -2641,36 +2646,74 @@ private fun BubbleRow(
                             Spacer(Modifier.height(8.dp))
                         }
                         if (bubble.content.isNotBlank()) {
-                            val pieces = com.luckyagent.android.ui.util.bubblePieces(bubble.content)
-                            var previousHeight by remember(bubble.id) { mutableStateOf(0) }
-                            val progress by androidx.compose.animation.core.animateFloatAsState(
-                                targetValue = if (growing && !dragging && previousHeight > 0) 1f else 1f,
-                                animationSpec = androidx.compose.animation.core.tween(if (dragging) 0 else 180),
+                            val pieces = bubblePieces(bubble.content)
+                            val density = LocalDensity.current
+                            var fromHeight by remember(bubble.id) { mutableStateOf(0) }
+                            var toHeight by remember(bubble.id) { mutableStateOf(0) }
+                            var growTarget by remember(bubble.id) { mutableStateOf(1f) }
+                            val animating = growing && !dragging && fromHeight > 0 && toHeight > fromHeight
+                            val progress by animateFloatAsState(
+                                targetValue = if (animating) growTarget else 1f,
+                                animationSpec = tween(if (dragging || !growing) 0 else 180),
                                 label = "bubble-grow",
-                                finishedListener = { previousHeight = 0 },
-                            )
-                            val textModifier = Modifier
-                                .onGloballyPositioned { coordinates ->
-                                    if (progress >= 1f) previousHeight = coordinates.size.height
-                                }
-                                .clip(RoundedCornerShape(18.dp))
-                                .then(
-                                    if (isUser) {
-                                        Modifier
-                                            .background(CloverUserBubble.copy(alpha = bubbleOpacity.coerceIn(0, 100) / 100f))
-                                            .padding(horizontal = 12.dp, vertical = 10.dp)
-                                    } else {
-                                        Modifier.padding(vertical = 2.dp)
-                                    },
-                                )
-                            Box(
-                                textModifier.pointerInput(bubble.id) {
-                                    detectTapGestures(onLongPress = { menuExpanded = true })
+                                finishedListener = { finished ->
+                                    if (finished <= 0f && animating) growTarget = 1f
+                                    if (bubbleTransitionDone(finished)) fromHeight = 0
                                 },
+                            )
+                            val drawHeight = bubbleDrawHeight(
+                                previous = fromHeight,
+                                next = toHeight,
+                                progress = progress,
+                                dragging = dragging,
+                            )
+                            val clipShape = RoundedCornerShape(18.dp)
+                            Box(
+                                Modifier
+                                    .clip(clipShape)
+                                    .then(
+                                        if (animating && drawHeight > 0) {
+                                            Modifier.height(with(density) { drawHeight.toDp() })
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
+                                    .then(
+                                        if (isUser) {
+                                            Modifier.background(
+                                                CloverUserBubble.copy(alpha = bubbleOpacity.coerceIn(0, 100) / 100f),
+                                            )
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
+                                    .pointerInput(bubble.id) {
+                                        detectTapGestures(onLongPress = { menuExpanded = true })
+                                    },
                             ) {
-                                Column {
+                                Column(
+                                    Modifier
+                                        .onGloballyPositioned { coordinates ->
+                                            val measured = coordinates.size.height
+                                            if (measured <= 0 || dragging || !growing) return@onGloballyPositioned
+                                            if (fromHeight <= 0 || bubbleTransitionDone(progress)) {
+                                                fromHeight = toHeight.takeIf { it > 0 } ?: measured
+                                            }
+                                            if (measured != toHeight) {
+                                                toHeight = measured
+                                                growTarget = 0f
+                                            }
+                                        }
+                                        .then(
+                                            if (isUser) {
+                                                Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                                            } else {
+                                                Modifier.padding(vertical = 2.dp)
+                                            },
+                                        ),
+                                ) {
                                     pieces.forEach { piece ->
-                                        key(com.luckyagent.android.ui.util.pieceHash(piece)) {
+                                        key(pieceHash(piece)) {
                                             MarkdownText(
                                                 markdown = piece,
                                                 imageHeaders = imageHeaders,
