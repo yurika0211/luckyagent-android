@@ -900,11 +900,11 @@ fun ChatScreen(
     }
 
     var sessionPaneExpanded by rememberSaveable { mutableStateOf(true) }
-    // Phones have navigation on the left, chat in the center, and sessions on
-    // the right. Layouts with a navigation rail retain the two-page session/chat surface.
-    val sessionsPage = if (navigationContent != null) 2 else 0
-    val compactPagerState = rememberPagerState(initialPage = 1, pageCount = { if (navigationContent != null) 3 else 2 })
-    val compactPagerScope = rememberCoroutineScope()
+    // Phone home is the session list. Chat is a layer on top. Computer pages
+    // open as their own destination, not as a pager neighbor.
+    var chatOpen by rememberSaveable { mutableStateOf(false) }
+    var computerOpen by rememberSaveable { mutableStateOf(false) }
+    val sessionListState = rememberLazyListState()
     val sessionPaneWidth = 304.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
@@ -956,20 +956,18 @@ fun ChatScreen(
                 (maxWidth - sessionPaneWidth - (if (railOccupied) AppNavRailWidth else 0.dp)) >= MinMainContentWidth
 
         val sessionDrawer: @Composable (Boolean) -> Unit = { showClose ->
-            val drawerOpen = usePermanentSessionPane && sessionPaneExpanded ||
-                !usePermanentSessionPane && compactPagerState.currentPage == sessionsPage
+            val drawerOpen = usePermanentSessionPane && sessionPaneExpanded || !usePermanentSessionPane
             SessionDrawer(
                 state = state,
                 drawerOpen = drawerOpen,
+                listState = sessionListState,
                 onClose = {
                     if (usePermanentSessionPane) sessionPaneExpanded = false
-                    else compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
+                    else chatOpen = false
                 },
                 onSelect = { id ->
                     vm.selectSession(id)
-                    if (!usePermanentSessionPane) {
-                        compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
-                    }
+                    if (!usePermanentSessionPane) chatOpen = true
                 },
                 onCreate = { requestCreateSession() },
                 onCreateInGroup = { name -> requestCreateSession(projectForNewSession(name)) },
@@ -1042,83 +1040,66 @@ fun ChatScreen(
                 )
             }
         } else {
-            val focusManager = LocalFocusManager.current
-            val keyboard = LocalSoftwareKeyboardController.current
-            LaunchedEffect(compactPagerState.settledPage) {
-                focusManager.clearFocus()
-                keyboard?.hide()
-            }
-            BackHandler(enabled = compactPagerState.currentPage != 1) {
-                compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
-            }
-            val inheritedOpenNavigation = LocalOpenNavigationDrawer.current
             val openNavigation: (() -> Unit)? = if (navigationContent != null) {
-                { compactPagerScope.launch { compactPagerState.animateScrollToPage(0) }; Unit }
-            } else inheritedOpenNavigation
+                { computerOpen = true }
+            } else LocalOpenNavigationDrawer.current
+            BackHandler(enabled = computerOpen) { computerOpen = false }
+            BackHandler(enabled = chatOpen && !computerOpen) { chatOpen = false }
             CompositionLocalProvider(LocalOpenNavigationDrawer provides openNavigation) {
-                HorizontalPager(
-                    state = compactPagerState,
-                    modifier = Modifier.fillMaxSize(),
-                    beyondViewportPageCount = 1,
-                    pageSpacing = 0.dp,
-                ) { page ->
-                    if (page == 0 && navigationContent != null) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .background(CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f))
+                        .windowInsetsPadding(WindowInsets.safeDrawing),
+                ) {
+                    sessionDrawer(false)
+                }
+                if (chatOpen) {
+                    ChatConversation(
+                        state = state,
+                        vm = vm,
+                        showSessionMenu = true,
+                        onOpenSessions = { chatOpen = false },
+                        onNewSession = { requestCreateSession() },
+                        onOpenSettings = onOpenSettings,
+                        showAttachmentOptions = showAttachmentOptions,
+                        onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
+                        onCameraCapture = {
+                            showAttachmentOptions = false
+                            requestCameraCapture()
+                        },
+                        onVoiceCapture = {
+                            showAttachmentOptions = false
+                            requestVoiceCapture()
+                        },
+                        onVisualPick = {
+                            showAttachmentOptions = false
+                            visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                        },
+                        onFilePick = {
+                            showAttachmentOptions = false
+                            filePicker.launch(arrayOf("*/*"))
+                        },
+                        onExpandDraft = {
+                            showAttachmentOptions = false
+                            vm.expandComposer()
+                        },
+                        isRecordingVoice = isRecordingVoice,
+                        recordingElapsedSec = recordingElapsedSec,
+                        captureHint = captureHint,
+                        onStopVoice = { stopVoiceCapture(cancel = false) },
+                        onCancelVoice = { stopVoiceCapture(cancel = true) },
+                        modifier = Modifier.fillMaxSize().background(CloverBg),
+                    )
+                }
+                if (computerOpen && navigationContent != null) {
+                    Box(Modifier.fillMaxSize().background(CloverBg)) {
                         navigationContent(
                             { destination ->
-                                compactPagerScope.launch {
-                                    // Reset before leaving chat so returning never reopens navigation.
-                                    compactPagerState.scrollToPage(1)
-                                    vm.navigate(destination)
-                                }
+                                computerOpen = false
+                                vm.navigate(destination)
                             },
-                            { compactPagerScope.launch { compactPagerState.animateScrollToPage(1) } },
-                        )
-                    } else if (page == sessionsPage) {
-                        Column(
-                            Modifier
-                                .fillMaxSize()
-                                .background(CloverBgSide.copy(alpha = state.settings.drawerOpacity.coerceIn(0, 100) / 100f))
-                                .windowInsetsPadding(WindowInsets.safeDrawing),
-                        ) {
-                            sessionDrawer(true)
-                        }
-                    } else {
-                        ChatConversation(
-                            state = state,
-                            vm = vm,
-                            showSessionMenu = true,
-                            onOpenSessions = {
-                                compactPagerScope.launch { compactPagerState.animateScrollToPage(sessionsPage) }
-                            },
-                            onNewSession = { requestCreateSession() },
-                            onOpenSettings = onOpenSettings,
-                            showAttachmentOptions = showAttachmentOptions,
-                            onToggleAttachment = { showAttachmentOptions = !showAttachmentOptions },
-                            onCameraCapture = {
-                                showAttachmentOptions = false
-                                requestCameraCapture()
-                            },
-                            onVoiceCapture = {
-                                showAttachmentOptions = false
-                                requestVoiceCapture()
-                            },
-                            onVisualPick = {
-                                showAttachmentOptions = false
-                                visualPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                            },
-                            onFilePick = {
-                                showAttachmentOptions = false
-                                filePicker.launch(arrayOf("*/*"))
-                            },
-                            onExpandDraft = {
-                                showAttachmentOptions = false
-                                vm.expandComposer()
-                            },
-                            isRecordingVoice = isRecordingVoice,
-                            recordingElapsedSec = recordingElapsedSec,
-                            captureHint = captureHint,
-                            onStopVoice = { stopVoiceCapture(cancel = false) },
-                            onCancelVoice = { stopVoiceCapture(cancel = true) },
+                            { computerOpen = false },
                         )
                     }
                 }
@@ -1147,9 +1128,7 @@ fun ChatScreen(
                             if (title.isEmpty()) return@TextButton
                             vm.createSession(title, createSessionProject)
                             createSessionOpen = false
-                            if (!usePermanentSessionPane) {
-                                compactPagerScope.launch { compactPagerState.animateScrollToPage(1) }
-                            }
+                            if (!usePermanentSessionPane) chatOpen = true
                         },
                     ) { Text("创建") }
                 },
@@ -1253,11 +1232,23 @@ fun ChatScreen(
             onDismissRequest = { actionSession = null },
             title = { Text(title) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SelectionContainer {
-                        Text("会话 ID：${session.id}", style = MaterialTheme.typography.bodySmall)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        vm.setSessionPinned(session.id, !session.pinned)
+                        actionSession = null
+                    }) { Text(if (session.pinned) "取消置顶" else "置顶") }
+                    if (!isFixedRoleSession(session)) {
+                        TextButton(onClick = {
+                            projectTarget = session
+                            projectText = session.project.orEmpty()
+                            actionSession = null
+                        }) { Text("项目分类") }
                     }
-                    Text("删除会话前还会再次确认。")
+                    TextButton(onClick = {
+                        renameTarget = session
+                        renameText = session.title?.takeIf { it.isNotBlank() } ?: session.id
+                        actionSession = null
+                    }) { Text("修改名称") }
                 }
             },
             confirmButton = {
@@ -1358,9 +1349,7 @@ private fun ChatConversation(
     }
     Box(Modifier.fillMaxSize()) {
     Column(
-        modifier
-            .fillMaxSize()
-            .imePadding(),
+        modifier.fillMaxSize(),
     ) {
         ChatTopBar(
             state = state,
@@ -3496,7 +3485,7 @@ private fun ComposerBar(
             )
         }
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().imePadding(),
             color = CloverSurface.copy(alpha = state.settings.composerOpacity.coerceIn(0, 100) / 100f),
             shape = RoundedCornerShape(28.dp),
             border = BorderStroke(1.dp, CloverLine.copy(alpha = .4f)),
@@ -5296,6 +5285,7 @@ private fun SessionWorkingBadge() {
 private fun SessionDrawer(
     state: AppUiState,
     drawerOpen: Boolean = true,
+    listState: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
     onClose: () -> Unit,
     onSelect: (String) -> Unit,
     onCreate: () -> Unit,
@@ -5480,7 +5470,6 @@ private fun SessionDrawer(
             }
 
             else -> {
-                val listState = rememberLazyListState()
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -5741,53 +5730,6 @@ private fun SessionDrawerRow(
                     color = CloverText3,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        Box {
-            var menuOpen by remember { mutableStateOf(false) }
-            IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(40.dp)) {
-                Icon(
-                    Icons.Outlined.MoreHoriz,
-                    contentDescription = "管理会话",
-                    tint = CloverText2,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            if (!scrolling) DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(
-                    text = { Text(if (sessionPinned) "取消置顶" else "置顶") },
-                    onClick = {
-                        menuOpen = false
-                        onPin()
-                    },
-                    leadingIcon = { Icon(Icons.Outlined.PushPin, contentDescription = null) },
-                )
-                if (!content.fixedRole) {
-                    DropdownMenuItem(
-                        text = { Text("项目分类") },
-                        onClick = {
-                            menuOpen = false
-                            onProject()
-                        },
-                        leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Text("修改名称") },
-                    onClick = {
-                        menuOpen = false
-                        onRename()
-                    },
-                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                )
-                DropdownMenuItem(
-                    text = { Text("删除", color = CloverError) },
-                    onClick = {
-                        menuOpen = false
-                        onDelete()
-                    },
-                    leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null, tint = CloverError) },
                 )
             }
         }
