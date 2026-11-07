@@ -182,6 +182,9 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.runtime.key
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
@@ -1824,6 +1827,8 @@ private fun ChatConversation(
                                 onOpenUiChartApply = vm::sendOpenUiChartApply,
                                 openUiSelection = state.openUiSelection,
                                 highlighted = item.key == activeHitId,
+                                growing = item.bubble.streaming,
+                                dragging = listState.isScrollInProgress,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
@@ -2581,6 +2586,8 @@ private fun BubbleRow(
     onOpenUiChartApply: (treeId: String, widgetId: String, values: Map<String, String>) -> Boolean = { _, _, _ -> false },
     openUiSelection: Map<String, String> = emptyMap(),
     highlighted: Boolean = false,
+    growing: Boolean = false,
+    dragging: Boolean = false,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2634,7 +2641,18 @@ private fun BubbleRow(
                             Spacer(Modifier.height(8.dp))
                         }
                         if (bubble.content.isNotBlank()) {
+                            val pieces = com.luckyagent.android.ui.util.bubblePieces(bubble.content)
+                            var previousHeight by remember(bubble.id) { mutableStateOf(0) }
+                            val progress by androidx.compose.animation.core.animateFloatAsState(
+                                targetValue = if (growing && !dragging && previousHeight > 0) 1f else 1f,
+                                animationSpec = androidx.compose.animation.core.tween(if (dragging) 0 else 180),
+                                label = "bubble-grow",
+                                finishedListener = { previousHeight = 0 },
+                            )
                             val textModifier = Modifier
+                                .onGloballyPositioned { coordinates ->
+                                    if (progress >= 1f) previousHeight = coordinates.size.height
+                                }
                                 .clip(RoundedCornerShape(18.dp))
                                 .then(
                                     if (isUser) {
@@ -2650,13 +2668,19 @@ private fun BubbleRow(
                                     detectTapGestures(onLongPress = { menuExpanded = true })
                                 },
                             ) {
-                                MarkdownText(
-                                    markdown = bubble.content,
-                                    imageHeaders = imageHeaders,
-                                    imageBaseUrl = imageBaseUrl,
-                                    streaming = bubble.streaming,
-                                    active = surfaceActive,
-                                )
+                                Column {
+                                    pieces.forEach { piece ->
+                                        key(com.luckyagent.android.ui.util.pieceHash(piece)) {
+                                            MarkdownText(
+                                                markdown = piece,
+                                                imageHeaders = imageHeaders,
+                                                imageBaseUrl = imageBaseUrl,
+                                                streaming = bubble.streaming && piece == pieces.last(),
+                                                active = surfaceActive,
+                                            )
+                                        }
+                                    }
+                                }
                             }
                             if (bubble.contentTruncated) {
                                 FullTextButton(bubble, expanding, onExpand)
