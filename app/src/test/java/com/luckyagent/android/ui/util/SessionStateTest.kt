@@ -31,5 +31,8 @@ class SessionStateTest {
         assertEquals(1 to 12, byId)
         val fallback = restoreScrollIndex(ids, ScrollAnchor(messageId = "gone", index = 2, offset = 4), 2)
         assertEquals(2 to 4, fallback)
+        // A stored index of 0 is the legacy "back to the tail" sentinel, not a row.
+        val tail = restoreScrollIndex(ids, ScrollAnchor(messageId = "gone", index = 0, offset = 9), 2)
+        assertEquals(2 to 0, tail)
     }
 }
