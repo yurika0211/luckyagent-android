@@ -1302,12 +1302,11 @@ private fun ChatConversation(
     val recap = state.sessionRecap?.takeIf {
         it.sessionId == state.settings.sessionId && it.endpoint == state.settings.apiBase
     }?.text?.takeIf { it.isNotBlank() }
-    var recapCollapsed by remember(state.settings.apiBase, state.settings.sessionId, recap) { mutableStateOf(false) }
+    var recapCollapsed by remember(state.settings.apiBase, state.settings.sessionId) { mutableStateOf(true) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, state.settings.apiBase, state.settings.sessionId) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                recapCollapsed = false
                 vm.refreshSessions()
             }
         }
