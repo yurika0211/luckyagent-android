@@ -45,10 +45,11 @@ internal var chatLinkOpener: ((String) -> Unit)? = null
 fun inAppBrowserUrl(raw: String?): String? {
     val value = raw?.trim().orEmpty()
     if (value.isEmpty()) return null
-    val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return null
-    val scheme = uri.scheme?.lowercase() ?: return null
+    val scheme = value.substringBefore(':', "").lowercase()
     if (scheme != "http" && scheme != "https") return null
-    if (uri.host.isNullOrBlank()) return null
+    val rest = value.substringAfter("://", "")
+    val host = rest.substringBefore('/').substringBefore('?').substringBefore('#')
+    if (host.isBlank() || !host.contains('.')) return null
     return value
 }
 
