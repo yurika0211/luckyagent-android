@@ -44,11 +44,15 @@ internal fun attachmentTerminalNotice(
 )
 
 /** Starts a download without writing the activity line or a bottom notice. */
-internal fun attachmentRunningUpdate(state: AppUiState, key: String): AppUiState = state.copy(
-    attachmentDownloadKey = key,
-    attachmentDownload = AttachmentDownloadUi(phase = AttachmentDownloadPhase.Running),
-    attachmentNotice = null,
-)
+internal fun attachmentRunningUpdate(state: AppUiState, key: String): AppUiState {
+    val running = AttachmentDownloadUi(phase = AttachmentDownloadPhase.Running)
+    return state.copy(
+        attachmentDownloadKey = key,
+        attachmentDownload = running,
+        attachmentDownloads = state.attachmentDownloads + (key to running),
+        attachmentNotice = null,
+    )
+}
 
 /** Composer caption while a download is running. Never the filename sentence. */
 internal fun composerDownloadCaption(download: AttachmentDownloadUi): String? {
