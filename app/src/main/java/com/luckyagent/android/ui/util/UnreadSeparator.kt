@@ -6,6 +6,7 @@ sealed interface TimelineRow {
 
 data class MessageRow(override val key: String) : TimelineRow
 data class UnreadSeparatorRow(override val key: String, val count: Int, val beforeMessageId: String) : TimelineRow
+data class DateSeparatorRow(override val key: String, val label: String) : TimelineRow
 
 /** First tap lands on the unread row. The next tap, or a tap with no unread, lands on the tail. */
 fun jumpTargetIndex(rows: List<TimelineRow>, seenUnread: Boolean): Int {

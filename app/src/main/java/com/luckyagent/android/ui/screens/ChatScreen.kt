@@ -1756,9 +1756,35 @@ private fun ChatConversation(
                 if (index >= 0) listState.animateScrollToItem(index)
             }
         }
-        val displayRows = com.luckyagent.android.ui.util.withUnreadSeparator(
+        var userDragging by remember { mutableStateOf(false) }
+        var showFloatingDate by remember { mutableStateOf(false) }
+        LaunchedEffect(listState.isScrollInProgress) {
+            if (listState.isScrollInProgress && userDragging) showFloatingDate = true
+            if (!listState.isScrollInProgress) {
+                kotlinx.coroutines.delay(500)
+                showFloatingDate = false
+                userDragging = false
+            }
+        }
+        val baseRows = com.luckyagent.android.ui.util.withUnreadSeparator(
             timeline.map { it.key },
             state.readCursorMessageId,
+        )
+        val days = timeline.map { item ->
+            val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
+            com.luckyagent.android.ui.util.messageDay(created)
+        }
+        val dateMarks = com.luckyagent.android.ui.util.dateRows(timeline.map { it.key }, days)
+        val displayRows = buildList {
+            baseRows.forEach { row ->
+                dateMarks.firstOrNull { it.beforeMessageId == row.key }?.let { mark ->
+                    add(com.luckyagent.android.ui.util.DateSeparatorRow(mark.key, mark.label))
+                }
+                add(row)
+            }
+        }
+        val floatingLabel = com.luckyagent.android.ui.util.floatingDateLabel(
+            days.getOrNull(listState.firstVisibleItemIndex),
         )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             PullToRefreshBox(
@@ -1777,7 +1803,14 @@ private fun ChatConversation(
                 val timelineByKey = timeline.associateBy { it.key }
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                userDragging = true
+                            }
+                        },
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -1788,9 +1821,14 @@ private fun ChatConversation(
                             if (row is com.luckyagent.android.ui.util.UnreadSeparatorRow) "unread" else "message"
                         },
                     ) { row ->
-                        if (row is com.luckyagent.android.ui.util.UnreadSeparatorRow) {
+                        if (row is com.luckyagent.android.ui.util.UnreadSeparatorRow || row is com.luckyagent.android.ui.util.DateSeparatorRow) {
+                            val label = when (row) {
+                                is com.luckyagent.android.ui.util.UnreadSeparatorRow -> "${row.count} 条未读"
+                                is com.luckyagent.android.ui.util.DateSeparatorRow -> row.label
+                                else -> ""
+                            }
                             Text(
-                                "${row.count} 条未读",
+                                label,
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                 color = CloverAccent,
                                 style = MaterialTheme.typography.labelMedium,
@@ -1834,6 +1872,21 @@ private fun ChatConversation(
                                 highlighted = item.key == activeHitId,
                                 growing = item.bubble.streaming,
                                 dragging = listState.isScrollInProgress,
+                                flatTop = com.luckyagent.android.ui.util.bubbleSharesEdge(
+                                    timeline.getOrNull(timeline.indexOf(item) - 1)?.let { (it as? ChatTimelineItem.Message)?.bubble?.role },
+                                    item.bubble.role,
+                                    separated = false,
+                                ),
+                                flatBottom = com.luckyagent.android.ui.util.bubbleSharesEdge(
+                                    item.bubble.role,
+                                    timeline.getOrNull(timeline.indexOf(item) + 1)?.let { (it as? ChatTimelineItem.Message)?.bubble?.role }.orEmpty(),
+                                    separated = false,
+                                ),
+                                showAvatar = !com.luckyagent.android.ui.util.bubbleSharesEdge(
+                                    timeline.getOrNull(timeline.indexOf(item) - 1)?.let { (it as? ChatTimelineItem.Message)?.bubble?.role },
+                                    item.bubble.role,
+                                    separated = false,
+                                ),
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
@@ -1878,6 +1931,19 @@ private fun ChatConversation(
                     }
                     item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
                 }
+            }
+            if (showFloatingDate && floatingLabel.isNotEmpty()) {
+                Text(
+                    floatingLabel,
+                    color = CloverText2,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(CloverSurface.copy(alpha = .94f))
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                )
             }
             if ((state.showingOfflineCache || state.activityLine == SessionCachePolicy.REFRESH_FAILED_LABEL) && state.bubbles.isNotEmpty()) {
                 Text(
@@ -2593,6 +2659,9 @@ private fun BubbleRow(
     highlighted: Boolean = false,
     growing: Boolean = false,
     dragging: Boolean = false,
+    flatTop: Boolean = false,
+    flatBottom: Boolean = false,
+    showAvatar: Boolean = true,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2632,7 +2701,7 @@ private fun BubbleRow(
                         .then(if (highlighted) Modifier.background(CloverAccent.copy(alpha = .16f), RoundedCornerShape(12.dp)) else Modifier),
                     horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
                 ) {
-                    if (!isUser && !bubble.role.equals("assistant", ignoreCase = true)) {
+                    if (showAvatar && !isUser && !bubble.role.equals("assistant", ignoreCase = true)) {
                         Text(
                             bubble.role.ifBlank { "assistant" },
                             style = MaterialTheme.typography.labelSmall,
@@ -2667,10 +2736,15 @@ private fun BubbleRow(
                                 progress = progress,
                                 dragging = dragging,
                             )
-                            val clipShape = RoundedCornerShape(18.dp)
+                            val shape = RoundedCornerShape(
+                                topStart = if (flatTop && !isUser) 4.dp else 18.dp,
+                                topEnd = if (flatTop && isUser) 4.dp else 18.dp,
+                                bottomStart = if (flatBottom && !isUser) 4.dp else 18.dp,
+                                bottomEnd = if (flatBottom && isUser) 4.dp else 18.dp,
+                            )
                             Box(
                                 Modifier
-                                    .clip(clipShape)
+                                    .clip(shape)
                                     .then(
                                         if (animating && drawHeight > 0) {
                                             Modifier.height(with(density) { drawHeight.toDp() })
@@ -2708,7 +2782,7 @@ private fun BubbleRow(
                                             if (isUser) {
                                                 Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
                                             } else {
-                                                Modifier.padding(vertical = 2.dp)
+                                                Modifier.padding(vertical = if (flatTop || flatBottom) 1.dp else 2.dp)
                                             },
                                         ),
                                 ) {
