@@ -1783,8 +1783,15 @@ private fun ChatConversation(
                 add(row)
             }
         }
+        val dayByMessageId = timeline.mapIndexedNotNull { index, item ->
+            (item as? ChatTimelineItem.Message)?.let { item.key to days[index] }
+        }.toMap()
         val floatingLabel = com.luckyagent.android.ui.util.floatingDateLabel(
-            days.getOrNull(listState.firstVisibleItemIndex),
+            com.luckyagent.android.ui.util.visibleMessageDay(
+                displayRows,
+                listState.firstVisibleItemIndex,
+                dayByMessageId,
+            ),
         )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             PullToRefreshBox(
@@ -1838,7 +1845,15 @@ private fun ChatConversation(
                         }
                         val item = timelineByKey[row.key] ?: return@items
                         when (item) {
-                            is ChatTimelineItem.Message -> BubbleRow(
+                            is ChatTimelineItem.Message -> {
+                            val rowIndex = displayRows.indexOfFirst { it.key == row.key }
+                            val previousMessage = displayRows.take(rowIndex).lastOrNull { it is com.luckyagent.android.ui.util.MessageRow }
+                            val nextMessage = displayRows.drop(rowIndex + 1).firstOrNull { it is com.luckyagent.android.ui.util.MessageRow }
+                            val previousRole = (timelineByKey[previousMessage?.key] as? ChatTimelineItem.Message)?.bubble?.role
+                            val nextRole = (timelineByKey[nextMessage?.key] as? ChatTimelineItem.Message)?.bubble?.role
+                            val separatedAbove = com.luckyagent.android.ui.util.separatorBetween(displayRows, item.key, previousMessage?.key)
+                            val separatedBelow = com.luckyagent.android.ui.util.separatorBetween(displayRows, item.key, nextMessage?.key)
+                            BubbleRow(
                                 bubble = item.bubble,
                                 avatarFile = state.settings.avatarFile,
                                 bubbleOpacity = state.settings.bubbleOpacity,
@@ -1872,22 +1887,11 @@ private fun ChatConversation(
                                 highlighted = item.key == activeHitId,
                                 growing = item.bubble.streaming,
                                 dragging = listState.isScrollInProgress,
-                                flatTop = com.luckyagent.android.ui.util.bubbleSharesEdge(
-                                    timeline.getOrNull(timeline.indexOf(item) - 1)?.let { (it as? ChatTimelineItem.Message)?.bubble?.role },
-                                    item.bubble.role,
-                                    separated = false,
-                                ),
-                                flatBottom = com.luckyagent.android.ui.util.bubbleSharesEdge(
-                                    item.bubble.role,
-                                    timeline.getOrNull(timeline.indexOf(item) + 1)?.let { (it as? ChatTimelineItem.Message)?.bubble?.role }.orEmpty(),
-                                    separated = false,
-                                ),
-                                showAvatar = !com.luckyagent.android.ui.util.bubbleSharesEdge(
-                                    timeline.getOrNull(timeline.indexOf(item) - 1)?.let { (it as? ChatTimelineItem.Message)?.bubble?.role },
-                                    item.bubble.role,
-                                    separated = false,
-                                ),
+                                flatTop = com.luckyagent.android.ui.util.bubbleSharesEdge(previousRole, item.bubble.role, separatedAbove),
+                                flatBottom = com.luckyagent.android.ui.util.bubbleSharesEdge(item.bubble.role, nextRole.orEmpty(), separatedBelow),
+                                showAvatar = !com.luckyagent.android.ui.util.bubbleSharesEdge(previousRole, item.bubble.role, separatedAbove),
                             )
+                            }
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
                                 isResponding = state.isResponding && processOwnsTurn(item.steps, timeline),
