@@ -5480,7 +5480,9 @@ private fun SessionDrawer(
             }
 
             else -> {
+                val listState = rememberLazyListState()
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -5515,11 +5517,16 @@ private fun SessionDrawer(
                             )
                         }
                         if (expanded) {
-                            items(group.sessions, key = { "session-${it.id}" }) { session ->
+                            val scrolling = listState.isScrollInProgress
+                            items(group.sessions, key = { it.id }) { session ->
+                                val prepared = remember(session.id, session.title, session.recap, session.pinned, session.messageCount, session.updatedAt, session.createdAt) {
+                                    sessionDrawerRowContent(session)
+                                }
                                 SessionDrawerRow(
-                                    session = session,
+                                    content = prepared,
                                     selected = session.id == state.settings.sessionId,
                                     working = session.id in state.workingSessionIds,
+                                    scrolling = scrolling,
                                     nested = true,
                                     onSelect = { onSelect(session.id) },
                                     onRename = { onRename(session) },
@@ -5669,9 +5676,10 @@ private fun SessionDrawerSkeleton() {
 
 @Composable
 private fun SessionDrawerRow(
-    session: RuntimeSession,
+    content: SessionDrawerRowContent,
     selected: Boolean,
     working: Boolean,
+    scrolling: Boolean,
     nested: Boolean = false,
     onSelect: () -> Unit,
     onRename: () -> Unit,
@@ -5680,10 +5688,7 @@ private fun SessionDrawerRow(
     onDelete: () -> Unit,
     onLongPress: () -> Unit,
 ) {
-    val metadata = buildList {
-        (session.updatedAt ?: session.createdAt)?.let { add(formatMessageTime(it)) }
-        session.messageCount?.let { add("$it 条消息") }
-    }.joinToString(" · ")
+    val sessionPinned = content.pinned
     Row(
         Modifier
             .fillMaxWidth()
@@ -5702,7 +5707,7 @@ private fun SessionDrawerRow(
     ) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (session.pinned) {
+                if (sessionPinned) {
                     Icon(
                         Icons.Outlined.PushPin,
                         contentDescription = "已置顶",
@@ -5713,7 +5718,7 @@ private fun SessionDrawerRow(
                     )
                 }
                 Text(
-                    session.title?.takeIf { it.isNotBlank() } ?: session.id,
+                    content.title,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
@@ -5725,13 +5730,13 @@ private fun SessionDrawerRow(
                     SessionWorkingBadge()
                 }
             }
-            session.recap?.takeIf { it.isNotBlank() }?.let { recap ->
-                Text(recap, style = MaterialTheme.typography.bodySmall, color = CloverText2,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (content.summary.isNotEmpty()) {
+                Text(content.summary, style = MaterialTheme.typography.bodySmall, color = CloverText2,
+                    maxLines = 1, overflow = TextOverflow.Clip)
             }
-            if (metadata.isNotEmpty()) {
+            if (content.meta.isNotEmpty()) {
                 Text(
-                    metadata,
+                    content.meta,
                     style = MaterialTheme.typography.labelSmall,
                     color = CloverText3,
                     maxLines = 1,
@@ -5749,16 +5754,16 @@ private fun SessionDrawerRow(
                     modifier = Modifier.size(18.dp),
                 )
             }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            if (!scrolling) DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(
-                    text = { Text(if (session.pinned) "取消置顶" else "置顶") },
+                    text = { Text(if (sessionPinned) "取消置顶" else "置顶") },
                     onClick = {
                         menuOpen = false
                         onPin()
                     },
                     leadingIcon = { Icon(Icons.Outlined.PushPin, contentDescription = null) },
                 )
-                if (!isFixedRoleSession(session)) {
+                if (!content.fixedRole) {
                     DropdownMenuItem(
                         text = { Text("项目分类") },
                         onClick = {
