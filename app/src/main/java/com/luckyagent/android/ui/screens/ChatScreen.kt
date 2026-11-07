@@ -290,6 +290,8 @@ import com.luckyagent.android.ui.util.fileVisualLabel
 import com.luckyagent.android.ui.util.canDownloadAttachment
 import com.luckyagent.android.ui.util.composerDownloadCaption
 import com.luckyagent.android.ui.components.HtmlPreviewDialog
+import com.luckyagent.android.ui.components.InAppBrowser
+import com.luckyagent.android.ui.components.chatLinkOpener
 import com.luckyagent.android.ui.components.isHtmlAttachment
 import com.luckyagent.android.ui.util.quoteRoleLabel
 import kotlin.math.roundToInt
@@ -1297,6 +1299,12 @@ private fun ChatConversation(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    var browserUrl by remember { mutableStateOf<String?>(null) }
+    DisposableEffect(Unit) {
+        chatLinkOpener = { browserUrl = it }
+        onDispose { chatLinkOpener = null }
+    }
+    browserUrl?.let { InAppBrowser(it) { browserUrl = null } }
     val messageSpeaker = remember { MessageSpeaker(context) }
     DisposableEffect(messageSpeaker) {
         onDispose { messageSpeaker.release() }

@@ -369,7 +369,11 @@ private fun HtmlPageView(
                         parsed != null && parsed.host != Uri.parse(HTML_PREVIEW_ORIGIN).host &&
                             (parsed.scheme == "http" || parsed.scheme == "https")
                     }
-                    external?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) } }
+                    external?.let { page ->
+                        val allowed = inAppBrowserUrl(page)
+                        if (allowed != null) chatLinkOpener?.invoke(allowed)
+                        else runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(page))) }
+                    }
                 }
                 return true
             }
