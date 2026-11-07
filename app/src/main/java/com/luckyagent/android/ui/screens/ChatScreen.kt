@@ -1458,6 +1458,13 @@ private fun ChatConversation(
             vm.loadModelEffort()
         }
     }
+    var sessionSearchOpen by remember(state.settings.sessionId) { mutableStateOf(false) }
+    var sessionSearchQuery by remember(state.settings.sessionId) { mutableStateOf("") }
+    var sessionSearchTab by remember(state.settings.sessionId) { mutableStateOf(com.luckyagent.android.ui.util.SessionSearchTab.Messages) }
+    var sessionSearchIndex by remember(state.settings.sessionId) { mutableStateOf(0) }
+    var searchReturnIndex by remember(state.settings.sessionId) { mutableStateOf(0) }
+    val listState = rememberLazyListState()
+    val scrollScope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
     Column(
         modifier.fillMaxSize(),
@@ -1472,6 +1479,26 @@ private fun ChatConversation(
             onOpenCanvas = { vm.navigate(AppDestination.Background) },
             onConnect = { vm.connectSocket(force = true) },
             onReconnect = { vm.connectSocket(force = true) },
+            searching = sessionSearchOpen,
+            searchQuery = sessionSearchQuery,
+            onSearchQuery = {
+                sessionSearchQuery = it
+                sessionSearchIndex = 0
+            },
+            onOpenSearch = {
+                searchReturnIndex = listState.firstVisibleItemIndex
+                sessionSearchOpen = true
+            },
+            onCloseSearch = {
+                sessionSearchOpen = false
+                scrollScope.launch { listState.scrollToItem(searchReturnIndex) }
+            },
+            searchTab = sessionSearchTab,
+            onSearchTab = {
+                sessionSearchTab = it
+                sessionSearchIndex = 0
+            },
+            onSearchStep = { delta -> sessionSearchIndex += delta },
         )
         val workCard = remember(
             state.focusedWorkCardId,
@@ -1542,7 +1569,6 @@ private fun ChatConversation(
             )
         }
 
-        val listState = rememberLazyListState()
         val scrollScope = rememberCoroutineScope()
         val refreshState = rememberPullToRefreshState()
         val timelineCache = remember { ChatTimelineCache() }
@@ -1670,6 +1696,58 @@ private fun ChatConversation(
         }
 
         var jumpSawUnread by remember(state.settings.sessionId) { mutableStateOf(false) }
+        val searchHits = if (!sessionSearchOpen) emptyList() else com.luckyagent.android.ui.util.sessionSearchHits(
+            state.bubbles.map { bubble ->
+                com.luckyagent.android.ui.util.SearchableMessage(
+                    id = bubble.id,
+                    text = bubble.content,
+                    fileNames = bubble.attachments.mapNotNull { it.descriptor.fileName },
+                    links = com.luckyagent.android.ui.util.searchableLinks(bubble.content),
+                )
+            },
+            sessionSearchQuery,
+            sessionSearchTab,
+        )
+        val activeHitId = searchHits.getOrNull(
+            Math.floorMod(sessionSearchIndex, searchHits.size.coerceAtLeast(1)),
+        )?.takeIf { searchHits.isNotEmpty() }?.messageId
+        if (sessionSearchOpen) {
+            val hits = searchHits
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                listOf(
+                    com.luckyagent.android.ui.util.SessionSearchTab.Messages to "消息",
+                    com.luckyagent.android.ui.util.SessionSearchTab.Media to "图片和文件",
+                    com.luckyagent.android.ui.util.SessionSearchTab.Links to "链接",
+                ).forEach { (tab, label) ->
+                    TextButton(onClick = {
+                        sessionSearchTab = tab
+                        sessionSearchIndex = 0
+                    }) { Text(label) }
+                }
+            }
+            Text(
+                if (sessionSearchQuery.isBlank()) "输入关键词" else if (hits.isEmpty()) "没有结果" else "${hits.size} 条",
+                color = CloverText3,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+            LaunchedEffect(sessionSearchQuery, sessionSearchTab, hits.size, state.historyHasMore, state.historyLoadingMore) {
+                if (com.luckyagent.android.ui.util.searchNeedsOlderHistory(
+                        hits.size,
+                        sessionSearchQuery,
+                        state.historyHasMore,
+                        state.historyLoadingMore,
+                    )
+                ) {
+                    vm.loadMoreHistory()
+                }
+            }
+            LaunchedEffect(sessionSearchIndex, activeHitId) {
+                val id = activeHitId ?: return@LaunchedEffect
+                val index = timeline.indexOfFirst { it.key == id }
+                if (index >= 0) listState.animateScrollToItem(index)
+            }
+        }
         val displayRows = com.luckyagent.android.ui.util.withUnreadSeparator(
             timeline.map { it.key },
             state.readCursorMessageId,
@@ -1745,6 +1823,7 @@ private fun ChatConversation(
                                 onOpenUiNotice = vm::showSnackbar,
                                 onOpenUiChartApply = vm::sendOpenUiChartApply,
                                 openUiSelection = state.openUiSelection,
+                                highlighted = item.key == activeHitId,
                             )
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
@@ -2270,6 +2349,14 @@ private fun ChatTopBar(
     onOpenCanvas: () -> Unit,
     onConnect: () -> Unit,
     onReconnect: () -> Unit = {},
+    searching: Boolean = false,
+    searchQuery: String = "",
+    onSearchQuery: (String) -> Unit = {},
+    onOpenSearch: () -> Unit = {},
+    onCloseSearch: () -> Unit = {},
+    searchTab: com.luckyagent.android.ui.util.SessionSearchTab = com.luckyagent.android.ui.util.SessionSearchTab.Messages,
+    onSearchTab: (com.luckyagent.android.ui.util.SessionSearchTab) -> Unit = {},
+    onSearchStep: (Int) -> Unit = {},
 ) {
     var moreExpanded by rememberSaveable { mutableStateOf(false) }
     val openNavigation = LocalOpenNavigationDrawer.current
@@ -2293,7 +2380,19 @@ private fun ChatTopBar(
                 }
             }
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                when (chatTopBarLead(state.settings.connectionMode, state.socketState)) {
+                if (searching) {
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = onSearchQuery,
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = CloverText),
+                        modifier = Modifier.fillMaxWidth(),
+                        decorationBox = { inner ->
+                            if (searchQuery.isEmpty()) Text("搜索此会话", color = CloverText3)
+                            inner()
+                        },
+                    )
+                } else when (chatTopBarLead(state.settings.connectionMode, state.socketState)) {
                     ChatTopBarLead.Connect -> ConnectLead(
                         state = state,
                         onConnect = onConnect,
@@ -2303,6 +2402,17 @@ private fun ChatTopBar(
                         state = state,
                         onClick = onOpenModel,
                     )
+                }
+            }
+            if (searching) {
+                TextButton(onClick = { onSearchStep(-1) }) { Text("上一条") }
+                TextButton(onClick = { onSearchStep(1) }) { Text("下一条") }
+                IconButton(onClick = onCloseSearch) {
+                    Icon(Icons.Outlined.Close, contentDescription = "关闭搜索", tint = CloverText2)
+                }
+            } else {
+                IconButton(onClick = onOpenSearch) {
+                    Icon(Icons.Outlined.Search, contentDescription = "搜索此会话", tint = CloverText2)
                 }
             }
             IconButton(onClick = onNewSession) {
@@ -2470,6 +2580,7 @@ private fun BubbleRow(
     onOpenUiNotice: (String) -> Unit = {},
     onOpenUiChartApply: (treeId: String, widgetId: String, values: Map<String, String>) -> Boolean = { _, _, _ -> false },
     openUiSelection: Map<String, String> = emptyMap(),
+    highlighted: Boolean = false,
 ) {
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
@@ -2505,7 +2616,8 @@ private fun BubbleRow(
                 Column(
                     Modifier
                         .widthIn(max = 520.dp)
-                        .padding(vertical = 2.dp),
+                        .padding(vertical = 2.dp)
+                        .then(if (highlighted) Modifier.background(CloverAccent.copy(alpha = .16f), RoundedCornerShape(12.dp)) else Modifier),
                     horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
                 ) {
                     if (!isUser && !bubble.role.equals("assistant", ignoreCase = true)) {
