@@ -1856,6 +1856,16 @@ private fun ChatConversation(
             days,
             state.readCursorMessageId,
         )
+        val roleByKey = remember(timeline) {
+            buildMap {
+                for (item in timeline) {
+                    if (item is ChatTimelineItem.Message) put(item.key, item.bubble.role)
+                }
+            }
+        }
+        val neighborEdges = remember(displayRows, roleByKey) {
+            com.luckyagent.android.ui.util.bubbleNeighborEdges(displayRows, roleByKey)
+        }
         val dayByMessageId = timeline.mapIndexedNotNull { index, item ->
             (item as? ChatTimelineItem.Message)?.let { item.key to days[index] }
         }.toMap()
@@ -1925,13 +1935,7 @@ private fun ChatConversation(
                         val item = timelineByKey[row.key] ?: return@items
                         when (item) {
                             is ChatTimelineItem.Message -> {
-                            val rowIndex = displayRows.indexOfFirst { it.key == row.key }
-                            val previousMessage = displayRows.take(rowIndex).lastOrNull { it is com.luckyagent.android.ui.util.MessageRow }
-                            val nextMessage = displayRows.drop(rowIndex + 1).firstOrNull { it is com.luckyagent.android.ui.util.MessageRow }
-                            val previousRole = (timelineByKey[previousMessage?.key] as? ChatTimelineItem.Message)?.bubble?.role
-                            val nextRole = (timelineByKey[nextMessage?.key] as? ChatTimelineItem.Message)?.bubble?.role
-                            val separatedAbove = com.luckyagent.android.ui.util.separatorBetween(displayRows, item.key, previousMessage?.key)
-                            val separatedBelow = com.luckyagent.android.ui.util.separatorBetween(displayRows, item.key, nextMessage?.key)
+                            val edges = neighborEdges[item.key]
                             BubbleRow(
                                 bubble = item.bubble,
                                 avatarFile = state.settings.avatarFile,
@@ -1966,9 +1970,9 @@ private fun ChatConversation(
                                 highlighted = item.key == activeHitId,
                                 growing = item.bubble.streaming,
                                 dragging = listState.isScrollInProgress,
-                                flatTop = com.luckyagent.android.ui.util.bubbleSharesEdge(previousRole, item.bubble.role, separatedAbove),
-                                flatBottom = com.luckyagent.android.ui.util.bubbleSharesEdge(item.bubble.role, nextRole.orEmpty(), separatedBelow),
-                                showAvatar = !com.luckyagent.android.ui.util.bubbleSharesEdge(previousRole, item.bubble.role, separatedAbove),
+                                flatTop = edges?.flatTop == true,
+                                flatBottom = edges?.flatBottom == true,
+                                showAvatar = edges?.showAvatar != false,
                             )
                             }
                             is ChatTimelineItem.Process -> ProcessTimeline(
