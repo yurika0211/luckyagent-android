@@ -63,3 +63,51 @@ fun bubbleSharesEdge(previousRole: String?, role: String, separated: Boolean): B
     val user = role.equals("user", ignoreCase = true)
     return previousUser == user
 }
+
+data class BubbleNeighborEdges(
+    val previousRole: String?,
+    val nextRole: String?,
+    val flatTop: Boolean,
+    val flatBottom: Boolean,
+    val showAvatar: Boolean,
+)
+
+/**
+ * Neighbor edges for real message bubbles, once per painted row list.
+ * A MessageRow missing from [roleByKey] is a process neighbor: it counts as
+ * a message neighbor, but its role is null so the next bubble does not share
+ * an edge. Only keys present in [roleByKey] are emitted.
+ */
+fun bubbleNeighborEdges(
+    rows: List<TimelineRow>,
+    roleByKey: Map<String, String>,
+): Map<String, BubbleNeighborEdges> {
+    val messageIndexes = ArrayList<Int>()
+    for (index in rows.indices) {
+        if (rows[index] is MessageRow) messageIndexes.add(index)
+    }
+    return buildMap {
+        for (position in messageIndexes.indices) {
+            val index = messageIndexes[position]
+            val key = rows[index].key
+            val role = roleByKey[key] ?: continue
+            val previousKey = if (position == 0) null else rows[messageIndexes[position - 1]].key
+            val nextKey = if (position == messageIndexes.lastIndex) null else rows[messageIndexes[position + 1]].key
+            val previousRole = previousKey?.let { roleByKey[it] }
+            val nextRole = nextKey?.let { roleByKey[it] }
+            val separatedAbove = separatorBetween(rows, key, previousKey)
+            val separatedBelow = separatorBetween(rows, key, nextKey)
+            val flatTop = bubbleSharesEdge(previousRole, role, separatedAbove)
+            put(
+                key,
+                BubbleNeighborEdges(
+                    previousRole = previousRole,
+                    nextRole = nextRole,
+                    flatTop = flatTop,
+                    flatBottom = bubbleSharesEdge(role, nextRole.orEmpty(), separatedBelow),
+                    showAvatar = !flatTop,
+                ),
+            )
+        }
+    }
+}
