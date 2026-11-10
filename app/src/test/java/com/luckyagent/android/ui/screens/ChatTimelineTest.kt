@@ -525,16 +525,21 @@ class ChatTimelineTest {
         assertEquals(0 to 40, openingScrollIndex(0 to 40, 12))
         assertEquals(4 to 18, openingScrollIndex(4 to 18, 12))
         assertEquals(12 to 9, openingScrollIndex(40 to 9, 12))
+        // Drawn rows include date and unread separators, so the clamp bound
+        // is the last painted index, not the last timeline index.
+        assertEquals(15 to 4, openingScrollIndex(15 to 4, 15))
+        assertEquals(8 to 2, openingScrollIndex(8 to 2, 15))
     }
 
     @Test
-    fun followLatestScrollsToTimelineSizeNotThePaintedTail() {
-        assertEquals(12, followLatestScrollIndex(12))
+    fun followLatestScrollsToTheLastDrawnRow() {
         assertEquals(0, followLatestScrollIndex(0))
-        // Unread and date separators increase the painted count. The follow
-        // target stays timeline.size, matching v0.1.64 scrollToItem(timeline.size).
-        val paintedCount = 12 + 3
-        assertEquals(12, followLatestScrollIndex(paintedCount - 3))
+        assertEquals(0, followLatestScrollIndex(1))
+        assertEquals(11, followLatestScrollIndex(12))
+        // Separators make the drawn list longer than the timeline. Follow
+        // that tail so a new message does not stop before the unread row.
+        val drawnWithSeparators = 12 + 3
+        assertEquals(drawnWithSeparators - 1, followLatestScrollIndex(drawnWithSeparators))
     }
 
     @Test

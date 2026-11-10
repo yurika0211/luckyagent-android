@@ -611,11 +611,15 @@ internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<I
 }
 
 /**
- * Follow-latest target. v0.1.64 scrolls to `timeline.size`, which is one past
- * the last timeline row. [paintedCount] is larger when date or unread
- * separators are painted; those extra rows must not change this target.
+ * Follow-latest target on the list LazyColumn actually draws.
+ *
+ * v0.1.64 called `scrollToItem(timeline.size)` because that list's items were
+ * the timeline. This list inserts date and unread rows, so the same call lands
+ * before the real tail. Follow the last drawn row instead. Open still uses
+ * [openingScrollIndex] and does not jump to the unread divider.
  */
-internal fun followLatestScrollIndex(timelineSize: Int): Int = timelineSize
+internal fun followLatestScrollIndex(drawnRowCount: Int): Int =
+    (drawnRowCount - 1).coerceAtLeast(0)
 
 /** Compact phone pager: navigation, chat (landing), sessions. */
 internal const val CompactNavPage = 0
@@ -1740,9 +1744,17 @@ private fun ChatConversation(
             // v0.1.64: no anchor stays at the list start. Do not jump to the
             // unread separator or the latest row on open. The stored pair is
             // firstVisibleItemIndex / firstVisibleItemScrollOffset.
+            val drawnLastIndex = (com.luckyagent.android.ui.util.paintedChatRows(
+                timeline.map { it.key },
+                timeline.map { item ->
+                    val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
+                    com.luckyagent.android.ui.util.messageDay(created)
+                },
+                state.readCursorMessageId,
+            ).lastIndex)
             val (index, offset) = openingScrollIndex(
                 record?.let { it.index to it.offset },
-                timeline.lastIndex,
+                drawnLastIndex,
             )
             listState.scrollToItem(index, offset)
             lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
@@ -1755,7 +1767,9 @@ private fun ChatConversation(
                 (lastVisible.index == layout.totalItemsCount - 1 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
             val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             if (shouldFollowLatest(atBottom, position == lastAutoScrollPosition)) {
-                listState.scrollToItem(followLatestScrollIndex(timeline.size))
+                listState.scrollToItem(
+                    followLatestScrollIndex(listState.layoutInfo.totalItemsCount),
+                )
                 lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             }
         }
