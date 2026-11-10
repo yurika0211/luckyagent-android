@@ -152,6 +152,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -3974,6 +3975,14 @@ private fun ComposerBar(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text("附件 ${state.pendingMedia.size}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                if (state.pendingMedia.any { com.luckyagent.android.data.media.ChatImageCompress.isCompressibleMime(it.mimeType, it.fileName) }) {
+                    val sendOriginal = state.pendingMedia.any { it.sendOriginal }
+                    FilterChip(
+                        selected = sendOriginal,
+                        onClick = { vm.setSendOriginalImage(!sendOriginal) },
+                        label = { Text("原图") },
+                    )
+                }
                 val failed = state.pendingMedia.count { it.error != null }
                 val uploading = state.pendingMedia.count { it.descriptor == null && it.error == null }
                 Text(

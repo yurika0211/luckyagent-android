@@ -34,6 +34,7 @@ import com.luckyagent.android.data.cache.olderPageEnd
 import com.luckyagent.android.data.cache.prependOlderPage
 import com.luckyagent.android.data.cache.withContentTruncation
 import com.luckyagent.android.data.api.MediaAttachment
+import com.luckyagent.android.data.media.ChatImageUpload
 import com.luckyagent.android.data.api.ModelRef
 import com.luckyagent.android.data.api.ModelEffortResponse
 import com.luckyagent.android.data.api.RuntimeConfigSchema
@@ -259,6 +260,8 @@ data class PendingMedia(
     val mimeType: String,
     val descriptor: MediaAttachment? = null,
     val error: String? = null,
+    /** This pick skips ordinary-image compression. Not a global setting. */
+    val sendOriginal: Boolean = false,
 )
 
 data class LuckyPendingSegment(
@@ -3059,16 +3062,15 @@ class AppViewModel(
             val item = PendingMedia(id, uri.toString(), name, mime)
             _ui.update { state -> state.copy(pendingMedia = state.pendingMedia + item) }
             viewModelScope.launch {
-                mediaUploadSemaphore.withPermit { container.api.uploadAttachment(resolver, uri, name) }.onSuccess { descriptor ->
-                    _ui.update { state ->
-                        state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it })
-                    }
-                }.onFailure { error ->
-                    _ui.update { state ->
-                        state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it })
-                    }
-                }
+                uploadPreparedMedia(resolver, id, uri, name, mime)
             }
+        }
+    }
+
+    /** Original-image switch for the current pending batch. Default off, reset when the batch is sent. */
+    fun setSendOriginalImage(enabled: Boolean) {
+        _ui.update { state ->
+            state.copy(pendingMedia = state.pendingMedia.map { it.copy(sendOriginal = enabled) })
         }
     }
 
@@ -3084,14 +3086,59 @@ class AppViewModel(
             })
         }
         viewModelScope.launch {
-            mediaUploadSemaphore.withPermit {
-                container.api.uploadAttachment(resolver, Uri.parse(item.uri), item.fileName)
-            }.onSuccess { descriptor ->
-                _ui.update { state -> state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it }) }
-            }.onFailure { error ->
-                _ui.update { state -> state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it }) }
+            uploadPreparedMedia(resolver, id, Uri.parse(item.uri), item.fileName, item.mimeType)
+        }
+    }
+
+    /**
+     * Compresses a decodeable bitmap before upload when the batch is not marked
+     * original. A compress error fails this attachment; the original is not
+     * uploaded in its place.
+     */
+    private suspend fun uploadPreparedMedia(
+        resolver: ContentResolver,
+        id: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+    ) {
+        val sendOriginal = _ui.value.pendingMedia.firstOrNull { it.id == id }?.sendOriginal == true
+        val cacheDir = chatImageCacheDir()
+        val prepared = ChatImageUpload.prepare(
+            resolver = resolver,
+            uri = uri,
+            fileName = fileName,
+            mimeType = mimeType,
+            sendOriginal = sendOriginal,
+            cacheDir = cacheDir,
+        )
+        val upload = prepared.fold(
+            onSuccess = { ready ->
+                try {
+                    mediaUploadSemaphore.withPermit {
+                        container.api.uploadAttachment(resolver, ready.uri, ready.fileName)
+                    }
+                } finally {
+                    ready.cleanup?.delete()
+                }
+            },
+            onFailure = { Result.failure(it) },
+        )
+        upload.onSuccess { descriptor ->
+            _ui.update { state ->
+                state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it })
+            }
+        }.onFailure { error ->
+            _ui.update { state ->
+                state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it })
             }
         }
+    }
+
+    private fun chatImageCacheDir(): java.io.File {
+        val dir = java.io.File(container.appContext.cacheDir, "chat-images")
+        if (!dir.isDirectory) dir.mkdirs()
+        return dir
     }
 
     fun updateSessionQuery(value: String) {
@@ -4691,7 +4738,7 @@ class AppViewModel(
         val sessionId = state.settings.sessionId
         if (sessionId.isBlank()) return
         val media = state.pendingMedia.map { item ->
-            com.luckyagent.android.ui.util.draftMediaFrom(item.uri, item.fileName, item.mimeType, item.descriptor)
+            com.luckyagent.android.ui.util.draftMediaFrom(item.uri, item.fileName, item.mimeType, item.descriptor, item.sendOriginal)
         }
         val quote = state.pendingQuote
         val draft = com.luckyagent.android.ui.util.SessionDraft(
@@ -4723,6 +4770,7 @@ class AppViewModel(
                 uri = item.uri,
                 fileName = item.fileName,
                 mimeType = item.mimeType,
+                sendOriginal = item.sendOriginal,
                 descriptor = item.fileUrl?.let {
                     com.luckyagent.android.data.api.MediaAttachment(
                         type = "document",

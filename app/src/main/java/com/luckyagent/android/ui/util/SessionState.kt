@@ -27,6 +27,8 @@ data class DraftMedia(
     val filePath: String? = null,
     val fileId: String? = null,
     val fileSize: Long? = null,
+    /** Ordinary-image compression is skipped for this pending pick. Default off. */
+    val sendOriginal: Boolean = false,
 )
 
 /** Last message the reader has seen in this session. */
@@ -99,7 +101,13 @@ fun advanceReadCursor(current: String?, lastVisibleId: String?, atBottom: Boolea
     return current
 }
 
-fun draftMediaFrom(uri: String, fileName: String, mimeType: String, descriptor: MediaAttachment?): DraftMedia =
+fun draftMediaFrom(
+    uri: String,
+    fileName: String,
+    mimeType: String,
+    descriptor: MediaAttachment?,
+    sendOriginal: Boolean = false,
+): DraftMedia =
     DraftMedia(
         uri = uri,
         fileName = fileName,
@@ -108,4 +116,5 @@ fun draftMediaFrom(uri: String, fileName: String, mimeType: String, descriptor: 
         filePath = descriptor?.filePath,
         fileId = descriptor?.fileId,
         fileSize = descriptor?.fileSize,
+        sendOriginal = sendOriginal,
     )
