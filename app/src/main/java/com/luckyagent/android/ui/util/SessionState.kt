@@ -84,8 +84,8 @@ fun restoreScrollIndex(
         val found = messageIds.indexOf(id)
         if (found >= 0) return found.coerceIn(0, lastIndex) to (anchor?.offset ?: 0).coerceAtLeast(0)
     }
-    val index = anchor?.index ?: return lastIndex to 0
-    if (index <= 0) return lastIndex to 0
+    // v0.1.64: a missing index stays at the list start. Index 0 is a real row.
+    val index = anchor?.index ?: return 0 to 0
     return index.coerceIn(0, lastIndex) to (anchor.offset).coerceAtLeast(0)
 }
 
