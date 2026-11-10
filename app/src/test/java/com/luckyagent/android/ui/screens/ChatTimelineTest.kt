@@ -517,11 +517,24 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun openingWithoutAnAnchorLandsOnTheLatestRow() {
-        assertEquals(12 to 0, openingScrollIndex(null, 12))
-        assertEquals(12 to 0, openingScrollIndex(0 to 40, 12))
+    fun openingWithoutAnAnchorStaysAtTheListStart() {
+        assertEquals(0 to 0, openingScrollIndex(null, 12))
+        assertEquals(0 to 0, openingScrollIndex(null, 0))
+        assertEquals(0 to 0, openingScrollIndex(null, -1))
+        // Index 0 is a saved LazyList row, not a sentinel for the tail.
+        assertEquals(0 to 40, openingScrollIndex(0 to 40, 12))
         assertEquals(4 to 18, openingScrollIndex(4 to 18, 12))
         assertEquals(12 to 9, openingScrollIndex(40 to 9, 12))
+    }
+
+    @Test
+    fun followLatestScrollsToTimelineSizeNotThePaintedTail() {
+        assertEquals(12, followLatestScrollIndex(12))
+        assertEquals(0, followLatestScrollIndex(0))
+        // Unread and date separators increase the painted count. The follow
+        // target stays timeline.size, matching v0.1.64 scrollToItem(timeline.size).
+        val paintedCount = 12 + 3
+        assertEquals(12, followLatestScrollIndex(paintedCount - 3))
     }
 
     @Test

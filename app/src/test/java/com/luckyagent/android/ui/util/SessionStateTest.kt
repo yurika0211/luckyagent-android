@@ -31,8 +31,9 @@ class SessionStateTest {
         assertEquals(1 to 12, byId)
         val fallback = restoreScrollIndex(ids, ScrollAnchor(messageId = "gone", index = 2, offset = 4), 2)
         assertEquals(2 to 4, fallback)
-        // A stored index of 0 is the legacy "back to the tail" sentinel, not a row.
-        val tail = restoreScrollIndex(ids, ScrollAnchor(messageId = "gone", index = 0, offset = 9), 2)
-        assertEquals(2 to 0, tail)
+        // v0.1.64: index 0 is the first LazyList row, not a jump to the tail.
+        val start = restoreScrollIndex(ids, ScrollAnchor(messageId = "gone", index = 0, offset = 9), 2)
+        assertEquals(0 to 9, start)
+        assertEquals(0 to 0, restoreScrollIndex(ids, null, 2))
     }
 }

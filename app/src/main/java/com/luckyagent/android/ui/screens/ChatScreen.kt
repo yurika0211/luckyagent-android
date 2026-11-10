@@ -599,15 +599,23 @@ internal fun dedupeLiveTurn(
 }
 
 /**
- * Where to land when a session opens.
- * A saved anchor of 0 is the list default before the first real scroll, so an
- * oldest-first list uses the latest row instead. A later anchor is restored.
+ * Where to land when a session opens. Matches v0.1.64 (`9c31abf`): no saved
+ * anchor stays at the start of the list (`scrollToItem(0)`). A saved anchor is
+ * the LazyList `firstVisibleItemIndex` / `firstVisibleItemScrollOffset` pair,
+ * restored and clamped. Index 0 is a real row, not a sentinel.
  */
 internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<Int, Int> {
     if (lastIndex < 0) return 0 to 0
-    val saved = anchor?.takeIf { it.first > 0 } ?: return lastIndex to 0
+    val saved = anchor ?: return 0 to 0
     return saved.first.coerceIn(0, lastIndex) to saved.second
 }
+
+/**
+ * Follow-latest target. v0.1.64 scrolls to `timeline.size`, which is one past
+ * the last timeline row. [paintedCount] is larger when date or unread
+ * separators are painted; those extra rows must not change this target.
+ */
+internal fun followLatestScrollIndex(timelineSize: Int): Int = timelineSize
 
 /** Compact phone pager: navigation, chat (landing), sessions. */
 internal const val CompactNavPage = 0
@@ -1680,42 +1688,12 @@ private fun ChatConversation(
                     // Writing the anchor on every pixel used to wake the VM during
                     // a fling. One write after the finger stops is enough to restore.
                     if (!scrolling && restoredSession == state.settings.sessionId) {
-                        val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()
-                        val visibleKey = visible?.key as? String
-                        // The painted list inserts date and unread rows that the
-                        // message list does not have, so the stored index has to
-                        // count those rows too.
-                        val painted = com.luckyagent.android.ui.util.paintedChatRows(
-                            timeline.map { it.key },
-                            timeline.map { item ->
-                                val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
-                                com.luckyagent.android.ui.util.messageDay(created)
-                            },
-                            state.readCursorMessageId,
-                        )
-                        // The first painted row is often a separator, and those keys
-                        // are not messages. Store the message under it so the anchor
-                        // still resolves after the row list changes.
-                        val messageId = com.luckyagent.android.ui.util.firstMessageIdAt(
-                            painted,
-                            listState.firstVisibleItemIndex,
-                        )
-                        val anchorIndex = if (messageId.isEmpty()) {
-                            listState.firstVisibleItemIndex
-                        } else {
-                            painted.indexOfFirst { it.key == messageId }
-                                .takeIf { it >= 0 } ?: listState.firstVisibleItemIndex
-                        }
-                        val anchorOffset = if (visibleKey == messageId) {
-                            listState.firstVisibleItemScrollOffset
-                        } else {
-                            0
-                        }
+                        // v0.1.64 stores the LazyList row directly. Unread and date
+                        // separators stay painted, but they do not remap this anchor.
                         vm.saveScrollAnchor(
                             state.settings.sessionId,
-                            anchorIndex,
-                            anchorOffset,
-                            messageId = messageId,
+                            listState.firstVisibleItemIndex,
+                            listState.firstVisibleItemScrollOffset,
                         )
                         if (atBottom) {
                             val tail = timeline.lastOrNull()?.key
@@ -1759,18 +1737,13 @@ private fun ChatConversation(
             snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
             val record = vm.scrollAnchorRecord(state.settings.sessionId)
             restoredSession = state.settings.sessionId
-            val messageIds = timeline.map { it.key }
-            val unreadAt = com.luckyagent.android.ui.util.firstUnreadIndex(messageIds, state.readCursorMessageId)
-            // The painted rows are what LazyColumn shows, so the restored index
-            // has to count the date and unread separators too.
-            val rows = paintedRows(timeline, state.readCursorMessageId)
-            val rowIds = rows.map { it.key }
-            val (index, offset) = if (unreadAt >= 0) {
-                val unreadRow = rows.indexOfFirst { it is com.luckyagent.android.ui.util.UnreadSeparatorRow }
-                (if (unreadRow >= 0) unreadRow else unreadAt) to 0
-            } else {
-                com.luckyagent.android.ui.util.restoreScrollIndex(rowIds, record, rowIds.lastIndex)
-            }
+            // v0.1.64: no anchor stays at the list start. Do not jump to the
+            // unread separator or the latest row on open. The stored pair is
+            // firstVisibleItemIndex / firstVisibleItemScrollOffset.
+            val (index, offset) = openingScrollIndex(
+                record?.let { it.index to it.offset },
+                timeline.lastIndex,
+            )
             listState.scrollToItem(index, offset)
             lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }
@@ -1779,10 +1752,10 @@ private fun ChatConversation(
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()
             val atBottom = lastVisible == null ||
-                (lastVisible.index >= layout.totalItemsCount - 2 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
+                (lastVisible.index == layout.totalItemsCount - 1 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
             val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             if (shouldFollowLatest(atBottom, position == lastAutoScrollPosition)) {
-                listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+                listState.scrollToItem(followLatestScrollIndex(timeline.size))
                 lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             }
         }
