@@ -3796,6 +3796,7 @@ private fun ComposerBar(
     onStopVoice: () -> Unit,
     onCancelVoice: () -> Unit,
 ) {
+    val context = LocalContext.current
     var showContextSheet by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.composer, state.pendingQuote, state.pendingMedia) {
         kotlinx.coroutines.delay(400)
@@ -3979,7 +3980,7 @@ private fun ComposerBar(
                     val sendOriginal = state.pendingMedia.any { it.sendOriginal }
                     FilterChip(
                         selected = sendOriginal,
-                        onClick = { vm.setSendOriginalImage(!sendOriginal) },
+                        onClick = { vm.setSendOriginalImage(context.contentResolver, !sendOriginal) },
                         label = { Text("原图") },
                     )
                 }
