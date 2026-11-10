@@ -34,6 +34,7 @@ import com.luckyagent.android.data.cache.olderPageEnd
 import com.luckyagent.android.data.cache.prependOlderPage
 import com.luckyagent.android.data.cache.withContentTruncation
 import com.luckyagent.android.data.api.MediaAttachment
+import com.luckyagent.android.data.media.ChatImageUpload
 import com.luckyagent.android.data.api.ModelRef
 import com.luckyagent.android.data.api.ModelEffortResponse
 import com.luckyagent.android.data.api.RuntimeConfigSchema
@@ -112,6 +113,7 @@ import com.luckyagent.android.ui.screens.historySettlesUnownedTurn
 import com.luckyagent.android.ui.screens.replayRegistersLiveRun
 import com.luckyagent.android.ui.util.quoteFromBubble
 import kotlinx.coroutines.Job
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
@@ -259,6 +261,10 @@ data class PendingMedia(
     val mimeType: String,
     val descriptor: MediaAttachment? = null,
     val error: String? = null,
+    /** This pick skips ordinary-image compression. Not a global setting. */
+    val sendOriginal: Boolean = false,
+    /** Bumped when this pick is uploaded again. Stale results are ignored. */
+    val uploadGeneration: Int = 0,
 )
 
 data class LuckyPendingSegment(
@@ -3056,19 +3062,45 @@ class AppViewModel(
                     ?.lowercase()
                     ?.let { ext -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) }
                 ?: "application/octet-stream"
-            val item = PendingMedia(id, uri.toString(), name, mime)
+            val item = PendingMedia(
+                id,
+                uri.toString(),
+                name,
+                mime,
+                sendOriginal = _ui.value.pendingMedia.any { it.sendOriginal },
+            )
             _ui.update { state -> state.copy(pendingMedia = state.pendingMedia + item) }
-            viewModelScope.launch {
-                mediaUploadSemaphore.withPermit { container.api.uploadAttachment(resolver, uri, name) }.onSuccess { descriptor ->
-                    _ui.update { state ->
-                        state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it })
-                    }
-                }.onFailure { error ->
-                    _ui.update { state ->
-                        state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it })
-                    }
-                }
+            startPreparedUpload(resolver, id, uri, name, mime, item.uploadGeneration)
+        }
+    }
+
+    /**
+     * Original-image switch for the whole pending batch. Default off.
+     * Turning it on re-uploads originals; turning it off re-compresses.
+     * In-flight uploads for this batch are cancelled first so one batch
+     * cannot mix compressed and original files.
+     */
+    fun setSendOriginalImage(resolver: ContentResolver, enabled: Boolean) {
+        val batch = _ui.value.pendingMedia
+        if (batch.isEmpty() || batch.all { it.sendOriginal == enabled }) {
+            _ui.update { state ->
+                state.copy(pendingMedia = state.pendingMedia.map { it.copy(sendOriginal = enabled) })
             }
+            return
+        }
+        mediaUploadJobs.values.forEach { it.cancel() }
+        mediaUploadJobs.clear()
+        val next = batch.map { item ->
+            item.copy(
+                sendOriginal = enabled,
+                descriptor = null,
+                error = null,
+                uploadGeneration = item.uploadGeneration + 1,
+            )
+        }
+        _ui.update { state -> state.copy(pendingMedia = next) }
+        next.forEach { item ->
+            startPreparedUpload(resolver, item.id, Uri.parse(item.uri), item.fileName, item.mimeType, item.uploadGeneration)
         }
     }
 
@@ -3078,20 +3110,94 @@ class AppViewModel(
 
     fun retryPendingMedia(resolver: ContentResolver, id: String) {
         val item = _ui.value.pendingMedia.firstOrNull { it.id == id } ?: return
+        val generation = item.uploadGeneration + 1
         _ui.update { state ->
             state.copy(pendingMedia = state.pendingMedia.map {
-                if (it.id == id) it.copy(descriptor = null, error = null) else it
+                if (it.id == id) it.copy(descriptor = null, error = null, uploadGeneration = generation) else it
             })
         }
-        viewModelScope.launch {
-            mediaUploadSemaphore.withPermit {
-                container.api.uploadAttachment(resolver, Uri.parse(item.uri), item.fileName)
-            }.onSuccess { descriptor ->
-                _ui.update { state -> state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it }) }
-            }.onFailure { error ->
-                _ui.update { state -> state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it }) }
+        startPreparedUpload(resolver, id, Uri.parse(item.uri), item.fileName, item.mimeType, generation)
+    }
+
+    private val mediaUploadJobs = mutableMapOf<String, Job>()
+
+    private fun startPreparedUpload(
+        resolver: ContentResolver,
+        id: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        generation: Int,
+    ) {
+        mediaUploadJobs[id]?.cancel()
+        mediaUploadJobs[id] = viewModelScope.launch {
+            try {
+                uploadPreparedMedia(resolver, id, uri, fileName, mimeType, generation)
+            } finally {
+                if (mediaUploadJobs[id] == coroutineContext[Job]) mediaUploadJobs.remove(id)
             }
         }
+    }
+
+    /**
+     * Compresses a decodeable bitmap before upload when this pick is not marked
+     * original. Decode and JPEG run off the main dispatcher. A compress error
+     * fails this attachment; the original is not uploaded in its place.
+     */
+    private suspend fun uploadPreparedMedia(
+        resolver: ContentResolver,
+        id: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        generation: Int,
+    ) {
+        val current = _ui.value.pendingMedia.firstOrNull { it.id == id } ?: return
+        if (current.uploadGeneration != generation) return
+        val sendOriginal = current.sendOriginal
+        val cacheDir = chatImageCacheDir()
+        val prepared = withContext(Dispatchers.IO) {
+            ChatImageUpload.prepare(
+                resolver = resolver,
+                uri = uri,
+                fileName = fileName,
+                mimeType = mimeType,
+                sendOriginal = sendOriginal,
+                cacheDir = cacheDir,
+            )
+        }
+        val upload = prepared.fold(
+            onSuccess = { ready ->
+                try {
+                    mediaUploadSemaphore.withPermit {
+                        container.api.uploadAttachment(resolver, ready.uri, ready.fileName)
+                    }
+                } finally {
+                    ready.cleanup?.delete()
+                }
+            },
+            onFailure = { Result.failure(it) },
+        )
+        upload.onSuccess { descriptor ->
+            _ui.update { state ->
+                state.copy(pendingMedia = state.pendingMedia.map {
+                    if (it.id == id && it.uploadGeneration == generation) it.copy(descriptor = descriptor, error = null) else it
+                })
+            }
+        }.onFailure { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            _ui.update { state ->
+                state.copy(pendingMedia = state.pendingMedia.map {
+                    if (it.id == id && it.uploadGeneration == generation) it.copy(error = error.message ?: "上传失败") else it
+                })
+            }
+        }
+    }
+
+    private fun chatImageCacheDir(): java.io.File {
+        val dir = java.io.File(container.appContext.cacheDir, "chat-images")
+        if (!dir.isDirectory) dir.mkdirs()
+        return dir
     }
 
     fun updateSessionQuery(value: String) {
@@ -4691,7 +4797,7 @@ class AppViewModel(
         val sessionId = state.settings.sessionId
         if (sessionId.isBlank()) return
         val media = state.pendingMedia.map { item ->
-            com.luckyagent.android.ui.util.draftMediaFrom(item.uri, item.fileName, item.mimeType, item.descriptor)
+            com.luckyagent.android.ui.util.draftMediaFrom(item.uri, item.fileName, item.mimeType, item.descriptor, item.sendOriginal)
         }
         val quote = state.pendingQuote
         val draft = com.luckyagent.android.ui.util.SessionDraft(
@@ -4723,6 +4829,7 @@ class AppViewModel(
                 uri = item.uri,
                 fileName = item.fileName,
                 mimeType = item.mimeType,
+                sendOriginal = item.sendOriginal,
                 descriptor = item.fileUrl?.let {
                     com.luckyagent.android.data.api.MediaAttachment(
                         type = "document",
