@@ -621,6 +621,16 @@ internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<I
 internal fun followLatestScrollIndex(drawnRowCount: Int): Int =
     (drawnRowCount - 1).coerceAtLeast(0)
 
+/**
+ * True once LazyColumn has measured the rows this composition will paint.
+ *
+ * A timeline change runs the follow effect before the next layout pass, so
+ * [measuredCount] can still be the previous list. Scrolling then lands on the
+ * old tail and a later measure has no effect key. Wait for the drawn count.
+ */
+internal fun drawnRowsReady(measuredCount: Int, expectedCount: Int): Boolean =
+    expectedCount > 0 && measuredCount == expectedCount
+
 /** Compact phone pager: navigation, chat (landing), sessions. */
 internal const val CompactNavPage = 0
 internal const val CompactChatPage = 1
@@ -1759,17 +1769,21 @@ private fun ChatConversation(
             listState.scrollToItem(index, offset)
             lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }
-        LaunchedEffect(timeline.size, timeline.lastOrNull()?.key, latestContentKey, state.liveSummary, state.isResponding) {
+        LaunchedEffect(timeline.size, timeline.lastOrNull()?.key, latestContentKey, state.liveSummary, state.isResponding, state.readCursorMessageId) {
             if (timeline.isEmpty() || restoredSession != state.settings.sessionId || listState.isScrollInProgress) return@LaunchedEffect
+            val expectedRows = paintedRows(timeline, state.readCursorMessageId).size
+            // layoutInfo still describes the previous item list until the next
+            // measure. Wait until the drawn count matches displayRows.
+            snapshotFlow { listState.layoutInfo.totalItemsCount }
+                .first { drawnRowsReady(it, expectedRows) }
+            if (restoredSession != state.settings.sessionId || listState.isScrollInProgress) return@LaunchedEffect
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()
             val atBottom = lastVisible == null ||
                 (lastVisible.index == layout.totalItemsCount - 1 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
             val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             if (shouldFollowLatest(atBottom, position == lastAutoScrollPosition)) {
-                listState.scrollToItem(
-                    followLatestScrollIndex(listState.layoutInfo.totalItemsCount),
-                )
+                listState.scrollToItem(followLatestScrollIndex(expectedRows))
                 lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             }
         }
