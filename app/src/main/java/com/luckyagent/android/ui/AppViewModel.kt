@@ -322,6 +322,8 @@ data class AppUiState(
     val workingSessionIds: Set<String> = emptySet(),
     val bubbles: List<ChatBubble> = emptyList(),
     val historyLoading: Boolean = false,
+    /** A real cached/API page (including an empty page) has established the current history. */
+    val historyReady: Boolean = false,
     /** True while a pull-to-refresh is in flight, including when bubbles are already shown. */
     val historyRefreshing: Boolean = false,
     val historyLoadingMore: Boolean = false,
@@ -529,7 +531,9 @@ class AppViewModel(
      * real count. An empty in-memory page is not that: a failed or still-running
      * load also leaves the count at 0, and that 0 must not anchor a live turn.
      */
-    private var historyCountConfirmed = false
+    private var historyCountConfirmed: Boolean
+        get() = _ui.value.historyReady
+        set(value) { _ui.update { it.copy(historyReady = value) } }
     /** Server index whose full body is currently being fetched. -1 when idle. */
     private var expandingHistoryIndex = -1
     private var assistantBufferId: String? = null
@@ -3448,6 +3452,8 @@ class AppViewModel(
                 historyLoadError = null
                 historyBodiesFull = true
                 historyStartIndex = 0
+                historyMessageCount = 0
+                historyCountConfirmed = false
                 resetAssistantStream()
                 toolStepIndex.clear()
                 container.wsClient.disconnect()
@@ -3505,6 +3511,8 @@ class AppViewModel(
                 historyLoadError = null
                 historyBodiesFull = true
                 historyStartIndex = 0
+                historyMessageCount = 0
+                historyCountConfirmed = false
                 _ui.update {
                     it.copy(
                         bubbles = emptyList(),
@@ -3838,6 +3846,11 @@ class AppViewModel(
 
     fun loadMoreHistory() {
         loadHistory(currentSessionId(), reset = false)
+    }
+
+    fun historyReadyFor(sessionId: String, apiBase: String, apiKey: String): Boolean {
+        if (currentSessionId() != sessionId || !currentCacheConnectionMatches(apiBase, apiKey)) return false
+        return isStandaloneConnection() || (historySessionId == sessionId && historyCountConfirmed)
     }
 
     /**

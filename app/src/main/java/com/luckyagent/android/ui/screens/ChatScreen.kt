@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -183,12 +184,7 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.animation.core.animateFloatAsState
-import com.luckyagent.android.ui.util.bubbleDrawHeight
-import com.luckyagent.android.ui.util.bubbleTransitionDone
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
@@ -287,7 +283,6 @@ import com.luckyagent.android.ui.theme.CloverUserBubble
 import com.luckyagent.android.ui.theme.CloverWarning
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.first
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import java.time.Instant
@@ -598,17 +593,6 @@ internal fun dedupeLiveTurn(
     }
 }
 
-/** A missing or legacy anchor opens at the tail; only explicit history mode restores a row. */
-internal fun openingScrollIndex(
-    anchor: Pair<Int, Int>?,
-    lastIndex: Int,
-    followLatest: Boolean = true,
-): Pair<Int, Int> {
-    if (lastIndex < 0) return 0 to 0
-    if (followLatest || anchor == null) return lastIndex to 0
-    return anchor.first.coerceIn(0, lastIndex) to anchor.second.coerceAtLeast(0)
-}
-
 /** Separators, optional errors and the fixed tail all count as drawn rows. */
 internal fun followLatestScrollIndex(drawnRowCount: Int): Int =
     (drawnRowCount - 1).coerceAtLeast(0)
@@ -651,7 +635,7 @@ internal fun surfaceStaysLive(visibleKeys: List<Any>, key: Any, wasLive: Boolean
  * the decision waits for [LazyListState.isScrollInProgress] to clear.
  */
 @Composable
-private fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
+internal fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
     // Start cold. LazyColumn composes a prefetch window before it has reported
     // visible keys; mounting a WebView for every prefetched history row was the
     // source of the first-scroll hitch. Once layout settles, only rows that are
@@ -1810,19 +1794,19 @@ private fun ChatConversation(
             // viewport appear above it instead of pushing it down.
             listState.requestScrollToItem(index, anchorOffset)
         }
-        LaunchedEffect(listState, timeline.isNotEmpty(), expectedItemCount) {
-            if (timeline.isEmpty() || restoredSession == state.settings.sessionId) return@LaunchedEffect
-            snapshotFlow { listState.layoutInfo.totalItemsCount }
-                .first { drawnRowsReady(it, expectedItemCount) }
-            if (!followLatest) {
-                val position = com.luckyagent.android.ui.util.restoreScrollIndex(
-                    displayRows.map { it.key }, savedScrollAnchor, displayRows.lastIndex,
-                )
-                val (index, offset) = openingScrollIndex(position, expectedItemCount - 1, followLatest = false)
-                listState.scrollToItem(index, offset)
-            }
-            restoredSession = state.settings.sessionId
-        }
+        RestoreChatScrollEffect(
+            listState = listState,
+            sessionId = state.settings.sessionId,
+            rows = displayRows,
+            expectedItemCount = expectedItemCount,
+            historyLoading = state.historyLoading,
+            historyReady = vm.historyReadyFor(state.settings.sessionId, state.settings.apiBase, state.settings.apiKey),
+            hasMessages = timeline.isNotEmpty(),
+            anchor = savedScrollAnchor,
+            followLatest = followLatest,
+            restored = restoredSession == state.settings.sessionId,
+            onRestored = { restoredSession = state.settings.sessionId },
+        )
         FollowLatestEffect(
             listState, state.settings.sessionId, expectedItemCount,
             followLatest && restoredSession == state.settings.sessionId && !sessionSearchOpen,
@@ -1968,7 +1952,7 @@ private fun ChatConversation(
                                 openUiSelection = state.openUiSelection,
                                 highlighted = item.key == activeHitId,
                                 growing = item.bubble.streaming,
-                                dragging = listState.isScrollInProgress,
+                                dragging = listState.isScrollInProgress && !followLatest,
                                 flatTop = edges?.flatTop == true,
                                 flatBottom = edges?.flatBottom == true,
                                 showAvatar = edges?.showAvatar != false,
@@ -2800,26 +2784,6 @@ internal fun BubbleRow(
                             Spacer(Modifier.height(8.dp))
                         }
                         if (bubble.content.isNotBlank()) {
-                            val density = LocalDensity.current
-                            var fromHeight by remember(bubble.id) { mutableStateOf(0) }
-                            var toHeight by remember(bubble.id) { mutableStateOf(0) }
-                            var growTarget by remember(bubble.id) { mutableStateOf(1f) }
-                            val animating = growing && !dragging && fromHeight > 0 && toHeight > fromHeight
-                            val progress by animateFloatAsState(
-                                targetValue = if (animating) growTarget else 1f,
-                                animationSpec = tween(if (dragging || !growing) 0 else 180),
-                                label = "bubble-grow",
-                                finishedListener = { finished ->
-                                    if (finished <= 0f && animating) growTarget = 1f
-                                    if (bubbleTransitionDone(finished)) fromHeight = 0
-                                },
-                            )
-                            val drawHeight = bubbleDrawHeight(
-                                previous = fromHeight,
-                                next = toHeight,
-                                progress = progress,
-                                dragging = dragging,
-                            )
                             val shape = RoundedCornerShape(
                                 topStart = if (flatTop && !isUser) 4.dp else 18.dp,
                                 topEnd = if (flatTop && isUser) 4.dp else 18.dp,
@@ -2830,8 +2794,10 @@ internal fun BubbleRow(
                                 Modifier
                                     .clip(shape)
                                     .then(
-                                        if (animating && drawHeight > 0) {
-                                            Modifier.height(with(density) { drawHeight.toDp() })
+                                        if (growing && !dragging) {
+                                            // Measure natural content once; do not feed an
+                                            // animated height back into the next target.
+                                            Modifier.animateContentSize(animationSpec = tween(180))
                                         } else {
                                             Modifier
                                         },
@@ -2851,17 +2817,6 @@ internal fun BubbleRow(
                             ) {
                                 Column(
                                     Modifier
-                                        .onGloballyPositioned { coordinates ->
-                                            val measured = coordinates.size.height
-                                            if (measured <= 0 || dragging || !growing) return@onGloballyPositioned
-                                            if (fromHeight <= 0 || bubbleTransitionDone(progress)) {
-                                                fromHeight = toHeight.takeIf { it > 0 } ?: measured
-                                            }
-                                            if (measured != toHeight) {
-                                                toHeight = measured
-                                                growTarget = 0f
-                                            }
-                                        }
                                         .then(
                                             if (isUser) {
                                                 Modifier.padding(horizontal = 12.dp, vertical = 10.dp)

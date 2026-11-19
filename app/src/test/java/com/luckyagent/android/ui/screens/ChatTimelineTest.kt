@@ -519,21 +519,6 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun openingDefaultsToLatestAndOnlyExplicitHistoryRestoresAnAnchor() {
-        assertEquals(12 to 0, openingScrollIndex(null, 12))
-        assertEquals(0 to 0, openingScrollIndex(null, 0))
-        assertEquals(0 to 0, openingScrollIndex(null, -1))
-        // Legacy anchors default to following; the old row-zero bug must not persist.
-        assertEquals(12 to 0, openingScrollIndex(0 to 40, 12))
-        assertEquals(12 to 0, openingScrollIndex(4 to 18, 12))
-        assertEquals(0 to 40, openingScrollIndex(0 to 40, 12, followLatest = false))
-        assertEquals(4 to 18, openingScrollIndex(4 to 18, 12, followLatest = false))
-        assertEquals(12 to 9, openingScrollIndex(40 to 9, 12, followLatest = false))
-        assertEquals(15 to 4, openingScrollIndex(15 to 4, 15, followLatest = false))
-        assertEquals(8 to 0, openingScrollIndex(8 to -2, 15, followLatest = false))
-    }
-
-    @Test
     fun followLatestScrollsToTheLastDrawnRow() {
         assertEquals(0, followLatestScrollIndex(0))
         assertEquals(0, followLatestScrollIndex(1))
