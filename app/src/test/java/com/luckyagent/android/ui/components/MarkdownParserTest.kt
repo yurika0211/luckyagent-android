@@ -194,6 +194,19 @@ class MarkdownParserTest {
     }
 
     @Test
+    fun displayMathKeepsBlankLinesInsideOneBlockBetweenParagraphs() {
+        val body = "\\frac{1}{2}\n\n+\\frac{1}{3}"
+        val blocks = splitMarkdownBlocks("before\n\n$$\n$body\n$$\n\nafter")
+
+        assertEquals(3, blocks.size)
+        assertEquals("before", (blocks[0] as MdBlock.Paragraph).text)
+        val math = blocks[1] as MdBlock.Math
+        assertEquals(body, math.latex)
+        assertTrue(math.display)
+        assertEquals("after", (blocks[2] as MdBlock.Paragraph).text)
+    }
+
+    @Test
     fun inlineDisplayStyleStaysInsideTheParagraph() {
         val paragraph = splitMarkdownBlocks("area is $\\displaystyle \\frac{a}{b}$ here").single() as MdBlock.Paragraph
 
@@ -279,6 +292,63 @@ class MarkdownParserTest {
 
         assertEquals("flowchart LR\n  A-->B", block.source.trim())
     }
+
+    @Test
+    fun closedCodeFenceKeepsBlankLinesAndHtmlLiteralsInsideOneBlock() {
+        val body = "val before = 1\n\nval markup = \"<b>literal</b>\"\n\nval after = 2"
+        val blocks = splitMarkdownBlocks("before\n\n```kotlin\n$body\n```\n\nafter")
+
+        assertEquals(3, blocks.size)
+        assertEquals("before", (blocks[0] as MdBlock.Paragraph).text)
+        val code = blocks[1] as MdBlock.Code
+        assertEquals("kotlin", code.lang)
+        assertEquals(body, code.body)
+        assertEquals("after", (blocks[2] as MdBlock.Paragraph).text)
+    }
+
+    @Test
+    fun closedMermaidFenceKeepsBlankLinesInsideOneDiagram() {
+        val body = "flowchart LR\n  A-->B\n\n  B-->C"
+        val blocks = splitMarkdownBlocks("before\n\n```mermaid\n$body\n```\n\nafter")
+
+        assertEquals(3, blocks.size)
+        assertEquals("before", (blocks[0] as MdBlock.Paragraph).text)
+        assertEquals(body, (blocks[1] as MdBlock.Mermaid).source)
+        assertEquals("after", (blocks[2] as MdBlock.Paragraph).text)
+    }
+
+    @Test
+    fun closedHtmlFenceKeepsBlankLinesInsideOnePreview() {
+        val body = "<svg>\n\n<circle cx=\"10\" cy=\"10\" r=\"5\"/>\n</svg>"
+        val blocks = splitMarkdownBlocks("before\n\n```html\n$body\n```\n\nafter")
+
+        assertEquals(3, blocks.size)
+        assertEquals("before", (blocks[0] as MdBlock.Paragraph).text)
+        val html = blocks[1] as MdBlock.Html
+        assertEquals(body, html.source)
+        assertTrue(html.showPreview)
+        assertEquals("after", (blocks[2] as MdBlock.Paragraph).text)
+    }
+
+    @Test
+    fun unclosedFencesKeepTheirEntireBodyIncludingBlankLinesAsCode() {
+        val bodies = mapOf(
+            "kotlin" to "first()\n\nsecond()",
+            "mermaid" to "flowchart LR\n  A-->B\n\n  B-->C",
+            "html" to "<div>\n\n<p>unfinished preview</p>",
+        )
+
+        for ((language, body) in bodies) {
+            val blocks = splitMarkdownBlocks("before\n\n```$language\n$body")
+
+            assertEquals(2, blocks.size)
+            assertEquals("before", (blocks[0] as MdBlock.Paragraph).text)
+            val code = blocks[1] as MdBlock.Code
+            assertEquals(language, code.lang)
+            assertEquals(body, code.body)
+        }
+    }
+
     @Test fun detailsWithBlankLinesAndNestedDetailsStaysOneBlock() {
         val source = "<details><summary>outer</summary>\n\n<details>\n<summary>inner</summary>\nx\n</details>\n</details >"
         assertEquals(source, (splitMarkdownBlocks(source).single() as MdBlock.Html).source)

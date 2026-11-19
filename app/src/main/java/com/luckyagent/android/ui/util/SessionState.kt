@@ -42,6 +42,7 @@ data class ScrollAnchor(
     val messageId: String = "",
     val index: Int = 0,
     val offset: Int = 0,
+    val followLatest: Boolean = true,
 )
 
 fun draftPreview(draft: SessionDraft?): String =

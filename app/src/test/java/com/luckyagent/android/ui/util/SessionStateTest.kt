@@ -1,10 +1,38 @@
 package com.luckyagent.android.ui.util
 
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionStateTest {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    @Test
+    fun oldScrollAnchorJsonDefaultsToFollowingLatest() {
+        val stored = """{"session":{"messageId":"anchor","index":4,"offset":18}}"""
+        val anchor = json.decodeFromString<Map<String, ScrollAnchor>>(stored).getValue("session")
+
+        assertEquals("anchor", anchor.messageId)
+        assertEquals(4, anchor.index)
+        assertEquals(18, anchor.offset)
+        assertTrue(anchor.followLatest)
+        assertTrue(ScrollAnchor(index = 4, offset = 18).followLatest)
+    }
+
+    @Test
+    fun explicitHistoryScrollAnchorSurvivesJsonRoundTrip() {
+        val anchor = ScrollAnchor(messageId = "anchor", index = 4, offset = 18, followLatest = false)
+        val stored = json.encodeToString(mapOf("session" to anchor))
+        val restored = json.decodeFromString<Map<String, ScrollAnchor>>(stored).getValue("session")
+
+        assertEquals(anchor, restored)
+        assertFalse(restored.followLatest)
+    }
+
     @Test
     fun draftSummaryReplacesRecapWhenNewer() {
         val draft = SessionDraft(sessionId = "a", text = "还没发出去", savedAtMs = 20)
