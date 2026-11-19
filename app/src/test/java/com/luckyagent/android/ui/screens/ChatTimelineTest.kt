@@ -519,18 +519,18 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun openingWithoutAnAnchorStaysAtTheListStart() {
-        assertEquals(0 to 0, openingScrollIndex(null, 12))
+    fun openingDefaultsToLatestAndOnlyExplicitHistoryRestoresAnAnchor() {
+        assertEquals(12 to 0, openingScrollIndex(null, 12))
         assertEquals(0 to 0, openingScrollIndex(null, 0))
         assertEquals(0 to 0, openingScrollIndex(null, -1))
-        // Index 0 is a saved LazyList row, not a sentinel for the tail.
-        assertEquals(0 to 40, openingScrollIndex(0 to 40, 12))
-        assertEquals(4 to 18, openingScrollIndex(4 to 18, 12))
-        assertEquals(12 to 9, openingScrollIndex(40 to 9, 12))
-        // Drawn rows include date and unread separators, so the clamp bound
-        // is the last painted index, not the last timeline index.
-        assertEquals(15 to 4, openingScrollIndex(15 to 4, 15))
-        assertEquals(8 to 2, openingScrollIndex(8 to 2, 15))
+        // Legacy anchors default to following; the old row-zero bug must not persist.
+        assertEquals(12 to 0, openingScrollIndex(0 to 40, 12))
+        assertEquals(12 to 0, openingScrollIndex(4 to 18, 12))
+        assertEquals(0 to 40, openingScrollIndex(0 to 40, 12, followLatest = false))
+        assertEquals(4 to 18, openingScrollIndex(4 to 18, 12, followLatest = false))
+        assertEquals(12 to 9, openingScrollIndex(40 to 9, 12, followLatest = false))
+        assertEquals(15 to 4, openingScrollIndex(15 to 4, 15, followLatest = false))
+        assertEquals(8 to 0, openingScrollIndex(8 to -2, 15, followLatest = false))
     }
 
     @Test
@@ -563,13 +563,6 @@ class ChatTimelineTest {
         assertTrue(drawnRowsReady(measuredCount = after.size, expectedCount = after.size))
         assertEquals(after.lastIndex, followLatestScrollIndex(after.size))
         assertTrue(followLatestScrollIndex(after.size) > before.lastIndex)
-    }
-
-    @Test
-    fun followLatestOnlyWhileTheViewportStayedAtTheBottom() {
-        assertTrue(shouldFollowLatest(atBottom = true, stuckToLastAutoScroll = false))
-        assertTrue(shouldFollowLatest(atBottom = false, stuckToLastAutoScroll = true))
-        assertFalse(shouldFollowLatest(atBottom = false, stuckToLastAutoScroll = false))
     }
 
     @Test

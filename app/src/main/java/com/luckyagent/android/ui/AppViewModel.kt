@@ -4770,10 +4770,21 @@ class AppViewModel(
     fun scrollAnchorRecord(sessionId: String): com.luckyagent.android.ui.util.ScrollAnchor? =
         container.settingsRepository.scrollAnchorRecord(sessionId)
 
-    fun saveScrollAnchor(sessionId: String, index: Int, offset: Int, messageId: String = "") {
+    fun saveScrollAnchor(
+        sessionId: String,
+        index: Int,
+        offset: Int,
+        messageId: String = "",
+        followLatest: Boolean = true,
+    ) {
         container.settingsRepository.saveScrollAnchor(
             sessionId,
-            com.luckyagent.android.ui.util.ScrollAnchor(messageId = messageId, index = index, offset = offset),
+            com.luckyagent.android.ui.util.ScrollAnchor(
+                messageId = messageId,
+                index = index,
+                offset = offset,
+                followLatest = followLatest,
+            ),
         )
     }
 
