@@ -2,8 +2,9 @@ package com.luckyagent.android.ui.util
 
 enum class SessionSearchTab { Messages, Media, Links }
 
+/** A hit identifies the actual painted row, including folded process rows. */
 data class SessionSearchHit(
-    val messageId: String,
+    val rowKey: String,
     val label: String,
     val tab: SessionSearchTab,
 )
@@ -13,33 +14,43 @@ data class SearchableMessage(
     val text: String,
     val fileNames: List<String> = emptyList(),
     val links: List<String> = emptyList(),
+    /** A folded row can refer to several full bodies without joining/copying them. */
+    val additionalTexts: List<String> = emptyList(),
 )
 
 private val linkPattern = Regex("""https?://[^\s)]+""")
 
 fun searchableLinks(text: String): List<String> = linkPattern.findAll(text).map { it.value }.toList()
 
-/** Ask for an older page when this tab has no hit and history still continues. */
-fun searchNeedsOlderHistory(hitCount: Int, query: String, hasMore: Boolean, loading: Boolean): Boolean =
-    query.isNotBlank() && hitCount == 0 && hasMore && !loading
+private fun searchExcerpt(text: String, needle: String): String {
+    val match = text.indexOf(needle, ignoreCase = true).coerceAtLeast(0)
+    val start = (match - 24).coerceAtLeast(0)
+    val end = (start + 80).coerceAtMost(text.length)
+    val excerpt = text.substring(start, end).replace('\n', ' ').replace('\r', ' ')
+    return (if (start > 0) "…" else "") + excerpt + (if (end < text.length) "…" else "")
+}
 
+/** Match full search bodies; rendering limits and display row identity stay independent. */
 fun sessionSearchHits(messages: List<SearchableMessage>, query: String, tab: SessionSearchTab): List<SessionSearchHit> {
     val needle = query.trim()
     if (needle.isEmpty()) return emptyList()
     return messages.mapNotNull { message ->
-        when (tab) {
+        val bodies = sequenceOf(message.text) + message.additionalTexts.asSequence()
+        val label = when (tab) {
             SessionSearchTab.Messages -> {
-                if (!message.text.contains(needle, ignoreCase = true)) return@mapNotNull null
-                SessionSearchHit(message.id, message.text.lineSequence().firstOrNull().orEmpty().take(80), tab)
+                val body = bodies.firstOrNull { it.contains(needle, ignoreCase = true) } ?: return@mapNotNull null
+                searchExcerpt(body, needle)
             }
             SessionSearchTab.Media -> {
                 val name = message.fileNames.firstOrNull { it.contains(needle, ignoreCase = true) } ?: return@mapNotNull null
-                SessionSearchHit(message.id, name, tab)
+                searchExcerpt(name, needle)
             }
             SessionSearchTab.Links -> {
-                val link = message.links.firstOrNull { it.contains(needle, ignoreCase = true) } ?: return@mapNotNull null
-                SessionSearchHit(message.id, link, tab)
+                val link = (message.links.asSequence() + bodies.flatMap { linkPattern.findAll(it).map { match -> match.value } })
+                    .firstOrNull { it.contains(needle, ignoreCase = true) } ?: return@mapNotNull null
+                searchExcerpt(link, needle)
             }
         }
+        SessionSearchHit(message.id, label, tab)
     }
 }

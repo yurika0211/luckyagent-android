@@ -42,6 +42,7 @@ internal fun projectHistoryBubbles(
                 val call = bubbles[callIndex]
                 bubbles[callIndex] = call.copy(
                     content = bubble.content,
+                    searchText = bubble.searchText,
                     toolOutput = bubble.toolOutput,
                     attachments = if (bubble.attachments.isNotEmpty()) bubble.attachments else call.attachments,
                     // A call lives on the assistant row; its result owns these
@@ -146,6 +147,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             id = "$bubbleBase-compact",
             role = "compact",
             content = compactLabel,
+            searchText = raw.takeIf { it != compactLabel },
             createdAt = createdAt,
             serverOrdinal = idx,
         )
@@ -154,6 +156,7 @@ internal fun ProviderMessage.toHistoryBubbles(
             id = if (role.equals("user", ignoreCase = true)) bubbleBase else "$bubbleBase-${role.hashCode()}",
             role = role,
             content = base,
+            searchText = raw.takeIf { it != base },
             createdAt = createdAt,
             usage = usage,
             attachments = messageAttachments,
