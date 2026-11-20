@@ -3262,7 +3262,7 @@ private fun formatTokenCount(tokens: Int): String = TokenFormat.full(tokens)
 private fun compactTokenCount(tokens: Int): String = TokenFormat.compact(tokens)
 
 @Composable
-private fun ApprovalCards(
+internal fun ApprovalCards(
     approvals: List<PendingApproval>,
     onDecision: (PendingApproval, String, String) -> Unit,
     modifier: Modifier = Modifier,
@@ -3336,7 +3336,9 @@ private fun ApprovalCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f).clickable { expanded = !expanded }) {
                     Text(headline, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(summary, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (!needsInput || !expanded) {
+                        Text(summary, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(28.dp)) {
                     Icon(
@@ -3374,6 +3376,11 @@ private fun ApprovalCard(
                 }
             }
             if (expanded && needsInput) {
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = CloverText,
+                )
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
