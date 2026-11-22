@@ -34,6 +34,7 @@ import com.luckyagent.android.data.cache.olderPageEnd
 import com.luckyagent.android.data.cache.prependOlderPage
 import com.luckyagent.android.data.cache.withContentTruncation
 import com.luckyagent.android.data.api.MediaAttachment
+import com.luckyagent.android.data.media.ChatImageUpload
 import com.luckyagent.android.data.api.ModelRef
 import com.luckyagent.android.data.api.ModelEffortResponse
 import com.luckyagent.android.data.api.RuntimeConfigSchema
@@ -112,10 +113,12 @@ import com.luckyagent.android.ui.screens.historySettlesUnownedTurn
 import com.luckyagent.android.ui.screens.replayRegistersLiveRun
 import com.luckyagent.android.ui.util.quoteFromBubble
 import kotlinx.coroutines.Job
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -235,6 +238,8 @@ data class ChatBubble(
      */
     val serverOrdinal: Int? = null,
     val openUi: com.luckyagent.android.data.openui.OpenUiDelta? = null,
+    /** Original body for local search when [content] is capped for display; never rendered. */
+    val searchText: String? = null,
 )
 
 data class ChatMedia(
@@ -261,6 +266,10 @@ data class PendingMedia(
     val mimeType: String,
     val descriptor: MediaAttachment? = null,
     val error: String? = null,
+    /** This pick skips ordinary-image compression. Not a global setting. */
+    val sendOriginal: Boolean = false,
+    /** Bumped when this pick is uploaded again. Stale results are ignored. */
+    val uploadGeneration: Int = 0,
 )
 
 data class LuckyPendingSegment(
@@ -315,6 +324,8 @@ data class AppUiState(
     val workingSessionIds: Set<String> = emptySet(),
     val bubbles: List<ChatBubble> = emptyList(),
     val historyLoading: Boolean = false,
+    /** A real cached/API page (including an empty page) has established the current history. */
+    val historyReady: Boolean = false,
     /** True while a pull-to-refresh is in flight, including when bubbles are already shown. */
     val historyRefreshing: Boolean = false,
     val historyLoadingMore: Boolean = false,
@@ -508,11 +519,13 @@ class AppViewModel(
     private var progressWatchReady = false
     private var approvalPollingJob: Job? = null
     private var historyJob: Job? = null
+    private var historyLoadError: String? = null
     /** Identifies the latest pull-to-refresh, so an older job cannot clear its indicator. */
     private var historyRefreshTicket = 0
     private var contextInspectJob: Job? = null
     private var historySessionId: String? = null
     private var historyMessages: List<ProviderMessage> = emptyList()
+    private var historyBodiesFull = true
     private var historyStartIndex = 0
     private var historyMessageCount = 0
     /**
@@ -520,7 +533,9 @@ class AppViewModel(
      * real count. An empty in-memory page is not that: a failed or still-running
      * load also leaves the count at 0, and that 0 must not anchor a live turn.
      */
-    private var historyCountConfirmed = false
+    private var historyCountConfirmed: Boolean
+        get() = _ui.value.historyReady
+        set(value) { _ui.update { it.copy(historyReady = value) } }
     /** Server index whose full body is currently being fetched. -1 when idle. */
     private var expandingHistoryIndex = -1
     private var assistantBufferId: String? = null
@@ -684,6 +699,8 @@ class AppViewModel(
         contextInspectJob?.cancel()
         historySessionId = target
         historyMessages = emptyList()
+        historyLoadError = null
+        historyBodiesFull = true
         historyStartIndex = 0
         historyMessageCount = 0
         historyCountConfirmed = false
@@ -2171,6 +2188,7 @@ class AppViewModel(
                         done = done || old.toolDone,
                         success = success ?: old.toolSuccess,
                     ),
+                    searchText = null,
                     stepId = old.stepId,
                 )
             } else {
@@ -2202,7 +2220,7 @@ class AppViewModel(
             if (index >= 0) {
                 val old = bubbles[index]
                 if (!old.reasoningHasContent || hasContent) {
-                    bubbles[index] = old.copy(content = safeText, reasoningHasContent = hasContent)
+                    bubbles[index] = old.copy(content = safeText, searchText = null, reasoningHasContent = hasContent)
                 }
             } else {
                 bubbles.insertBeforeStreamingAnswer(
@@ -2378,6 +2396,7 @@ class AppViewModel(
                     idx,
                     bubble.copy(
                         content = appendUiText(bubble.content, piece, MAX_UI_MESSAGE_CHARS),
+                        searchText = null,
                         streaming = true,
                         openUi = bubble.openUi ?: waitingTree,
                     ),
@@ -2423,7 +2442,12 @@ class AppViewModel(
                 (safeFull.isNullOrBlank() || list[lastAssistantIndex].content == safeFull) &&
                 (safeAttachments.isEmpty() || list[lastAssistantIndex].attachments.map(::mediaKey) == safeAttachments.map(::mediaKey))
             if (duplicateHistoryAnswer) {
-                return@update st.copy(isResponding = false)
+                if (!full.isNullOrBlank()) {
+                    list[lastAssistantIndex] = list[lastAssistantIndex].copy(
+                        searchText = full.takeIf { it != list[lastAssistantIndex].content },
+                    )
+                }
+                return@update st.copy(bubbles = list, isResponding = false)
             }
             if (id != null) {
                 val idx = list.indexOfLast { it.id == id }
@@ -2433,6 +2457,7 @@ class AppViewModel(
                     val answer = list.removeAt(idx)
                     list += answer.copy(
                         content = content,
+                        searchText = full?.takeIf { it.isNotBlank() && it != content },
                         streaming = false,
                         createdAt = createdAt ?: answer.createdAt,
                         usage = usage ?: answer.usage,
@@ -2446,6 +2471,7 @@ class AppViewModel(
                         id = id,
                         role = "assistant",
                         content = safeFull?.takeIf { it.isNotBlank() } ?: capUiText(pending, MAX_UI_MESSAGE_CHARS),
+                        searchText = full?.takeIf { it.isNotBlank() && it != safeFull },
                         streaming = false,
                         createdAt = createdAt,
                         usage = usage,
@@ -2458,6 +2484,7 @@ class AppViewModel(
                     id = "a-${System.currentTimeMillis()}",
                     role = "assistant",
                     content = safeFull.orEmpty(),
+                    searchText = full?.takeIf { it != safeFull },
                     createdAt = createdAt,
                     usage = usage,
                     attachments = safeAttachments,
@@ -2542,6 +2569,7 @@ class AppViewModel(
     private fun pushBubble(bubble: ChatBubble) {
         val safeBubble = bubble.copy(
             content = capUiText(bubble.content, MAX_UI_MESSAGE_CHARS),
+            searchText = bubble.searchText ?: bubble.content.takeIf { it.length > MAX_UI_MESSAGE_CHARS },
             attachments = bubble.attachments.take(MAX_UI_ATTACHMENTS),
         )
         _ui.update { it.copy(bubbles = it.bubbles + safeBubble) }
@@ -3139,19 +3167,45 @@ class AppViewModel(
                     ?.lowercase()
                     ?.let { ext -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) }
                 ?: "application/octet-stream"
-            val item = PendingMedia(id, uri.toString(), name, mime)
+            val item = PendingMedia(
+                id,
+                uri.toString(),
+                name,
+                mime,
+                sendOriginal = _ui.value.pendingMedia.any { it.sendOriginal },
+            )
             _ui.update { state -> state.copy(pendingMedia = state.pendingMedia + item) }
-            viewModelScope.launch {
-                mediaUploadSemaphore.withPermit { container.api.uploadAttachment(resolver, uri, name) }.onSuccess { descriptor ->
-                    _ui.update { state ->
-                        state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it })
-                    }
-                }.onFailure { error ->
-                    _ui.update { state ->
-                        state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it })
-                    }
-                }
+            startPreparedUpload(resolver, id, uri, name, mime, item.uploadGeneration)
+        }
+    }
+
+    /**
+     * Original-image switch for the whole pending batch. Default off.
+     * Turning it on re-uploads originals; turning it off re-compresses.
+     * In-flight uploads for this batch are cancelled first so one batch
+     * cannot mix compressed and original files.
+     */
+    fun setSendOriginalImage(resolver: ContentResolver, enabled: Boolean) {
+        val batch = _ui.value.pendingMedia
+        if (batch.isEmpty() || batch.all { it.sendOriginal == enabled }) {
+            _ui.update { state ->
+                state.copy(pendingMedia = state.pendingMedia.map { it.copy(sendOriginal = enabled) })
             }
+            return
+        }
+        mediaUploadJobs.values.forEach { it.cancel() }
+        mediaUploadJobs.clear()
+        val next = batch.map { item ->
+            item.copy(
+                sendOriginal = enabled,
+                descriptor = null,
+                error = null,
+                uploadGeneration = item.uploadGeneration + 1,
+            )
+        }
+        _ui.update { state -> state.copy(pendingMedia = next) }
+        next.forEach { item ->
+            startPreparedUpload(resolver, item.id, Uri.parse(item.uri), item.fileName, item.mimeType, item.uploadGeneration)
         }
     }
 
@@ -3161,20 +3215,94 @@ class AppViewModel(
 
     fun retryPendingMedia(resolver: ContentResolver, id: String) {
         val item = _ui.value.pendingMedia.firstOrNull { it.id == id } ?: return
+        val generation = item.uploadGeneration + 1
         _ui.update { state ->
             state.copy(pendingMedia = state.pendingMedia.map {
-                if (it.id == id) it.copy(descriptor = null, error = null) else it
+                if (it.id == id) it.copy(descriptor = null, error = null, uploadGeneration = generation) else it
             })
         }
-        viewModelScope.launch {
-            mediaUploadSemaphore.withPermit {
-                container.api.uploadAttachment(resolver, Uri.parse(item.uri), item.fileName)
-            }.onSuccess { descriptor ->
-                _ui.update { state -> state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(descriptor = descriptor) else it }) }
-            }.onFailure { error ->
-                _ui.update { state -> state.copy(pendingMedia = state.pendingMedia.map { if (it.id == id) it.copy(error = error.message ?: "上传失败") else it }) }
+        startPreparedUpload(resolver, id, Uri.parse(item.uri), item.fileName, item.mimeType, generation)
+    }
+
+    private val mediaUploadJobs = mutableMapOf<String, Job>()
+
+    private fun startPreparedUpload(
+        resolver: ContentResolver,
+        id: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        generation: Int,
+    ) {
+        mediaUploadJobs[id]?.cancel()
+        mediaUploadJobs[id] = viewModelScope.launch {
+            try {
+                uploadPreparedMedia(resolver, id, uri, fileName, mimeType, generation)
+            } finally {
+                if (mediaUploadJobs[id] == coroutineContext[Job]) mediaUploadJobs.remove(id)
             }
         }
+    }
+
+    /**
+     * Compresses a decodeable bitmap before upload when this pick is not marked
+     * original. Decode and JPEG run off the main dispatcher. A compress error
+     * fails this attachment; the original is not uploaded in its place.
+     */
+    private suspend fun uploadPreparedMedia(
+        resolver: ContentResolver,
+        id: String,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        generation: Int,
+    ) {
+        val current = _ui.value.pendingMedia.firstOrNull { it.id == id } ?: return
+        if (current.uploadGeneration != generation) return
+        val sendOriginal = current.sendOriginal
+        val cacheDir = chatImageCacheDir()
+        val prepared = withContext(Dispatchers.IO) {
+            ChatImageUpload.prepare(
+                resolver = resolver,
+                uri = uri,
+                fileName = fileName,
+                mimeType = mimeType,
+                sendOriginal = sendOriginal,
+                cacheDir = cacheDir,
+            )
+        }
+        val upload = prepared.fold(
+            onSuccess = { ready ->
+                try {
+                    mediaUploadSemaphore.withPermit {
+                        container.api.uploadAttachment(resolver, ready.uri, ready.fileName)
+                    }
+                } finally {
+                    ready.cleanup?.delete()
+                }
+            },
+            onFailure = { Result.failure(it) },
+        )
+        upload.onSuccess { descriptor ->
+            _ui.update { state ->
+                state.copy(pendingMedia = state.pendingMedia.map {
+                    if (it.id == id && it.uploadGeneration == generation) it.copy(descriptor = descriptor, error = null) else it
+                })
+            }
+        }.onFailure { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            _ui.update { state ->
+                state.copy(pendingMedia = state.pendingMedia.map {
+                    if (it.id == id && it.uploadGeneration == generation) it.copy(error = error.message ?: "上传失败") else it
+                })
+            }
+        }
+    }
+
+    private fun chatImageCacheDir(): java.io.File {
+        val dir = java.io.File(container.appContext.cacheDir, "chat-images")
+        if (!dir.isDirectory) dir.mkdirs()
+        return dir
     }
 
     fun updateSessionQuery(value: String) {
@@ -3404,7 +3532,11 @@ class AppViewModel(
                 runtimeCommandJob = null
                 historySessionId = null
                 historyMessages = emptyList()
+                historyLoadError = null
+                historyBodiesFull = true
                 historyStartIndex = 0
+                historyMessageCount = 0
+                historyCountConfirmed = false
                 resetAssistantStream()
                 toolStepIndex.clear()
                 container.wsClient.disconnect()
@@ -3459,7 +3591,11 @@ class AppViewModel(
                 val runtimeSessionId = next.sessionId.ifBlank { "android-main" }
                 historySessionId = runtimeSessionId
                 historyMessages = emptyList()
+                historyLoadError = null
+                historyBodiesFull = true
                 historyStartIndex = 0
+                historyMessageCount = 0
+                historyCountConfirmed = false
                 _ui.update {
                     it.copy(
                         bubbles = emptyList(),
@@ -3658,6 +3794,8 @@ class AppViewModel(
         contextInspectJob?.cancel()
         historySessionId = target
         historyMessages = emptyList()
+        historyLoadError = null
+        historyBodiesFull = true
         historyStartIndex = 0
         historyMessageCount = 0
         historyCountConfirmed = false
@@ -3723,6 +3861,7 @@ class AppViewModel(
         val target = sessionId.ifBlank { "android-main" }
         if (target != currentSessionId()) return
         if (!reset && (_ui.value.historyLoading || _ui.value.historyLoadingMore || !_ui.value.historyHasMore)) return
+        historyLoadError = null
 
         if (reset) {
             historyJob?.cancel()
@@ -3755,6 +3894,8 @@ class AppViewModel(
                     val painted = paintCachedHistory(apiBase, apiKey, target)
                     if (!painted && currentSessionId() == target) {
                         historyMessages = emptyList()
+                        historyLoadError = null
+                        historyBodiesFull = true
                         historyStartIndex = 0
                         historyMessageCount = 0
                         historyCountConfirmed = false
@@ -3779,7 +3920,7 @@ class AppViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (currentSessionId() == target && historySessionId == target) {
+                if (currentSessionId() == target && historySessionId == target && currentCacheConnectionMatches(apiBase, apiKey)) {
                     failHistoryRefresh(target, error.message)
                 }
             }
@@ -3788,6 +3929,75 @@ class AppViewModel(
 
     fun loadMoreHistory() {
         loadHistory(currentSessionId(), reset = false)
+    }
+
+    fun historyReadyFor(sessionId: String, apiBase: String, apiKey: String): Boolean {
+        if (currentSessionId() != sessionId || !currentCacheConnectionMatches(apiBase, apiKey)) return false
+        return isStandaloneConnection() || (historySessionId == sessionId && historyCountConfirmed)
+    }
+
+    /**
+     * The caller owns the search, while [historyJob] remains owned by the screen.
+     * Cancelling a query stops waiting without cancelling a shared refresh/page.
+     */
+    suspend fun loadMoreHistoryForSearch(
+        sessionId: String,
+        apiBase: String,
+        apiKey: String,
+    ): Result<Boolean> = withContext(Dispatchers.Main.immediate) {
+        coroutineContext.ensureActive()
+        if (currentSessionId() != sessionId || !currentCacheConnectionMatches(apiBase, apiKey)) {
+            throw CancellationException("搜索所属的会话或连接已切换")
+        }
+        if (isStandaloneConnection()) return@withContext Result.success(false)
+        suspend fun ensureSearchIsCurrent() {
+            coroutineContext.ensureActive()
+            if (isStandaloneConnection() || currentSessionId() != sessionId ||
+                historySessionId != sessionId || !currentCacheConnectionMatches(apiBase, apiKey)
+            ) {
+                throw CancellationException("搜索所属的会话或连接已切换")
+            }
+        }
+        suspend fun awaitSharedHistory() {
+            while (true) {
+                ensureSearchIsCurrent()
+                val pending = historyJob ?: return
+                if (pending.isCompleted) return
+                pending.join()
+                ensureSearchIsCurrent()
+                if (historyJob === pending) return
+            }
+        }
+
+        awaitSharedHistory()
+        ensureSearchIsCurrent()
+        // Old preview caches can have unchanged list metadata. Retry the full
+        // body once, rather than reporting that its missing tail has no match.
+        if (!historyBodiesFull || historyMessages.any { it.contentTruncated } ||
+            historyLoadError != null || !historyCountConfirmed
+        ) {
+            loadHistory(sessionId, reset = true, forceSync = true)
+            awaitSharedHistory()
+            ensureSearchIsCurrent()
+        }
+        historyLoadError?.let { return@withContext Result.failure(IllegalStateException(it)) }
+        if (!historyBodiesFull || historyMessages.any { it.contentTruncated }) {
+            return@withContext Result.failure(IllegalStateException("服务端仍返回截断正文，搜索结果不完整"))
+        }
+        if (!historyCountConfirmed) {
+            return@withContext Result.failure(IllegalStateException("历史尚未加载完成，请重试搜索"))
+        }
+        if (historyStartIndex <= 0) return@withContext Result.success(false)
+
+        val previousStart = historyStartIndex
+        loadHistory(sessionId, reset = false)
+        awaitSharedHistory()
+        ensureSearchIsCurrent()
+        historyLoadError?.let { return@withContext Result.failure(IllegalStateException(it)) }
+        if (!historyBodiesFull || historyMessages.any { it.contentTruncated }) {
+            return@withContext Result.failure(IllegalStateException("服务端仍返回截断正文，搜索结果不完整"))
+        }
+        searchHistoryPageProgress(previousStart, historyStartIndex)
     }
 
     fun refreshContextInspect(sessionId: String = currentSessionId()) {
@@ -3845,6 +4055,7 @@ class AppViewModel(
         val cached = runCatching { container.sessionCache.sessionMeta(apiBase, sessionId, apiKey) }.getOrNull()
         val remote = _ui.value.sessions.firstOrNull { it.id == sessionId }
         val action = when {
+            !historyBodiesFull || historyMessages.any { it.contentTruncated } -> HistorySync.Invalidate
             historyMessages.isEmpty() && (remote?.messageCount ?: cached?.messageCount ?: 0) > 0 ->
                 HistorySync.Invalidate
             else -> historySyncAction(cached, remote ?: RuntimeSession(id = sessionId))
@@ -3955,6 +4166,7 @@ class AppViewModel(
 
     private fun failHistoryRefresh(sessionId: String, message: String?) {
         if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        historyLoadError = message ?: "历史加载失败，请重试搜索"
         if (historyMessages.isEmpty()) {
             _ui.update {
                 it.copy(
@@ -3979,6 +4191,7 @@ class AppViewModel(
 
     private fun finishHistoryRefresh(sessionId: String, offline: Boolean, activity: String) {
         if (currentSessionId() != sessionId || historySessionId != sessionId) return
+        if (!offline) historyLoadError = null
         _ui.update {
             it.copy(
                 historyLoading = false,
@@ -4033,6 +4246,7 @@ class AppViewModel(
             val failure = result.exceptionOrNull()
             if (failure != null) {
                 if (isStandaloneConnection() || !currentCacheConnectionMatches(apiBase, apiKey) || currentSessionId() != sessionId) return
+                historyLoadError = failure.message ?: "更早的历史加载失败，请重试搜索"
                 _ui.update {
                     it.copy(
                         historyLoading = false,
@@ -4094,6 +4308,8 @@ class AppViewModel(
                         return
                     }
                     historyMessages = emptyList()
+                    historyLoadError = null
+                    historyBodiesFull = true
                     historyStartIndex = 0
                     historyMessageCount = 0
                     historyCountConfirmed = false
@@ -4170,6 +4386,7 @@ class AppViewModel(
         // must not scroll anything.
         val pushedPrefix = historyMessages.isNotEmpty() && page.startIndex < historyStartIndex
         historyMessages = page.messages
+        historyBodiesFull = !page.contentTruncated && page.messages.none { it.contentTruncated }
         historyStartIndex = page.startIndex
         historyMessageCount = page.messageCount
         // A cache paint can happen before the server answers. It is a real local
@@ -4280,6 +4497,7 @@ class AppViewModel(
         preserveLiveTurn: Boolean = false,
         prefixPushed: Boolean = false,
     ) {
+        if (!offline) historyLoadError = null
         val bubbles = historyBubbles
         val confirmedIds = confirmedOutbound(sessionId, historyMessages)
         confirmedIds.forEach { id ->
@@ -4341,7 +4559,8 @@ class AppViewModel(
             ChatBubble(
                 id = item.id,
                 role = "user",
-                content = item.preview.ifBlank { item.message },
+                content = capUiText(item.preview.ifBlank { item.message }, MAX_UI_MESSAGE_CHARS),
+                searchText = item.message,
                 createdAt = java.time.Instant.ofEpochMilli(item.createdAt).toString(),
                 attachments = item.attachments.map(::ChatMedia),
                 outboundId = item.id,
@@ -4747,10 +4966,21 @@ class AppViewModel(
     fun scrollAnchorRecord(sessionId: String): com.luckyagent.android.ui.util.ScrollAnchor? =
         container.settingsRepository.scrollAnchorRecord(sessionId)
 
-    fun saveScrollAnchor(sessionId: String, index: Int, offset: Int, messageId: String = "") {
+    fun saveScrollAnchor(
+        sessionId: String,
+        index: Int,
+        offset: Int,
+        messageId: String = "",
+        followLatest: Boolean = true,
+    ) {
         container.settingsRepository.saveScrollAnchor(
             sessionId,
-            com.luckyagent.android.ui.util.ScrollAnchor(messageId = messageId, index = index, offset = offset),
+            com.luckyagent.android.ui.util.ScrollAnchor(
+                messageId = messageId,
+                index = index,
+                offset = offset,
+                followLatest = followLatest,
+            ),
         )
     }
 
@@ -4774,7 +5004,7 @@ class AppViewModel(
         val sessionId = state.settings.sessionId
         if (sessionId.isBlank()) return
         val media = state.pendingMedia.map { item ->
-            com.luckyagent.android.ui.util.draftMediaFrom(item.uri, item.fileName, item.mimeType, item.descriptor)
+            com.luckyagent.android.ui.util.draftMediaFrom(item.uri, item.fileName, item.mimeType, item.descriptor, item.sendOriginal)
         }
         val quote = state.pendingQuote
         val draft = com.luckyagent.android.ui.util.SessionDraft(
@@ -4806,6 +5036,7 @@ class AppViewModel(
                 uri = item.uri,
                 fileName = item.fileName,
                 mimeType = item.mimeType,
+                sendOriginal = item.sendOriginal,
                 descriptor = item.fileUrl?.let {
                     com.luckyagent.android.data.api.MediaAttachment(
                         type = "document",
@@ -6118,6 +6349,8 @@ class AppViewModel(
                 contextInspectJob?.cancel()
                 historySessionId = session.id
                 historyMessages = emptyList()
+                historyLoadError = null
+                historyBodiesFull = true
                 historyStartIndex = 0
                 historyMessageCount = 0
                 // The server just created this session, so zero is a real count.
@@ -6232,6 +6465,8 @@ class AppViewModel(
                             historyJob?.cancel()
                             historySessionId = ""
                             historyMessages = emptyList()
+                            historyLoadError = null
+                            historyBodiesFull = true
                             historyStartIndex = 0
                             historyMessageCount = 0
                             historyCountConfirmed = false

@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -152,6 +153,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -170,6 +172,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -181,15 +184,7 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.runtime.key
-import androidx.compose.animation.core.animateFloatAsState
-import com.luckyagent.android.ui.util.bubbleDrawHeight
-import com.luckyagent.android.ui.util.bubblePieces
-import com.luckyagent.android.ui.util.bubbleTransitionDone
-import com.luckyagent.android.ui.util.pieceHash
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
@@ -202,6 +197,7 @@ import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
@@ -261,7 +257,6 @@ import com.luckyagent.android.ui.ReplacedBubbleList
 import com.luckyagent.android.ui.OutboundQueueItem
 import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.outboundStatusLabel
-import com.luckyagent.android.ui.isInFlight
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.AttachmentDownloadPhase
@@ -288,7 +283,6 @@ import com.luckyagent.android.ui.theme.CloverUserBubble
 import com.luckyagent.android.ui.theme.CloverWarning
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.first
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import java.time.Instant
@@ -599,18 +593,19 @@ internal fun dedupeLiveTurn(
     }
 }
 
+/** Separators, optional errors and the fixed tail all count as drawn rows. */
+internal fun followLatestScrollIndex(drawnRowCount: Int): Int =
+    (drawnRowCount - 1).coerceAtLeast(0)
+
 /**
- * Where to land when a session opens.
- * A saved anchor of 0 is the list default before the first real scroll, so an
- * oldest-first list uses the latest row instead. A later anchor is restored.
+ * True once LazyColumn has measured the rows this composition will paint.
+ *
+ * A timeline change runs the follow effect before the next layout pass, so
+ * [measuredCount] can still be the previous list. Scrolling then lands on the
+ * old tail and a later measure has no effect key. Wait for the drawn count.
  */
-internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<Int, Int> {
-    if (lastIndex < 0) return 0 to 0
-    // Opening a session always starts at its current tail. A saved reading
-    // anchor is still written for diagnostics and search return, but must not
-    // make a reopened conversation land in the middle of history.
-    return lastIndex to 0
-}
+internal fun drawnRowsReady(measuredCount: Int, expectedCount: Int): Boolean =
+    expectedCount > 0 && measuredCount == expectedCount
 
 /** Compact phone pager: navigation, chat (landing), sessions. */
 internal const val CompactNavPage = 0
@@ -640,32 +635,24 @@ internal fun surfaceStaysLive(visibleKeys: List<Any>, key: Any, wasLive: Boolean
  * the decision waits for [LazyListState.isScrollInProgress] to clear.
  */
 @Composable
-private fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
+internal fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
     // Start cold. LazyColumn composes a prefetch window before it has reported
     // visible keys; mounting a WebView for every prefetched history row was the
     // source of the first-scroll hitch. Once layout settles, only rows that are
     // actually visible become live. The empty-layout case remains cold and will
     // be revisited when LazyListState publishes its first layoutInfo snapshot.
     var live by remember(key) { mutableStateOf(false) }
-    if (!listState.isScrollInProgress) {
-        live = surfaceStaysLive(listState.layoutInfo.visibleItemsInfo.map { it.key }, key, live)
+    val visibleNow by remember(listState, key) {
+        derivedStateOf {
+            if (listState.isScrollInProgress) null
+            else listState.layoutInfo.visibleItemsInfo.takeIf { it.isNotEmpty() }?.let {
+                surfaceStaysLive(it.map { item -> item.key }, key, wasLive = false)
+            }
+        }
     }
+    LaunchedEffect(visibleNow) { visibleNow?.let { live = it } }
     return live
 }
-
-/** Painted rows for [timeline], including the date and unread separators. */
-private fun paintedRows(timeline: List<ChatTimelineItem>, readCursorMessageId: String?): List<com.luckyagent.android.ui.util.TimelineRow> =
-    com.luckyagent.android.ui.util.paintedChatRows(
-        timeline.map { it.key },
-        timeline.map { item ->
-            val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
-            com.luckyagent.android.ui.util.messageDay(created)
-        },
-        readCursorMessageId,
-    )
-
-internal fun shouldFollowLatest(atBottom: Boolean, stuckToLastAutoScroll: Boolean): Boolean =
-    atBottom || stuckToLastAutoScroll
 
 internal fun collabFoldLabel(tasks: List<TaskSummary>, responding: Boolean): String? {
     val collabModes = setOf("parallel", "pipeline", "debate", "auto", "autonomy_queue")
@@ -1519,12 +1506,67 @@ private fun ChatConversation(
             vm.loadModelEffort()
         }
     }
-    var sessionSearchOpen by remember(state.settings.sessionId) { mutableStateOf(false) }
-    var sessionSearchQuery by remember(state.settings.sessionId) { mutableStateOf("") }
-    var sessionSearchTab by remember(state.settings.sessionId) { mutableStateOf(com.luckyagent.android.ui.util.SessionSearchTab.Messages) }
-    var sessionSearchIndex by remember(state.settings.sessionId) { mutableStateOf(0) }
+    val searchIdentity = remember(state.settings.apiBase, state.settings.apiKey, state.settings.useBearer,
+        state.settings.sessionId, state.settings.connectionMode) {
+        listOf(state.settings.apiBase, state.settings.apiKey, state.settings.useBearer,
+            state.settings.sessionId, state.settings.connectionMode)
+    }
+    var sessionSearchOpen by remember(searchIdentity) { mutableStateOf(false) }
+    var sessionSearchQuery by remember(searchIdentity) { mutableStateOf("") }
+    var sessionSearchTab by remember(searchIdentity) { mutableStateOf(com.luckyagent.android.ui.util.SessionSearchTab.Messages) }
+    var selectedSearchRowKey by remember(searchIdentity) { mutableStateOf<String?>(null) }
+    var searchHistoryRetry by remember(searchIdentity, sessionSearchQuery.trim()) { mutableStateOf(0) }
+    val timelineCache = remember { ChatTimelineCache() }
+    val timeline = remember(state.bubbles) { timelineCache.update(state.bubbles) }
+    val days = remember(timeline) {
+        timeline.map { item ->
+            val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
+            com.luckyagent.android.ui.util.messageDay(created)
+        }
+    }
+    val displayRows = remember(timeline, days, state.readCursorMessageId) {
+        com.luckyagent.android.ui.util.paintedChatRows(timeline.map { it.key }, days, state.readCursorMessageId)
+    }
+    val searchMatches = rememberTimelineSearchMatches(
+        searchIdentity, timeline, sessionSearchQuery, sessionSearchTab, sessionSearchOpen,
+    )
+    val searchHits = searchMatches.orEmpty()
+    val activeSearchHit = searchHits.firstOrNull { it.rowKey == selectedSearchRowKey } ?: searchHits.firstOrNull()
+    val activeHitId = activeSearchHit?.rowKey
+    LaunchedEffect(activeHitId) {
+        if (activeHitId != null) selectedSearchRowKey = activeHitId
+    }
+    val searchHistoryStatus = rememberSearchHistoryStatus(
+        searchIdentity, sessionSearchQuery, sessionSearchOpen, searchHistoryRetry,
+    ) {
+        if (state.settings.connectionMode == "standalone") Result.success(false)
+        else vm.loadMoreHistoryForSearch(state.settings.sessionId, state.settings.apiBase, state.settings.apiKey)
+    }
     var searchReturnIndex by remember(state.settings.sessionId) { mutableStateOf(0) }
-    val listState = rememberLazyListState()
+    var searchReturnOffset by remember(state.settings.sessionId) { mutableStateOf(0) }
+    var searchReturnRowKey by remember(searchIdentity) { mutableStateOf<String?>(null) }
+    var searchReturnFollowLatest by remember(state.settings.sessionId) { mutableStateOf(true) }
+    fun searchReturnPosition(rows: List<com.luckyagent.android.ui.util.TimelineRow>): Pair<Int, Int> =
+        com.luckyagent.android.ui.util.restoreScrollIndex(
+            rows.map { it.key },
+            com.luckyagent.android.ui.util.ScrollAnchor(
+                messageId = searchReturnRowKey.orEmpty(),
+                index = searchReturnIndex,
+                offset = searchReturnOffset,
+                followLatest = searchReturnFollowLatest,
+            ),
+            rows.lastIndex,
+        )
+    val savedScrollAnchor = remember(state.settings.apiBase, state.settings.sessionId) {
+        vm.scrollAnchorRecord(state.settings.sessionId)
+    }
+    var followLatest by remember(state.settings.apiBase, state.settings.sessionId) {
+        mutableStateOf(savedScrollAnchor?.followLatest != false)
+    }
+    val listState = remember(state.settings.apiBase, state.settings.sessionId) { LazyListState() }
+    // Keep each departing session's rows available to its own disposal save.
+    val latestDisplayRows by key(listState) { rememberUpdatedState(displayRows) }
+    UserChatScrollEffect(listState) { followLatest = it && !sessionSearchOpen }
     val scrollScope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
     Column(
@@ -1544,22 +1586,37 @@ private fun ChatConversation(
             searchQuery = sessionSearchQuery,
             onSearchQuery = {
                 sessionSearchQuery = it
-                sessionSearchIndex = 0
+                selectedSearchRowKey = null
             },
             onOpenSearch = {
-                searchReturnIndex = listState.firstVisibleItemIndex
-                sessionSearchOpen = true
+                if (!sessionSearchOpen) {
+                    searchReturnIndex = listState.firstVisibleItemIndex
+                    searchReturnOffset = listState.firstVisibleItemScrollOffset
+                    searchReturnRowKey = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String
+                    searchReturnFollowLatest = followLatest
+                    followLatest = false
+                    sessionSearchOpen = true
+                }
             },
             onCloseSearch = {
                 sessionSearchOpen = false
-                scrollScope.launch { listState.scrollToItem(searchReturnIndex) }
+                followLatest = searchReturnFollowLatest
+                if (!followLatest) scrollScope.launch {
+                    val (index, offset) = searchReturnPosition(latestDisplayRows)
+                    listState.scrollToItem(index, offset)
+                }
             },
             searchTab = sessionSearchTab,
             onSearchTab = {
                 sessionSearchTab = it
-                sessionSearchIndex = 0
+                selectedSearchRowKey = null
             },
-            onSearchStep = { delta -> sessionSearchIndex += delta },
+            onSearchStep = { delta ->
+                if (searchHits.isNotEmpty()) {
+                    val current = searchHits.indexOfFirst { it.rowKey == activeHitId }.coerceAtLeast(0)
+                    selectedSearchRowKey = searchHits[Math.floorMod(current + delta, searchHits.size)].rowKey
+                }
+            },
         )
         val workCard = remember(
             state.focusedWorkCardId,
@@ -1632,14 +1689,12 @@ private fun ChatConversation(
 
         val scrollScope = rememberCoroutineScope()
         val refreshState = rememberPullToRefreshState()
-        val timelineCache = remember { ChatTimelineCache() }
-        val timeline = remember(state.bubbles) { timelineCache.update(state.bubbles) }
         val latestAssistantId = remember(state.bubbles) {
             state.bubbles
                 .lastOrNull { it.role.equals("assistant", ignoreCase = true) && !it.isIntermediate && it.content.isNotBlank() }
                 ?.id
         }
-        val atBottom by remember {
+        val atBottom by remember(listState) {
             derivedStateOf {
                 val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
                 lastVisible == null ||
@@ -1647,94 +1702,74 @@ private fun ChatConversation(
                         lastVisible.offset + lastVisible.size <= listState.layoutInfo.viewportEndOffset + 48)
             }
         }
-        val unreadCount by remember(timeline) {
-            derivedStateOf {
-                val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-                (timeline.size - lastVisible - 1).coerceAtLeast(0)
-            }
-        }
         val latestHistoryState by rememberUpdatedState(state.historyHasMore to state.historyLoadingMore)
-        var lastAutoScrollPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-        // Opening a conversation is intentionally pinned to the current tail,
-        // but later stream growth never follows it. Only the explicit
-        // “回到最新” action may move the viewport.
-        var followLatestEnabled by remember(state.settings.sessionId) { mutableStateOf(false) }
-        var restoredSession by remember { mutableStateOf("") }
-        val latestContentKey = timeline.lastOrNull()?.let { item ->
-            when (item) {
-                is ChatTimelineItem.Message -> item.bubble.content.length
-                is ChatTimelineItem.Process -> item.steps.sumOf { it.content.length }
-            }
-        } ?: 0
-        LaunchedEffect(state.settings.sessionId) {
+        val latestTimeline by rememberUpdatedState(timeline)
+        val approvalError = state.approvalsError?.takeIf { state.pendingApprovals.isEmpty() }
+        val expectedItemCount = displayRows.size + 1 + if (approvalError != null) 1 else 0
+        var restoredSession by remember(listState) { mutableStateOf("") }
+        LaunchedEffect(listState) {
             var wasNearTop = false
-            snapshotFlow { listState.firstVisibleItemIndex }
-                .distinctUntilChanged()
-                .collect { firstVisible ->
-                    val nearTop = firstVisible <= 2
-                    val (hasMore, loadingMore) = latestHistoryState
-                    if (nearTop && !wasNearTop && hasMore && !loadingMore) {
-                        vm.loadMoreHistory()
-                    }
-                    wasNearTop = nearTop
+            snapshotFlow {
+                val historyMode = restoredSession == state.settings.sessionId && !followLatest && !sessionSearchOpen
+                Triple(listState.firstVisibleItemIndex <= 2, historyMode, latestHistoryState)
+            }.collect { (nearTop, historyMode, history) ->
+                if (!historyMode) {
+                    wasNearTop = false
+                    return@collect
                 }
+                val (hasMore, loadingMore) = history
+                if (nearTop && !wasNearTop && hasMore && !loadingMore) {
+                    vm.loadMoreHistory()
+                    wasNearTop = true
+                } else if (!nearTop) {
+                    wasNearTop = false
+                }
+            }
         }
-        LaunchedEffect(state.settings.sessionId) {
+        LaunchedEffect(listState) {
             @OptIn(FlowPreview::class)
-            snapshotFlow { listState.isScrollInProgress }
+            snapshotFlow { listState.isScrollInProgress to followLatest }
                 .debounce(400)
-                .collect { scrolling ->
+                .collect { (scrolling, _) ->
                     // Writing the anchor on every pixel used to wake the VM during
                     // a fling. One write after the finger stops is enough to restore.
                     if (!scrolling && restoredSession == state.settings.sessionId) {
-                        val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()
-                        val visibleKey = visible?.key as? String
-                        // The painted list inserts date and unread rows that the
-                        // message list does not have, so the stored index has to
-                        // count those rows too.
-                        val painted = com.luckyagent.android.ui.util.paintedChatRows(
-                            timeline.map { it.key },
-                            timeline.map { item ->
-                                val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
-                                com.luckyagent.android.ui.util.messageDay(created)
-                            },
-                            state.readCursorMessageId,
-                        )
-                        // The first painted row is often a separator, and those keys
-                        // are not messages. Store the message under it so the anchor
-                        // still resolves after the row list changes.
-                        val messageId = com.luckyagent.android.ui.util.firstMessageIdAt(
-                            painted,
-                            listState.firstVisibleItemIndex,
-                        )
-                        val anchorIndex = if (messageId.isEmpty()) {
-                            listState.firstVisibleItemIndex
-                        } else {
-                            painted.indexOfFirst { it.key == messageId }
-                                .takeIf { it >= 0 } ?: listState.firstVisibleItemIndex
-                        }
-                        val anchorOffset = if (visibleKey == messageId) {
-                            listState.firstVisibleItemScrollOffset
-                        } else {
-                            0
-                        }
+                        val searchPosition = if (sessionSearchOpen) searchReturnPosition(latestDisplayRows) else null
                         vm.saveScrollAnchor(
                             state.settings.sessionId,
-                            anchorIndex,
-                            anchorOffset,
-                            messageId = messageId,
+                            searchPosition?.first ?: listState.firstVisibleItemIndex,
+                            searchPosition?.second ?: listState.firstVisibleItemScrollOffset,
+                            messageId = if (sessionSearchOpen) searchReturnRowKey.orEmpty() else
+                                listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String ?: "",
+                            followLatest = if (sessionSearchOpen) searchReturnFollowLatest else followLatest,
                         )
-                        if (atBottom) {
-                            val tail = timeline.lastOrNull()?.key
+                        if (!listState.canScrollForward && !sessionSearchOpen) {
+                            val tail = latestTimeline.lastOrNull()?.key
                             if (!tail.isNullOrBlank()) vm.saveReadCursor(state.settings.sessionId, tail)
                         }
                     }
                 }
         }
+        DisposableEffect(listState) {
+            val sessionId = state.settings.sessionId
+            onDispose {
+                if (restoredSession == sessionId) {
+                    val searchPosition = if (sessionSearchOpen) searchReturnPosition(latestDisplayRows) else null
+                    vm.saveScrollAnchor(
+                        sessionId,
+                        searchPosition?.first ?: listState.firstVisibleItemIndex,
+                        searchPosition?.second ?: listState.firstVisibleItemScrollOffset,
+                        messageId = if (sessionSearchOpen) searchReturnRowKey.orEmpty() else
+                            listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String ?: "",
+                        followLatest = if (sessionSearchOpen) searchReturnFollowLatest else followLatest,
+                    )
+                }
+            }
+        }
         // The row under the reader, by key. A prepended page keeps every key but
         // moves every index, so the old index no longer points at the same row.
         val visibleAnchor = remember(state.settings.sessionId) { mutableStateOf<Pair<String, Int>?>(null) }
-        LaunchedEffect(state.settings.sessionId) {
+        LaunchedEffect(listState) {
             snapshotFlow {
                 listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String
             }
@@ -1752,52 +1787,32 @@ private fun ChatConversation(
             if (state.historyPrefixPushes == appliedPrefixPush) return@LaunchedEffect
             appliedPrefixPush = state.historyPrefixPushes
             val (anchorKey, anchorOffset) = visibleAnchor.value ?: return@LaunchedEffect
-            val index = paintedRows(timeline, state.readCursorMessageId).indexOfFirst { it.key == anchorKey }
+            if (followLatest || sessionSearchOpen) return@LaunchedEffect
+            val index = displayRows.indexOfFirst { it.key == anchorKey }
             if (index < 0) return@LaunchedEffect
             // Same row, new index. Jump without animation so the rows above the
             // viewport appear above it instead of pushing it down.
-            // lastAutoScrollPosition stays untouched: it marks the last place the
-            // list followed the newest row, and claiming that here would make the
-            // follow effect jump to the bottom on the next size change.
             listState.requestScrollToItem(index, anchorOffset)
         }
-        LaunchedEffect(state.settings.sessionId, timeline.size, timeline.lastOrNull()?.key) {
-            if (timeline.isEmpty() || restoredSession == state.settings.sessionId) return@LaunchedEffect
-            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
-            restoredSession = state.settings.sessionId
-            val (index, offset) = openingScrollIndex(null, listState.layoutInfo.totalItemsCount - 1)
-            listState.scrollToItem(index, offset)
-            lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-        }
-        LaunchedEffect(timeline.size, timeline.lastOrNull()?.key, latestContentKey, state.liveSummary, state.isResponding) {
-            if (timeline.isEmpty() || restoredSession != state.settings.sessionId || listState.isScrollInProgress) return@LaunchedEffect
-            val layout = listState.layoutInfo
-            val lastVisible = layout.visibleItemsInfo.lastOrNull()
-            val atBottom = lastVisible == null ||
-                (lastVisible.index >= layout.totalItemsCount - 2 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
-            val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-            if (followLatestEnabled && shouldFollowLatest(atBottom, position == lastAutoScrollPosition)) {
-                listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
-                lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-            }
-        }
+        RestoreChatScrollEffect(
+            listState = listState,
+            sessionId = state.settings.sessionId,
+            rows = displayRows,
+            expectedItemCount = expectedItemCount,
+            historyLoading = state.historyLoading,
+            historyReady = vm.historyReadyFor(state.settings.sessionId, state.settings.apiBase, state.settings.apiKey),
+            hasMessages = timeline.isNotEmpty(),
+            anchor = savedScrollAnchor,
+            followLatest = followLatest,
+            restored = restoredSession == state.settings.sessionId,
+            onRestored = { restoredSession = state.settings.sessionId },
+        )
+        FollowLatestEffect(
+            listState, state.settings.sessionId, expectedItemCount,
+            followLatest && restoredSession == state.settings.sessionId && !sessionSearchOpen,
+        )
 
         var jumpSawUnread by remember(state.settings.sessionId) { mutableStateOf(false) }
-        val searchHits = if (!sessionSearchOpen) emptyList() else com.luckyagent.android.ui.util.sessionSearchHits(
-            state.bubbles.map { bubble ->
-                com.luckyagent.android.ui.util.SearchableMessage(
-                    id = bubble.id,
-                    text = bubble.content,
-                    fileNames = bubble.attachments.mapNotNull { it.descriptor.fileName },
-                    links = com.luckyagent.android.ui.util.searchableLinks(bubble.content),
-                )
-            },
-            sessionSearchQuery,
-            sessionSearchTab,
-        )
-        val activeHitId = searchHits.getOrNull(
-            Math.floorMod(sessionSearchIndex, searchHits.size.coerceAtLeast(1)),
-        )?.takeIf { searchHits.isNotEmpty() }?.messageId
         if (sessionSearchOpen) {
             val hits = searchHits
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
@@ -1808,62 +1823,39 @@ private fun ChatConversation(
                 ).forEach { (tab, label) ->
                     TextButton(onClick = {
                         sessionSearchTab = tab
-                        sessionSearchIndex = 0
+                        selectedSearchRowKey = null
                     }) { Text(label) }
                 }
             }
-            Text(
-                if (sessionSearchQuery.isBlank()) "输入关键词" else if (hits.isEmpty()) "没有结果" else "${hits.size} 条",
-                color = CloverText3,
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
-            )
-            LaunchedEffect(sessionSearchQuery, sessionSearchTab, hits.size, state.historyHasMore, state.historyLoadingMore) {
-                if (com.luckyagent.android.ui.util.searchNeedsOlderHistory(
-                        hits.size,
-                        sessionSearchQuery,
-                        state.historyHasMore,
-                        state.historyLoadingMore,
-                    )
-                ) {
-                    vm.loadMoreHistory()
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val searchStatusLabel = when {
+                    sessionSearchQuery.isBlank() -> "输入关键词"
+                    searchHistoryStatus == SearchHistoryStatus.Incomplete -> "${hits.size} 条，历史搜索未完成"
+                    searchMatches == null -> "搜索中…"
+                    searchHistoryStatus == SearchHistoryStatus.Loading -> "${hits.size} 条，继续搜索历史…"
+                    hits.isEmpty() -> "没有结果（已搜完）"
+                    else -> "${hits.size} 条（已搜完）"
+                }
+                Text(searchStatusLabel, color = CloverText3, style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.weight(1f))
+                if (searchHistoryStatus == SearchHistoryStatus.Incomplete) {
+                    TextButton(onClick = { searchHistoryRetry += 1 }) { Text("重试") }
                 }
             }
-            }
-        // Search jumps by the painted row, which is only known once displayRows
-        // exists. The index into the message list is short by every separator.
-        var userDragging by remember { mutableStateOf(false) }
-        var showFloatingDate by remember { mutableStateOf(false) }
-        var showOlderPageSpinner by remember(state.settings.sessionId) { mutableStateOf(false) }
-        LaunchedEffect(state.historyLoadingMore) {
-            if (!state.historyLoadingMore) {
-                showOlderPageSpinner = false
-                return@LaunchedEffect
-            }
-            showOlderPageSpinner = true
-            // Loading may take longer than the one-second visual budget. Keep
-            // the request alive, but return the viewport to its anchor instead
-            // of leaving the reader staring at a spinner indefinitely.
-            kotlinx.coroutines.delay(1000)
-            showOlderPageSpinner = false
-        }
-        LaunchedEffect(listState.isScrollInProgress) {
-            if (listState.isScrollInProgress && userDragging) showFloatingDate = true
-            if (!listState.isScrollInProgress) {
-                kotlinx.coroutines.delay(500)
-                showFloatingDate = false
-                userDragging = false
+            activeSearchHit?.let { hit ->
+                Text(
+                    hit.label,
+                    color = CloverText2,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                )
             }
         }
-        val days = timeline.map { item ->
-            val created = (item as? ChatTimelineItem.Message)?.bubble?.createdAt
-            com.luckyagent.android.ui.util.messageDay(created)
-        }
-        val displayRows = com.luckyagent.android.ui.util.paintedChatRows(
-            timeline.map { it.key },
-            days,
-            state.readCursorMessageId,
-        )
         val roleByKey = remember(timeline) {
             buildMap {
                 for (item in timeline) {
@@ -1874,22 +1866,12 @@ private fun ChatConversation(
         val neighborEdges = remember(displayRows, roleByKey) {
             com.luckyagent.android.ui.util.bubbleNeighborEdges(displayRows, roleByKey)
         }
-        val dayByMessageId = timeline.mapIndexedNotNull { index, item ->
-            (item as? ChatTimelineItem.Message)?.let { item.key to days[index] }
-        }.toMap()
-        LaunchedEffect(sessionSearchIndex, activeHitId) {
-            if (!sessionSearchOpen) return@LaunchedEffect
-            val id = activeHitId ?: return@LaunchedEffect
-            val index = displayRows.indexOfFirst { it.key == id }
-            if (index >= 0) listState.animateScrollToItem(index)
+        val dayByMessageId = remember(timeline, days) {
+            timeline.mapIndexedNotNull { index, item ->
+                (item as? ChatTimelineItem.Message)?.let { item.key to days[index] }
+            }.toMap()
         }
-        val floatingLabel = com.luckyagent.android.ui.util.floatingDateLabel(
-            com.luckyagent.android.ui.util.visibleMessageDay(
-                displayRows,
-                listState.firstVisibleItemIndex,
-                dayByMessageId,
-            ),
-        )
+        SearchHitNavigationEffect(listState, displayRows, activeHitId, sessionSearchOpen, expectedItemCount)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             PullToRefreshBox(
                 state = refreshState,
@@ -1904,17 +1886,10 @@ private fun ChatConversation(
                     )
                 },
             ) {
-                val timelineByKey = timeline.associateBy { it.key }
+                val timelineByKey = remember(timeline) { timeline.associateBy { it.key } }
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            awaitEachGesture {
-                                awaitFirstDown(requireUnconsumed = false)
-                                userDragging = true
-                            }
-                        },
+                    modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -1965,7 +1940,6 @@ private fun ChatConversation(
                                 showActions = item.bubble.id == latestAssistantId,
                                 onDelete = vm::deleteBubble,
                                 onRetry = { vm.retryAssistantResponse(item.bubble.id) },
-                                onRetryFromPartial = { vm.retryAssistantResponseFromPartial(item.bubble.id) },
                                 canRetry = retrySourceForAssistant(state.bubbles, item.bubble.id) != null,
                                 onRetryOutbound = vm::retryOutboundMessage,
                                 onSpeak = { bubble -> messageSpeaker.speak(bubble.content) },
@@ -1978,7 +1952,7 @@ private fun ChatConversation(
                                 openUiSelection = state.openUiSelection,
                                 highlighted = item.key == activeHitId,
                                 growing = item.bubble.streaming,
-                                dragging = listState.isScrollInProgress,
+                                dragging = listState.isScrollInProgress && !followLatest,
                                 flatTop = edges?.flatTop == true,
                                 flatBottom = edges?.flatBottom == true,
                                 showAvatar = edges?.showAvatar != false,
@@ -1986,6 +1960,7 @@ private fun ChatConversation(
                             }
                             is ChatTimelineItem.Process -> ProcessTimeline(
                                 steps = item.steps,
+                                highlighted = item.key == activeHitId,
                                 isResponding = state.isResponding && processOwnsTurn(item.steps, timeline),
                                 liveSummary = outerProcessLabel(
                                     liveSummary = state.liveSummary,
@@ -2020,7 +1995,7 @@ private fun ChatConversation(
                             )
                         }
                     }
-                    state.approvalsError?.takeIf { state.pendingApprovals.isEmpty() }?.let { error ->
+                    approvalError?.let { error ->
                         item(key = "approvals-error") {
                             Text(error, color = CloverError, style = MaterialTheme.typography.bodySmall)
                         }
@@ -2028,19 +2003,10 @@ private fun ChatConversation(
                     item(key = "chat-tail") { Spacer(Modifier.height(1.dp)) }
                 }
             }
-            if (showFloatingDate && floatingLabel.isNotEmpty()) {
-                Text(
-                    floatingLabel,
-                    color = CloverText2,
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 8.dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(CloverSurface.copy(alpha = .94f))
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            }
+            ChatFloatingDate(
+                listState, displayRows, dayByMessageId,
+                Modifier.align(Alignment.TopCenter),
+            )
             if ((state.showingOfflineCache || state.activityLine == SessionCachePolicy.REFRESH_FAILED_LABEL) && state.bubbles.isNotEmpty()) {
                 Text(
                     state.activityLine ?: SessionCachePolicy.OFFLINE_LABEL,
@@ -2063,7 +2029,7 @@ private fun ChatConversation(
                         TextButton(onClick = { vm.loadHistory(forceSync = true) }) { Text("重试") }
                     },
                 )
-            } else if (state.historyLoading || state.historyRefreshing || (state.historyLoadingMore && showOlderPageSpinner)) {
+            } else if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
                 StartupReconcileBar(
                     phase = when {
                         state.historyLoadingMore -> "正在读取更早的对话"
@@ -2091,11 +2057,13 @@ private fun ChatConversation(
                             .clickable {
                                 scrollScope.launch {
                                     val target = com.luckyagent.android.ui.util.jumpTargetIndex(displayRows, jumpSawUnread)
-                                    if (displayRows.getOrNull(target) is com.luckyagent.android.ui.util.UnreadSeparatorRow) {
-                                        jumpSawUnread = true
-                                    }
-                                    listState.animateScrollToItem(target.coerceAtLeast(0))
-                                    followLatestEnabled = false
+                                    val unreadTarget = displayRows.getOrNull(target) is com.luckyagent.android.ui.util.UnreadSeparatorRow
+                                    if (unreadTarget) jumpSawUnread = true
+                                    followLatest = false
+                                    listState.animateScrollToItem(
+                                        if (unreadTarget) target else followLatestScrollIndex(expectedItemCount),
+                                    )
+                                    followLatest = !sessionSearchOpen && !listState.canScrollForward
                                 }
                             },
                         contentAlignment = Alignment.Center,
@@ -2171,8 +2139,6 @@ private fun ChatConversation(
             expandError = state.composerExpandError,
             onRemoveMedia = vm::removePendingMedia,
             onRetryMedia = { id -> vm.retryPendingMedia(context.contentResolver, id) },
-            onRestoreOutbound = vm::restoreQueuedOutboundMessage,
-            onRemoveOutbound = vm::removeQueuedOutboundMessage,
             onClearQuote = vm::clearQuote,
             isRecordingVoice = isRecordingVoice,
             voiceLocked = voiceLocked,
@@ -2514,7 +2480,7 @@ private fun sessionProgressLabel(task: TaskSummary?, background: AutonomyTaskSum
 }
 
 @Composable
-private fun ChatTopBar(
+internal fun ChatTopBar(
     state: AppUiState,
     onMenu: () -> Unit,
     showMenu: Boolean,
@@ -2586,6 +2552,9 @@ private fun ChatTopBar(
                     Icon(Icons.Outlined.Close, contentDescription = "关闭搜索", tint = CloverText2)
                 }
             }
+            IconButton(onClick = onNewSession) {
+                Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = CloverText2)
+            }
             Box {
                 IconButton(onClick = { moreExpanded = true }) {
                     Icon(Icons.Outlined.MoreVert, contentDescription = "更多", tint = CloverText2)
@@ -2603,19 +2572,11 @@ private fun ChatTopBar(
                     ) {
                         Column(Modifier.padding(vertical = 4.dp)) {
                             DropdownMenuItem(
-                                text = { Text("搜索此会话") },
+                                text = { Text("搜索") },
                                 leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
                                 onClick = {
                                     moreExpanded = false
                                     onOpenSearch()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("新建会话") },
-                                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                                onClick = {
-                                    moreExpanded = false
-                                    onNewSession()
                                 },
                             )
                             openNavigation?.let { onOpen ->
@@ -2739,7 +2700,7 @@ private fun FullTextButton(
 }
 
 @Composable
-private fun BubbleRow(
+internal fun BubbleRow(
     bubble: ChatBubble,
     avatarFile: String,
     bubbleOpacity: Int,
@@ -2755,7 +2716,6 @@ private fun BubbleRow(
     showActions: Boolean = false,
     onDelete: (String) -> Unit = {},
     onRetry: () -> Unit = {},
-    onRetryFromPartial: () -> Unit = onRetry,
     canRetry: Boolean = false,
     onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
@@ -2775,11 +2735,11 @@ private fun BubbleRow(
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
     var deleteConfirm by remember(bubble.id) { mutableStateOf(false) }
-    var interruptedRetry by remember(bubble.id) { mutableStateOf(false) }
     val isUser = bubble.role.equals("user", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
     Row(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().semantics { selected = highlighted }
+            .then(if (highlighted) Modifier.background(CloverAccent.copy(alpha = .16f), RoundedCornerShape(12.dp)) else Modifier),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Top,
     ) {
@@ -2807,8 +2767,7 @@ private fun BubbleRow(
                 Column(
                     Modifier
                         .widthIn(max = 520.dp)
-                        .padding(vertical = 2.dp)
-                        .then(if (highlighted) Modifier.background(CloverAccent.copy(alpha = .16f), RoundedCornerShape(12.dp)) else Modifier),
+                        .padding(vertical = 2.dp),
                     horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
                 ) {
                     if (showAvatar && !isUser && !bubble.role.equals("assistant", ignoreCase = true)) {
@@ -2825,27 +2784,6 @@ private fun BubbleRow(
                             Spacer(Modifier.height(8.dp))
                         }
                         if (bubble.content.isNotBlank()) {
-                            val pieces = bubblePieces(bubble.content)
-                            val density = LocalDensity.current
-                            var fromHeight by remember(bubble.id) { mutableStateOf(0) }
-                            var toHeight by remember(bubble.id) { mutableStateOf(0) }
-                            var growTarget by remember(bubble.id) { mutableStateOf(1f) }
-                            val animating = growing && !dragging && fromHeight > 0 && toHeight > fromHeight
-                            val progress by animateFloatAsState(
-                                targetValue = if (animating) growTarget else 1f,
-                                animationSpec = tween(if (dragging || !growing) 0 else 180),
-                                label = "bubble-grow",
-                                finishedListener = { finished ->
-                                    if (finished <= 0f && animating) growTarget = 1f
-                                    if (bubbleTransitionDone(finished)) fromHeight = 0
-                                },
-                            )
-                            val drawHeight = bubbleDrawHeight(
-                                previous = fromHeight,
-                                next = toHeight,
-                                progress = progress,
-                                dragging = dragging,
-                            )
                             val shape = RoundedCornerShape(
                                 topStart = if (flatTop && !isUser) 4.dp else 18.dp,
                                 topEnd = if (flatTop && isUser) 4.dp else 18.dp,
@@ -2856,8 +2794,10 @@ private fun BubbleRow(
                                 Modifier
                                     .clip(shape)
                                     .then(
-                                        if (animating && drawHeight > 0) {
-                                            Modifier.height(with(density) { drawHeight.toDp() })
+                                        if (growing && !dragging) {
+                                            // Measure natural content once; do not feed an
+                                            // animated height back into the next target.
+                                            Modifier.animateContentSize(animationSpec = tween(180))
                                         } else {
                                             Modifier
                                         },
@@ -2877,17 +2817,6 @@ private fun BubbleRow(
                             ) {
                                 Column(
                                     Modifier
-                                        .onGloballyPositioned { coordinates ->
-                                            val measured = coordinates.size.height
-                                            if (measured <= 0 || dragging || !growing) return@onGloballyPositioned
-                                            if (fromHeight <= 0 || bubbleTransitionDone(progress)) {
-                                                fromHeight = toHeight.takeIf { it > 0 } ?: measured
-                                            }
-                                            if (measured != toHeight) {
-                                                toHeight = measured
-                                                growTarget = 0f
-                                            }
-                                        }
                                         .then(
                                             if (isUser) {
                                                 Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
@@ -2896,17 +2825,15 @@ private fun BubbleRow(
                                             },
                                         ),
                                 ) {
-                                    pieces.forEach { piece ->
-                                        key(pieceHash(piece)) {
-                                            MarkdownText(
-                                                markdown = piece,
-                                                imageHeaders = imageHeaders,
-                                                imageBaseUrl = imageBaseUrl,
-                                                streaming = bubble.streaming && piece == pieces.last(),
-                                                active = surfaceActive,
-                                            )
-                                        }
-                                    }
+                                    // Markdown owns block boundaries; blank lines may
+                                    // belong to a code fence, diagram, or HTML body.
+                                    MarkdownText(
+                                        markdown = bubble.content,
+                                        imageHeaders = imageHeaders,
+                                        imageBaseUrl = imageBaseUrl,
+                                        streaming = bubble.streaming,
+                                        active = surfaceActive,
+                                    )
                                 }
                             }
                             if (bubble.contentTruncated) {
@@ -2955,18 +2882,6 @@ private fun BubbleRow(
                                     onCancelDownload = onCancelDownload,
                                     onOpenFile = onOpenFile,
                                 )
-                            }
-                        }
-                        if (bubble.interrupted) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                modifier = Modifier.padding(top = 5.dp),
-                            ) {
-                                Text("回复中断", style = MaterialTheme.typography.labelSmall, color = CloverError)
-                                TextButton(onClick = { interruptedRetry = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-                                    Text("重试")
-                                }
                             }
                         }
                         bubble.outboundStatus?.let { status ->
@@ -3054,28 +2969,6 @@ private fun BubbleRow(
                 ) { Text("删除", color = CloverError) }
             },
             dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } },
-        )
-    }
-    if (interruptedRetry) {
-        AlertDialog(
-            onDismissRequest = { interruptedRetry = false },
-            title = { Text("重试这条回复") },
-            text = { Text("可以整轮重发，也可以把已显示的半截作为上下文继续。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    interruptedRetry = false
-                    onRetry()
-                }) { Text("整轮重发") }
-            },
-            dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
-                        interruptedRetry = false
-                        onRetryFromPartial()
-                    }) { Text("从半截继续") }
-                    TextButton(onClick = { interruptedRetry = false }) { Text("取消") }
-                }
-            },
         )
     }
 }
@@ -3369,7 +3262,7 @@ private fun formatTokenCount(tokens: Int): String = TokenFormat.full(tokens)
 private fun compactTokenCount(tokens: Int): String = TokenFormat.compact(tokens)
 
 @Composable
-private fun ApprovalCards(
+internal fun ApprovalCards(
     approvals: List<PendingApproval>,
     onDecision: (PendingApproval, String, String) -> Unit,
     modifier: Modifier = Modifier,
@@ -3443,7 +3336,9 @@ private fun ApprovalCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f).clickable { expanded = !expanded }) {
                     Text(headline, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(summary, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (!needsInput || !expanded) {
+                        Text(summary, style = MaterialTheme.typography.labelSmall, color = CloverText3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(28.dp)) {
                     Icon(
@@ -3481,6 +3376,11 @@ private fun ApprovalCard(
                 }
             }
             if (expanded && needsInput) {
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = CloverText,
+                )
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -3531,7 +3431,7 @@ private fun ApprovalCard(
 }
 
 @Composable
-private fun ProcessTimeline(
+internal fun ProcessTimeline(
     steps: List<ChatBubble>,
     isResponding: Boolean,
     liveSummary: String? = null,
@@ -3547,8 +3447,11 @@ private fun ProcessTimeline(
     onExpand: (ChatBubble) -> Unit = {},
     expandingHistoryIndex: Int = -1,
     onOpenThinking: (List<ChatBubble>) -> Unit,
+    highlighted: Boolean = false,
 ) {
-    Column(Modifier.fillMaxWidth().padding(start = 14.dp)) {
+    Column(Modifier.fillMaxWidth().semantics { selected = highlighted }
+        .then(if (highlighted) Modifier.background(CloverAccent.copy(alpha = .16f), RoundedCornerShape(12.dp)) else Modifier)
+        .padding(start = 14.dp)) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -3837,8 +3740,6 @@ private fun ComposerBar(
     expandError: String?,
     onRemoveMedia: (String) -> Unit,
     onRetryMedia: (String) -> Unit,
-    onRestoreOutbound: (String) -> Unit,
-    onRemoveOutbound: (String) -> Unit,
     onClearQuote: () -> Unit,
     isRecordingVoice: Boolean,
     voiceLocked: Boolean,
@@ -3854,8 +3755,8 @@ private fun ComposerBar(
     onStopVoice: () -> Unit,
     onCancelVoice: () -> Unit,
 ) {
+    val context = LocalContext.current
     var showContextSheet by rememberSaveable { mutableStateOf(false) }
-    var outboundMenuItem by remember { mutableStateOf<OutboundQueueItem?>(null) }
     LaunchedEffect(state.composer, state.pendingQuote, state.pendingMedia) {
         kotlinx.coroutines.delay(400)
         onDraftChanged()
@@ -4034,6 +3935,14 @@ private fun ComposerBar(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text("附件 ${state.pendingMedia.size}", style = MaterialTheme.typography.labelSmall, color = CloverText3)
+                if (state.pendingMedia.any { com.luckyagent.android.data.media.ChatImageCompress.isCompressibleMime(it.mimeType, it.fileName) }) {
+                    val sendOriginal = state.pendingMedia.any { it.sendOriginal }
+                    FilterChip(
+                        selected = sendOriginal,
+                        onClick = { vm.setSendOriginalImage(context.contentResolver, !sendOriginal) },
+                        label = { Text("原图") },
+                    )
+                }
                 val failed = state.pendingMedia.count { it.error != null }
                 val uploading = state.pendingMedia.count { it.descriptor == null && it.error == null }
                 Text(
@@ -4064,11 +3973,7 @@ private fun ComposerBar(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 state.outboundQueue.forEach { item ->
-                    OutboundQueueChip(
-                        item = item,
-                        onRetry = { vm.retryOutboundMessage(item.id) },
-                        onLongPress = if (!item.status.isInFlight()) {{ outboundMenuItem = item }} else null,
-                    )
+                    OutboundQueueChip(item = item, onRetry = { vm.retryOutboundMessage(item.id) })
                 }
             }
         }
@@ -4205,28 +4110,6 @@ private fun ComposerBar(
                 onRetry = vm::refreshContextInspect,
             )
         }
-    }
-    outboundMenuItem?.let { item ->
-        AlertDialog(
-            onDismissRequest = { outboundMenuItem = null },
-            title = { Text("处理排队消息") },
-            text = { Text(item.preview) },
-            confirmButton = {
-                TextButton(onClick = {
-                    outboundMenuItem = null
-                    onRestoreOutbound(item.id)
-                }) { Text("放回输入框") }
-            },
-            dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
-                        outboundMenuItem = null
-                        onRemoveOutbound(item.id)
-                    }) { Text("删除", color = CloverError) }
-                    TextButton(onClick = { outboundMenuItem = null }) { Text("取消") }
-                }
-            },
-        )
     }
 }
 
@@ -4377,30 +4260,20 @@ private fun SendButton(
 private fun OutboundQueueChip(
     item: OutboundQueueItem,
     onRetry: () -> Unit,
-    onLongPress: (() -> Unit)? = null,
 ) {
-    val label = outboundStatusLabel(item.status).ifBlank {
-        when (item.status) {
-            OutboundQueueStatus.Queued -> "排队中"
-            OutboundQueueStatus.Sending -> "发送中"
-            OutboundQueueStatus.Accepted -> "已接收"
-            OutboundQueueStatus.ServerQueued -> "等待中"
-            OutboundQueueStatus.Running -> "处理中"
-            OutboundQueueStatus.Failed -> "未送达"
-        }
-    }
+    val label = outboundStatusLabel(item.status)
+    if (label.isEmpty()) return
     Surface(
         shape = RoundedCornerShape(999.dp),
-        color = if (item.status == OutboundQueueStatus.Failed) CloverSurface2 else CloverSurface,
-        border = BorderStroke(1.dp, (if (item.status == OutboundQueueStatus.Failed) CloverError else CloverLine).copy(alpha = .4f)),
-        modifier = if (onLongPress != null) Modifier.combinedClickable(onClick = {}, onLongClick = onLongPress) else Modifier,
+        color = CloverSurface2,
+        border = BorderStroke(1.dp, CloverError.copy(alpha = .4f)),
     ) {
         Row(
             modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = if (item.status == OutboundQueueStatus.Failed) CloverError else CloverText3)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = CloverError)
             Text(
                 item.preview,
                 style = MaterialTheme.typography.labelSmall,

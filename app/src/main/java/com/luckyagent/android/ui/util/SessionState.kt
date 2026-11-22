@@ -27,6 +27,8 @@ data class DraftMedia(
     val filePath: String? = null,
     val fileId: String? = null,
     val fileSize: Long? = null,
+    /** Ordinary-image compression is skipped for this pending pick. Default off. */
+    val sendOriginal: Boolean = false,
 )
 
 /** Last message the reader has seen in this session. */
@@ -40,6 +42,7 @@ data class ScrollAnchor(
     val messageId: String = "",
     val index: Int = 0,
     val offset: Int = 0,
+    val followLatest: Boolean = true,
 )
 
 fun draftPreview(draft: SessionDraft?): String =
@@ -84,8 +87,8 @@ fun restoreScrollIndex(
         val found = messageIds.indexOf(id)
         if (found >= 0) return found.coerceIn(0, lastIndex) to (anchor?.offset ?: 0).coerceAtLeast(0)
     }
-    val index = anchor?.index ?: return lastIndex to 0
-    if (index <= 0) return lastIndex to 0
+    // v0.1.64: a missing index stays at the list start. Index 0 is a real row.
+    val index = anchor?.index ?: return 0 to 0
     return index.coerceIn(0, lastIndex) to (anchor.offset).coerceAtLeast(0)
 }
 
@@ -99,7 +102,13 @@ fun advanceReadCursor(current: String?, lastVisibleId: String?, atBottom: Boolea
     return current
 }
 
-fun draftMediaFrom(uri: String, fileName: String, mimeType: String, descriptor: MediaAttachment?): DraftMedia =
+fun draftMediaFrom(
+    uri: String,
+    fileName: String,
+    mimeType: String,
+    descriptor: MediaAttachment?,
+    sendOriginal: Boolean = false,
+): DraftMedia =
     DraftMedia(
         uri = uri,
         fileName = fileName,
@@ -108,4 +117,5 @@ fun draftMediaFrom(uri: String, fileName: String, mimeType: String, descriptor: 
         filePath = descriptor?.filePath,
         fileId = descriptor?.fileId,
         fileSize = descriptor?.fileSize,
+        sendOriginal = sendOriginal,
     )

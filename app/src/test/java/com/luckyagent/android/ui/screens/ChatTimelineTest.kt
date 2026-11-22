@@ -10,12 +10,14 @@ import com.luckyagent.android.data.api.ProviderMessage
 import com.luckyagent.android.data.api.SessionHistory
 import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.ui.replaceBubbleAt
+import com.luckyagent.android.ui.util.paintedChatRows
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 
 class ChatTimelineTest {
     private fun timeline(messages: List<ProviderMessage>, startIndex: Int = 0) =
@@ -517,18 +519,35 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun openingAlwaysLandsOnTheLatestRow() {
-        assertEquals(12 to 0, openingScrollIndex(null, 12))
-        assertEquals(12 to 0, openingScrollIndex(0 to 40, 12))
-        assertEquals(12 to 0, openingScrollIndex(4 to 18, 12))
-        assertEquals(12 to 0, openingScrollIndex(40 to 9, 12))
+    fun followLatestScrollsToTheLastDrawnRow() {
+        assertEquals(0, followLatestScrollIndex(0))
+        assertEquals(0, followLatestScrollIndex(1))
+        assertEquals(11, followLatestScrollIndex(12))
+        // Separators make the drawn list longer than the timeline. Follow
+        // that tail so a new message does not stop before the unread row.
+        val drawnWithSeparators = 12 + 3
+        assertEquals(drawnWithSeparators - 1, followLatestScrollIndex(drawnWithSeparators))
     }
 
     @Test
-    fun followLatestOnlyWhileTheViewportStayedAtTheBottom() {
-        assertTrue(shouldFollowLatest(atBottom = true, stuckToLastAutoScroll = false))
-        assertTrue(shouldFollowLatest(atBottom = false, stuckToLastAutoScroll = true))
-        assertFalse(shouldFollowLatest(atBottom = false, stuckToLastAutoScroll = false))
+    fun followAfterDateAndUnreadRowsWaitsForTheDrawnCount() {
+        val days = listOf(
+            LocalDate.of(2026, 11, 6),
+            LocalDate.of(2026, 11, 7),
+            LocalDate.of(2026, 11, 7),
+        )
+        val before = paintedChatRows(listOf("a", "b"), days.take(2), "a")
+        val after = paintedChatRows(listOf("a", "b", "c"), days, "a")
+        assertTrue(after.size > before.size)
+        assertTrue(after.any { it is com.luckyagent.android.ui.util.DateSeparatorRow })
+        assertTrue(after.any { it is com.luckyagent.android.ui.util.UnreadSeparatorRow })
+        // The follow effect runs before LazyColumn measures the new rows.
+        // The old totalItemsCount is not ready, so it must not be scrolled to.
+        assertFalse(drawnRowsReady(measuredCount = before.size, expectedCount = after.size))
+        assertFalse(drawnRowsReady(measuredCount = 0, expectedCount = after.size))
+        assertTrue(drawnRowsReady(measuredCount = after.size, expectedCount = after.size))
+        assertEquals(after.lastIndex, followLatestScrollIndex(after.size))
+        assertTrue(followLatestScrollIndex(after.size) > before.lastIndex)
     }
 
     @Test
