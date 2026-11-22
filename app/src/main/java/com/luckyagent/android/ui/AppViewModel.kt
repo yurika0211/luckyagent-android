@@ -204,6 +204,8 @@ data class ChatBubble(
     val role: String,
     val content: String,
     val streaming: Boolean = false,
+    /** The provider stopped before a complete answer was received. */
+    val interrupted: Boolean = false,
     val createdAt: String? = null,
     val usage: TokenUsage? = null,
     val toolName: String? = null,
@@ -961,8 +963,7 @@ class AppViewModel(
                             }
                             finishOutboundRequest(event.sessionId, requestId, success = false, error = msg)
                             if (foreground || visibleStuck) {
-                                finishAssistant(null)
-                                clearStreamingBubbles()
+                                finishInterruptedAssistant()
                                 pushBubble(
                                     ChatBubble(
                                         id = "err-${System.currentTimeMillis()}",
@@ -1350,6 +1351,7 @@ class AppViewModel(
                 error = error ?: "消息发送失败",
             )
             if (failed != null) persistOutbound(failed)
+            restoreFailedOutboundDraft(item, error ?: "消息发送失败")
         }
         publishOutboundQueue(sessionId)
         if (success && sessionId == currentSessionId()) {
@@ -1363,7 +1365,22 @@ class AppViewModel(
     private fun markOutboundFailed(itemId: String, sessionId: String, error: String) {
         val failed = outboundChatQueue.update(itemId, status = OutboundQueueStatus.Failed, error = error)
         if (failed != null) persistOutbound(failed)
+        failed?.let { restoreFailedOutboundDraft(it, error) }
         publishOutboundQueue(sessionId)
+    }
+
+    private fun restoreFailedOutboundDraft(item: OutboundQueueItem, error: String) {
+        if (item.sessionId != currentSessionId()) return
+        _ui.update { state ->
+            state.copy(
+                composer = item.message,
+                pendingMedia = emptyList(),
+                pendingQuote = null,
+                bubbles = state.bubbles.filterNot { it.outboundId == item.id },
+                activityLine = "发送失败 · $error",
+                isResponding = false,
+            )
+        }
     }
 
     fun retryOutboundMessage(itemId: String) {
@@ -1376,6 +1393,36 @@ class AppViewModel(
         if (retried != null) persistOutbound(retried)
         publishOutboundQueue(item.sessionId)
         dispatchNextOutbound(item.sessionId)
+    }
+
+    /** Removes one queued/failed message without touching the rest of the FIFO. */
+    fun removeQueuedOutboundMessage(itemId: String) {
+        val item = outboundChatQueue.items(currentSessionId()).firstOrNull { it.id == itemId } ?: return
+        if (item.status.isInFlight()) return
+        outboundChatQueue.remove(item.id)?.let(::removePersistedOutbound)
+        _ui.update { state ->
+            state.copy(
+                bubbles = state.bubbles.filterNot { it.outboundId == item.id },
+                outboundQueue = outboundChatQueue.items(item.sessionId),
+            )
+        }
+    }
+
+    /** Returns one queued/failed message to the composer and removes its row. */
+    fun restoreQueuedOutboundMessage(itemId: String) {
+        val item = outboundChatQueue.items(currentSessionId()).firstOrNull { it.id == itemId } ?: return
+        if (item.status.isInFlight()) return
+        outboundChatQueue.remove(item.id)?.let(::removePersistedOutbound)
+        _ui.update { state ->
+            state.copy(
+                composer = item.message,
+                pendingMedia = emptyList(),
+                pendingQuote = null,
+                bubbles = state.bubbles.filterNot { it.outboundId == item.id },
+                outboundQueue = outboundChatQueue.items(item.sessionId),
+                activityLine = null,
+            )
+        }
     }
 
     private fun sessionRuns(sessionId: String): LinkedHashMap<String, ActiveRun> =
@@ -1750,6 +1797,27 @@ class AppViewModel(
                 isResponding = false,
             )
         }
+    }
+
+    /** Keep the text already received when the provider closes the stream. */
+    private fun finishInterruptedAssistant() {
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
+        flushAssistantPending()
+        val id = assistantBufferId
+        _ui.update { state ->
+            state.copy(
+                bubbles = state.bubbles.map { bubble ->
+                    if (id != null && bubble.id == id) bubble.copy(streaming = false, interrupted = true) else bubble
+                },
+                isResponding = false,
+                liveSummary = null,
+                processNotice = null,
+            )
+        }
+        resetAssistantStream()
+        turnSendBaseline = null
+        turnUserOrdinal = null
     }
 
     private fun ownsOutboundLease(sessionId: String): Boolean =
@@ -2799,6 +2867,21 @@ class AppViewModel(
         val text = source.content.trim()
         if (text.isBlank()) return
         _ui.update { it.copy(composer = text, pendingQuote = source.quote, snackbarMessage = null) }
+        sendComposer()
+    }
+
+    /** Best-effort continuation for an answer whose stream ended mid-message. */
+    fun retryAssistantResponseFromPartial(assistantId: String) {
+        val source = com.luckyagent.android.ui.retrySourceForAssistant(_ui.value.bubbles, assistantId) ?: return
+        val partial = _ui.value.bubbles.firstOrNull { it.id == assistantId }?.content?.trim().orEmpty()
+        if (source.content.isBlank() || partial.isBlank()) return
+        _ui.update {
+            it.copy(
+                composer = "请从上一条回复中断的位置继续，避免重复已经显示的内容：\n$partial",
+                pendingQuote = null,
+                snackbarMessage = null,
+            )
+        }
         sendComposer()
     }
 

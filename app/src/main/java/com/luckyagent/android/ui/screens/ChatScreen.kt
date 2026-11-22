@@ -261,6 +261,7 @@ import com.luckyagent.android.ui.ReplacedBubbleList
 import com.luckyagent.android.ui.OutboundQueueItem
 import com.luckyagent.android.ui.OutboundQueueStatus
 import com.luckyagent.android.ui.outboundStatusLabel
+import com.luckyagent.android.ui.isInFlight
 import com.luckyagent.android.ui.util.TokenFormat
 import com.luckyagent.android.ui.ChatMedia
 import com.luckyagent.android.ui.AttachmentDownloadPhase
@@ -605,8 +606,10 @@ internal fun dedupeLiveTurn(
  */
 internal fun openingScrollIndex(anchor: Pair<Int, Int>?, lastIndex: Int): Pair<Int, Int> {
     if (lastIndex < 0) return 0 to 0
-    val saved = anchor?.takeIf { it.first > 0 } ?: return lastIndex to 0
-    return saved.first.coerceIn(0, lastIndex) to saved.second
+    // Opening a session always starts at its current tail. A saved reading
+    // anchor is still written for diagnostics and search return, but must not
+    // make a reopened conversation land in the middle of history.
+    return lastIndex to 0
 }
 
 /** Compact phone pager: navigation, chat (landing), sessions. */
@@ -1652,6 +1655,10 @@ private fun ChatConversation(
         }
         val latestHistoryState by rememberUpdatedState(state.historyHasMore to state.historyLoadingMore)
         var lastAutoScrollPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+        // Opening a conversation is intentionally pinned to the current tail,
+        // but later stream growth never follows it. Only the explicit
+        // “回到最新” action may move the viewport.
+        var followLatestEnabled by remember(state.settings.sessionId) { mutableStateOf(false) }
         var restoredSession by remember { mutableStateOf("") }
         val latestContentKey = timeline.lastOrNull()?.let { item ->
             when (item) {
@@ -1757,20 +1764,8 @@ private fun ChatConversation(
         LaunchedEffect(state.settings.sessionId, timeline.size, timeline.lastOrNull()?.key) {
             if (timeline.isEmpty() || restoredSession == state.settings.sessionId) return@LaunchedEffect
             snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
-            val record = vm.scrollAnchorRecord(state.settings.sessionId)
             restoredSession = state.settings.sessionId
-            val messageIds = timeline.map { it.key }
-            val unreadAt = com.luckyagent.android.ui.util.firstUnreadIndex(messageIds, state.readCursorMessageId)
-            // The painted rows are what LazyColumn shows, so the restored index
-            // has to count the date and unread separators too.
-            val rows = paintedRows(timeline, state.readCursorMessageId)
-            val rowIds = rows.map { it.key }
-            val (index, offset) = if (unreadAt >= 0) {
-                val unreadRow = rows.indexOfFirst { it is com.luckyagent.android.ui.util.UnreadSeparatorRow }
-                (if (unreadRow >= 0) unreadRow else unreadAt) to 0
-            } else {
-                com.luckyagent.android.ui.util.restoreScrollIndex(rowIds, record, rowIds.lastIndex)
-            }
+            val (index, offset) = openingScrollIndex(null, listState.layoutInfo.totalItemsCount - 1)
             listState.scrollToItem(index, offset)
             lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }
@@ -1781,7 +1776,7 @@ private fun ChatConversation(
             val atBottom = lastVisible == null ||
                 (lastVisible.index >= layout.totalItemsCount - 2 && lastVisible.offset + lastVisible.size <= layout.viewportEndOffset + 48)
             val position = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-            if (shouldFollowLatest(atBottom, position == lastAutoScrollPosition)) {
+            if (followLatestEnabled && shouldFollowLatest(atBottom, position == lastAutoScrollPosition)) {
                 listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
                 lastAutoScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             }
@@ -1839,6 +1834,19 @@ private fun ChatConversation(
         // exists. The index into the message list is short by every separator.
         var userDragging by remember { mutableStateOf(false) }
         var showFloatingDate by remember { mutableStateOf(false) }
+        var showOlderPageSpinner by remember(state.settings.sessionId) { mutableStateOf(false) }
+        LaunchedEffect(state.historyLoadingMore) {
+            if (!state.historyLoadingMore) {
+                showOlderPageSpinner = false
+                return@LaunchedEffect
+            }
+            showOlderPageSpinner = true
+            // Loading may take longer than the one-second visual budget. Keep
+            // the request alive, but return the viewport to its anchor instead
+            // of leaving the reader staring at a spinner indefinitely.
+            kotlinx.coroutines.delay(1000)
+            showOlderPageSpinner = false
+        }
         LaunchedEffect(listState.isScrollInProgress) {
             if (listState.isScrollInProgress && userDragging) showFloatingDate = true
             if (!listState.isScrollInProgress) {
@@ -1957,6 +1965,7 @@ private fun ChatConversation(
                                 showActions = item.bubble.id == latestAssistantId,
                                 onDelete = vm::deleteBubble,
                                 onRetry = { vm.retryAssistantResponse(item.bubble.id) },
+                                onRetryFromPartial = { vm.retryAssistantResponseFromPartial(item.bubble.id) },
                                 canRetry = retrySourceForAssistant(state.bubbles, item.bubble.id) != null,
                                 onRetryOutbound = vm::retryOutboundMessage,
                                 onSpeak = { bubble -> messageSpeaker.speak(bubble.content) },
@@ -2054,7 +2063,7 @@ private fun ChatConversation(
                         TextButton(onClick = { vm.loadHistory(forceSync = true) }) { Text("重试") }
                     },
                 )
-            } else if (state.historyLoading || state.historyRefreshing || state.historyLoadingMore) {
+            } else if (state.historyLoading || state.historyRefreshing || (state.historyLoadingMore && showOlderPageSpinner)) {
                 StartupReconcileBar(
                     phase = when {
                         state.historyLoadingMore -> "正在读取更早的对话"
@@ -2086,6 +2095,7 @@ private fun ChatConversation(
                                         jumpSawUnread = true
                                     }
                                     listState.animateScrollToItem(target.coerceAtLeast(0))
+                                    followLatestEnabled = false
                                 }
                             },
                         contentAlignment = Alignment.Center,
@@ -2161,6 +2171,8 @@ private fun ChatConversation(
             expandError = state.composerExpandError,
             onRemoveMedia = vm::removePendingMedia,
             onRetryMedia = { id -> vm.retryPendingMedia(context.contentResolver, id) },
+            onRestoreOutbound = vm::restoreQueuedOutboundMessage,
+            onRemoveOutbound = vm::removeQueuedOutboundMessage,
             onClearQuote = vm::clearQuote,
             isRecordingVoice = isRecordingVoice,
             voiceLocked = voiceLocked,
@@ -2573,13 +2585,6 @@ private fun ChatTopBar(
                 IconButton(onClick = onCloseSearch) {
                     Icon(Icons.Outlined.Close, contentDescription = "关闭搜索", tint = CloverText2)
                 }
-            } else {
-                IconButton(onClick = onOpenSearch) {
-                    Icon(Icons.Outlined.Search, contentDescription = "搜索此会话", tint = CloverText2)
-                }
-            }
-            IconButton(onClick = onNewSession) {
-                Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = CloverText2)
             }
             Box {
                 IconButton(onClick = { moreExpanded = true }) {
@@ -2597,6 +2602,22 @@ private fun ChatTopBar(
                         tonalElevation = 2.dp,
                     ) {
                         Column(Modifier.padding(vertical = 4.dp)) {
+                            DropdownMenuItem(
+                                text = { Text("搜索此会话") },
+                                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                                onClick = {
+                                    moreExpanded = false
+                                    onOpenSearch()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("新建会话") },
+                                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                                onClick = {
+                                    moreExpanded = false
+                                    onNewSession()
+                                },
+                            )
                             openNavigation?.let { onOpen ->
                                 DropdownMenuItem(
                                     text = { Text("这台电脑") },
@@ -2734,6 +2755,7 @@ private fun BubbleRow(
     showActions: Boolean = false,
     onDelete: (String) -> Unit = {},
     onRetry: () -> Unit = {},
+    onRetryFromPartial: () -> Unit = onRetry,
     canRetry: Boolean = false,
     onRetryOutbound: (String) -> Unit = {},
     onSpeak: (ChatBubble) -> Unit = {},
@@ -2753,6 +2775,7 @@ private fun BubbleRow(
     var menuExpanded by remember(bubble.id) { mutableStateOf(false) }
     var infoExpanded by remember(bubble.id) { mutableStateOf(false) }
     var deleteConfirm by remember(bubble.id) { mutableStateOf(false) }
+    var interruptedRetry by remember(bubble.id) { mutableStateOf(false) }
     val isUser = bubble.role.equals("user", ignoreCase = true)
     val isSystem = bubble.role.equals("system", ignoreCase = true)
     Row(
@@ -2934,6 +2957,18 @@ private fun BubbleRow(
                                 )
                             }
                         }
+                        if (bubble.interrupted) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                modifier = Modifier.padding(top = 5.dp),
+                            ) {
+                                Text("回复中断", style = MaterialTheme.typography.labelSmall, color = CloverError)
+                                TextButton(onClick = { interruptedRetry = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                                    Text("重试")
+                                }
+                            }
+                        }
                         bubble.outboundStatus?.let { status ->
                             val label = outboundStatusLabel(status)
                             if (label.isEmpty()) return@let
@@ -3019,6 +3054,28 @@ private fun BubbleRow(
                 ) { Text("删除", color = CloverError) }
             },
             dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } },
+        )
+    }
+    if (interruptedRetry) {
+        AlertDialog(
+            onDismissRequest = { interruptedRetry = false },
+            title = { Text("重试这条回复") },
+            text = { Text("可以整轮重发，也可以把已显示的半截作为上下文继续。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    interruptedRetry = false
+                    onRetry()
+                }) { Text("整轮重发") }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        interruptedRetry = false
+                        onRetryFromPartial()
+                    }) { Text("从半截继续") }
+                    TextButton(onClick = { interruptedRetry = false }) { Text("取消") }
+                }
+            },
         )
     }
 }
@@ -3780,6 +3837,8 @@ private fun ComposerBar(
     expandError: String?,
     onRemoveMedia: (String) -> Unit,
     onRetryMedia: (String) -> Unit,
+    onRestoreOutbound: (String) -> Unit,
+    onRemoveOutbound: (String) -> Unit,
     onClearQuote: () -> Unit,
     isRecordingVoice: Boolean,
     voiceLocked: Boolean,
@@ -3796,6 +3855,7 @@ private fun ComposerBar(
     onCancelVoice: () -> Unit,
 ) {
     var showContextSheet by rememberSaveable { mutableStateOf(false) }
+    var outboundMenuItem by remember { mutableStateOf<OutboundQueueItem?>(null) }
     LaunchedEffect(state.composer, state.pendingQuote, state.pendingMedia) {
         kotlinx.coroutines.delay(400)
         onDraftChanged()
@@ -4004,7 +4064,11 @@ private fun ComposerBar(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 state.outboundQueue.forEach { item ->
-                    OutboundQueueChip(item = item, onRetry = { vm.retryOutboundMessage(item.id) })
+                    OutboundQueueChip(
+                        item = item,
+                        onRetry = { vm.retryOutboundMessage(item.id) },
+                        onLongPress = if (!item.status.isInFlight()) {{ outboundMenuItem = item }} else null,
+                    )
                 }
             }
         }
@@ -4141,6 +4205,28 @@ private fun ComposerBar(
                 onRetry = vm::refreshContextInspect,
             )
         }
+    }
+    outboundMenuItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { outboundMenuItem = null },
+            title = { Text("处理排队消息") },
+            text = { Text(item.preview) },
+            confirmButton = {
+                TextButton(onClick = {
+                    outboundMenuItem = null
+                    onRestoreOutbound(item.id)
+                }) { Text("放回输入框") }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        outboundMenuItem = null
+                        onRemoveOutbound(item.id)
+                    }) { Text("删除", color = CloverError) }
+                    TextButton(onClick = { outboundMenuItem = null }) { Text("取消") }
+                }
+            },
+        )
     }
 }
 
@@ -4291,20 +4377,30 @@ private fun SendButton(
 private fun OutboundQueueChip(
     item: OutboundQueueItem,
     onRetry: () -> Unit,
+    onLongPress: (() -> Unit)? = null,
 ) {
-    val label = outboundStatusLabel(item.status)
-    if (label.isEmpty()) return
+    val label = outboundStatusLabel(item.status).ifBlank {
+        when (item.status) {
+            OutboundQueueStatus.Queued -> "排队中"
+            OutboundQueueStatus.Sending -> "发送中"
+            OutboundQueueStatus.Accepted -> "已接收"
+            OutboundQueueStatus.ServerQueued -> "等待中"
+            OutboundQueueStatus.Running -> "处理中"
+            OutboundQueueStatus.Failed -> "未送达"
+        }
+    }
     Surface(
         shape = RoundedCornerShape(999.dp),
-        color = CloverSurface2,
-        border = BorderStroke(1.dp, CloverError.copy(alpha = .4f)),
+        color = if (item.status == OutboundQueueStatus.Failed) CloverSurface2 else CloverSurface,
+        border = BorderStroke(1.dp, (if (item.status == OutboundQueueStatus.Failed) CloverError else CloverLine).copy(alpha = .4f)),
+        modifier = if (onLongPress != null) Modifier.combinedClickable(onClick = {}, onLongClick = onLongPress) else Modifier,
     ) {
         Row(
             modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = CloverError)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = if (item.status == OutboundQueueStatus.Failed) CloverError else CloverText3)
             Text(
                 item.preview,
                 style = MaterialTheme.typography.labelSmall,

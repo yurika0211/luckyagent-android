@@ -517,11 +517,11 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun openingWithoutAnAnchorLandsOnTheLatestRow() {
+    fun openingAlwaysLandsOnTheLatestRow() {
         assertEquals(12 to 0, openingScrollIndex(null, 12))
         assertEquals(12 to 0, openingScrollIndex(0 to 40, 12))
-        assertEquals(4 to 18, openingScrollIndex(4 to 18, 12))
-        assertEquals(12 to 9, openingScrollIndex(40 to 9, 12))
+        assertEquals(12 to 0, openingScrollIndex(4 to 18, 12))
+        assertEquals(12 to 0, openingScrollIndex(40 to 9, 12))
     }
 
     @Test
