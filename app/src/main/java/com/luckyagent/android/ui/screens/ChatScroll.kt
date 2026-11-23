@@ -36,11 +36,25 @@ internal fun RestoreChatScrollEffect(
         snapshotFlow { listState.layoutInfo.totalItemsCount }
             .first { drawnRowsReady(it, expectedItemCount) }
         if (!followLatest) {
-            val (index, offset) = restoreScrollIndex(rows.map { it.key }, anchor, rows.lastIndex)
+            val (index, offset) = initialChatScrollPosition(
+                rowKeys = rows.map { it.key },
+                anchor = anchor,
+                expectedItemCount = expectedItemCount,
+            )
             listState.scrollToItem(index, offset)
         }
         latestOnRestored()
     }
+}
+
+internal fun initialChatScrollPosition(
+    rowKeys: List<String>,
+    anchor: ScrollAnchor?,
+    expectedItemCount: Int,
+): Pair<Int, Int> = if (anchor == null) {
+    followLatestScrollIndex(expectedItemCount) to 0
+} else {
+    restoreScrollIndex(rowKeys, anchor, rowKeys.lastIndex)
 }
 
 /** Keep the fixed tail visible after rows, their heights, or the viewport change. */
