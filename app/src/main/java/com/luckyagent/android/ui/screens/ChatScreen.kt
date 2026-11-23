@@ -611,7 +611,7 @@ internal fun followLatestScrollIndex(drawnRowCount: Int): Int =
  * old tail and a later measure has no effect key. Wait for the drawn count.
  */
 internal fun drawnRowsReady(measuredCount: Int, expectedCount: Int): Boolean =
-    expectedCount > 0 && measuredCount == expectedCount
+    expectedCount > 0 && measuredCount >= expectedCount
 
 /** Compact phone pager: navigation, chat (landing), sessions. */
 internal const val CompactNavPage = 0

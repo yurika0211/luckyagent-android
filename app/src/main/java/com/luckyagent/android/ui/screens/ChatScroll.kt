@@ -33,13 +33,13 @@ internal fun RestoreChatScrollEffect(
     val latestOnRestored by rememberUpdatedState(onRestored)
     LaunchedEffect(listState, sessionId, rows, expectedItemCount, historyLoading, historyReady, hasMessages, anchor, followLatest, restored) {
         if (historyLoading || !historyReady || !hasMessages || restored || expectedItemCount <= 0) return@LaunchedEffect
-        snapshotFlow { listState.layoutInfo.totalItemsCount }
+        val drawnItemCount = snapshotFlow { listState.layoutInfo.totalItemsCount }
             .first { drawnRowsReady(it, expectedItemCount) }
         if (!followLatest) {
             val (index, offset) = initialChatScrollPosition(
                 rowKeys = rows.map { it.key },
                 anchor = anchor,
-                expectedItemCount = expectedItemCount,
+                expectedItemCount = drawnItemCount,
             )
             listState.scrollToItem(index, offset)
         }
@@ -73,7 +73,7 @@ internal fun FollowLatestEffect(
             Triple(listState.layoutInfo, listState.isScrollInProgress, listState.canScrollForward)
         }.collect { (layout, scrolling, canScrollForward) ->
             if (drawnRowsReady(layout.totalItemsCount, expectedItemCount) && !scrolling && canScrollForward) {
-                listState.scrollToItem(followLatestScrollIndex(expectedItemCount))
+                listState.scrollToItem(followLatestScrollIndex(layout.totalItemsCount))
             }
         }
     }

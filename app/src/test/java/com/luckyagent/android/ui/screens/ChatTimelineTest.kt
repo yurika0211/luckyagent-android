@@ -557,6 +557,7 @@ class ChatTimelineTest {
         assertFalse(drawnRowsReady(measuredCount = before.size, expectedCount = after.size))
         assertFalse(drawnRowsReady(measuredCount = 0, expectedCount = after.size))
         assertTrue(drawnRowsReady(measuredCount = after.size, expectedCount = after.size))
+        assertTrue(drawnRowsReady(measuredCount = after.size + 1, expectedCount = after.size))
         assertEquals(after.lastIndex, followLatestScrollIndex(after.size))
         assertTrue(followLatestScrollIndex(after.size) > before.lastIndex)
     }
