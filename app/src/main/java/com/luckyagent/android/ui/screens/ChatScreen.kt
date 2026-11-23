@@ -194,6 +194,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -283,6 +284,7 @@ import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import com.luckyagent.android.ui.theme.CloverWarning
 import com.luckyagent.android.perf.PerfFrameTracker
+import com.luckyagent.android.perf.PerfProbe
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -971,8 +973,18 @@ fun ChatScreen(
     )
     val compactPagerScope = rememberCoroutineScope()
     val sessionListState = rememberLazyListState()
+    val compactPagerDiagnosticsEnabled = LocalConfiguration.current.screenWidthDp < 700
     LaunchedEffect(state.performanceDiagnosticsActive, compactPagerState) {
-        if (!state.performanceDiagnosticsActive) return@LaunchedEffect
+        if (!state.performanceDiagnosticsActive || !compactPagerDiagnosticsEnabled) return@LaunchedEffect
+        launch {
+            snapshotFlow { compactPagerState.currentPage to compactPagerState.isScrollInProgress }
+                .distinctUntilChanged()
+                .collect { (_, scrolling) ->
+                    if (scrolling) {
+                        PerfProbe.shared.bumpCounter("scroll.compact_pager_page_changes")
+                    }
+                }
+        }
         snapshotFlow { compactPagerState.isScrollInProgress }
             .distinctUntilChanged()
             .collect { scrolling ->
@@ -980,6 +992,7 @@ fun ChatScreen(
                 val tracker = PerfFrameTracker(
                     section = "scroll.compact_pager",
                     extraAttributes = mapOf("pager" to "chat"),
+                    counterName = "scroll.compact_pager_page_changes",
                 )
                 tracker.begin()
                 while (compactPagerState.isScrollInProgress) {

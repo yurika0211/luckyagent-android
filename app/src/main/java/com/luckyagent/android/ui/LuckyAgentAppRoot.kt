@@ -31,6 +31,7 @@ import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import com.luckyagent.android.perf.PerfFrameTracker
+import com.luckyagent.android.perf.PerfProbe
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -59,6 +60,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -162,8 +164,14 @@ private fun badgeColor(dest: AppDestination, state: AppUiState): Color? = when (
 fun LuckyAgentAppRoot(vm: AppViewModel) {
     val state by vm.ui.collectAsStateWithLifecycle()
     val navigationPager = rememberPagerState(initialPage = 1, pageCount = { 2 })
+    val compactNavigationDiagnosticsEnabled = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 700
+    SideEffect {
+        if (state.performanceDiagnosticsActive && compactNavigationDiagnosticsEnabled && navigationPager.isScrollInProgress) {
+            PerfProbe.shared.bumpCounter("scroll.navigation_pager_recompositions")
+        }
+    }
     LaunchedEffect(state.performanceDiagnosticsActive, navigationPager) {
-        if (!state.performanceDiagnosticsActive) return@LaunchedEffect
+        if (!state.performanceDiagnosticsActive || !compactNavigationDiagnosticsEnabled) return@LaunchedEffect
         snapshotFlow { navigationPager.isScrollInProgress }
             .distinctUntilChanged()
             .collect { scrolling ->
@@ -171,6 +179,7 @@ fun LuckyAgentAppRoot(vm: AppViewModel) {
                 val tracker = PerfFrameTracker(
                     section = "scroll.navigation_pager",
                     extraAttributes = mapOf("pager" to "navigation"),
+                    counterName = "scroll.navigation_pager_recompositions",
                 )
                 tracker.begin()
                 while (navigationPager.isScrollInProgress) {
