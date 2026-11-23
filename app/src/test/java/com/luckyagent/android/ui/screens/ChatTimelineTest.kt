@@ -11,6 +11,7 @@ import com.luckyagent.android.data.api.SessionHistory
 import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.ui.replaceBubbleAt
 import com.luckyagent.android.ui.util.paintedChatRows
+import com.luckyagent.android.ui.util.ScrollAnchor
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -527,6 +528,16 @@ class ChatTimelineTest {
         // that tail so a new message does not stop before the unread row.
         val drawnWithSeparators = 12 + 3
         assertEquals(drawnWithSeparators - 1, followLatestScrollIndex(drawnWithSeparators))
+    }
+
+    @Test
+    fun openingWithoutAnAnchorUsesTheTailOnce() {
+        assertEquals(11 to 0, initialChatScrollPosition(listOf("old", "new"), null, expectedItemCount = 12))
+        assertEquals(1 to 9, initialChatScrollPosition(
+            listOf("old", "anchor", "new"),
+            ScrollAnchor(messageId = "anchor", offset = 9),
+            expectedItemCount = 4,
+        ))
     }
 
     @Test
