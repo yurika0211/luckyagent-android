@@ -311,6 +311,7 @@ data class AttachmentDownloadUi(
 data class AppUiState(
     val destination: AppDestination = AppDestination.Chat,
     val settings: ClientSettings = ClientSettings(),
+    val performanceDiagnosticsActive: Boolean = false,
     val standaloneNotice: String? = null,
     val standaloneTokens: Int = 0,
     val sessions: List<RuntimeSession> = emptyList(),
@@ -600,6 +601,14 @@ class AppViewModel(
     private var standaloneRequestGeneration = 0
 
     init {
+        container.perfDiagnostics.contextProvider = {
+            mapOf(
+                "message_count" to _ui.value.bubbles.size.toString(),
+                "session_hash" to com.luckyagent.android.perf.PerfDiagnosticsManager.stableHash(
+                    _ui.value.settings.sessionId,
+                ),
+            )
+        }
         viewModelScope.launch {
             container.settingsRepository.settings.collect { s ->
                 var endpointChanged = false
@@ -635,6 +644,11 @@ class AppViewModel(
                     s.apiKey.isNotBlank() &&
                     (endpointChanged || _ui.value.computerLink == ComputerLink.Unknown)
                 if (shouldVerify) verifyComputerConnection()
+            }
+        }
+        viewModelScope.launch {
+            container.perfDiagnostics.active.collect { active ->
+                _ui.update { it.copy(performanceDiagnosticsActive = active) }
             }
         }
         viewModelScope.launch {
@@ -3499,6 +3513,7 @@ class AppViewModel(
         val prev = container.settingsRepository.snapshot()
         container.settingsRepository.update(transform)
         val next = container.settingsRepository.snapshot()
+        container.perfDiagnostics.onSettingsChanged(prev, next)
         val connectionModeChanged = prev.connectionMode != next.connectionMode
         val settingsChanged =
             prev.apiBase != next.apiBase ||
@@ -3624,6 +3639,14 @@ class AppViewModel(
                 settingsReconnectJob = null
             }
         }
+    }
+
+    fun startPerformanceDiagnostics() {
+        container.perfDiagnostics.startCapture()
+    }
+
+    fun stopPerformanceDiagnostics() {
+        container.perfDiagnostics.stopCapture()
     }
 
     fun probeHealth() {

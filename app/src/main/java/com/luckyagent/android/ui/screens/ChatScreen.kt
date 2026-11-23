@@ -194,6 +194,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -282,8 +283,12 @@ import com.luckyagent.android.ui.theme.CloverText2
 import com.luckyagent.android.ui.theme.CloverText3
 import com.luckyagent.android.ui.theme.CloverUserBubble
 import com.luckyagent.android.ui.theme.CloverWarning
+import com.luckyagent.android.perf.PerfFrameTracker
+import com.luckyagent.android.perf.PerfProbe
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.withFrameNanos
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import java.time.Instant
@@ -637,6 +642,7 @@ internal fun surfaceStaysLive(visibleKeys: List<Any>, key: Any, wasLive: Boolean
  */
 @Composable
 internal fun bubbleSurfaceActive(listState: LazyListState, key: Any): Boolean {
+    com.luckyagent.android.perf.PerfProbe.shared.bumpCounter("scroll.bubble_surface_reads")
     // Start cold. LazyColumn composes a prefetch window before it has reported
     // visible keys; mounting a WebView for every prefetched history row was the
     // source of the first-scroll hitch. Once layout settles, only rows that are
@@ -967,6 +973,34 @@ fun ChatScreen(
     )
     val compactPagerScope = rememberCoroutineScope()
     val sessionListState = rememberLazyListState()
+    val compactPagerDiagnosticsEnabled = LocalConfiguration.current.screenWidthDp < 700
+    LaunchedEffect(state.performanceDiagnosticsActive, compactPagerState) {
+        if (!state.performanceDiagnosticsActive || !compactPagerDiagnosticsEnabled) return@LaunchedEffect
+        launch {
+            snapshotFlow { compactPagerState.currentPage to compactPagerState.isScrollInProgress }
+                .distinctUntilChanged()
+                .collect { (_, scrolling) ->
+                    if (scrolling) {
+                        PerfProbe.shared.bumpCounter("scroll.compact_pager_page_changes")
+                    }
+                }
+        }
+        snapshotFlow { compactPagerState.isScrollInProgress }
+            .distinctUntilChanged()
+            .collect { scrolling ->
+                if (!scrolling) return@collect
+                val tracker = PerfFrameTracker(
+                    section = "scroll.compact_pager",
+                    extraAttributes = mapOf("pager" to "chat"),
+                    counterName = "scroll.compact_pager_page_changes",
+                )
+                tracker.begin()
+                while (compactPagerState.isScrollInProgress) {
+                    withFrameNanos { frameNanos -> tracker.frame(frameNanos) }
+                }
+                tracker.end()
+            }
+    }
     val sessionPaneWidth = 304.dp
     var renameTarget by remember { mutableStateOf<RuntimeSession?>(null) }
     var renameText by remember { mutableStateOf("") }
@@ -1564,6 +1598,23 @@ private fun ChatConversation(
         mutableStateOf(false)
     }
     val listState = remember(state.settings.apiBase, state.settings.sessionId) { LazyListState() }
+    LaunchedEffect(state.performanceDiagnosticsActive, listState) {
+        if (!state.performanceDiagnosticsActive) return@LaunchedEffect
+        snapshotFlow { listState.isScrollInProgress }
+            .distinctUntilChanged()
+            .collect { scrolling ->
+                if (!scrolling) return@collect
+                val tracker = PerfFrameTracker(
+                    section = "scroll.chat",
+                    counterName = "scroll.bubble_surface_reads",
+                )
+                tracker.begin()
+                while (listState.isScrollInProgress) {
+                    withFrameNanos { frameNanos -> tracker.frame(frameNanos) }
+                }
+                tracker.end()
+            }
+    }
     // Keep each departing session's rows available to its own disposal save.
     val latestDisplayRows by key(listState) { rememberUpdatedState(displayRows) }
     UserChatScrollEffect(listState) { followLatest = it && !sessionSearchOpen }

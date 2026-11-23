@@ -72,12 +72,26 @@ internal object MarkdownParseCache {
     ): ParsedMarkdown {
         val key = Key(source.hashCode(), source.length, streaming)
         synchronized(entries) {
-            entries[key]?.takeIf { it.source == source }?.let { return it.parsed }
+            entries[key]?.takeIf { it.source == source }?.let {
+                probe.recordLightweight(
+                    section = "markdown.cache",
+                    elapsedNanos = 0L,
+                    inputUnits = source.length,
+                    attributes = mapOf("cache_hit" to "true", "streaming" to streaming.toString()),
+                )
+                return it.parsed
+            }
         }
 
         val parsed = probe.measure("markdown.parse", PerfVariant.TREATMENT, source.length) {
             parse(source, streaming)
         }
+        probe.recordLightweight(
+            section = "markdown.cache",
+            elapsedNanos = 0L,
+            inputUnits = source.length,
+            attributes = mapOf("cache_hit" to "false", "streaming" to streaming.toString()),
+        )
 
         synchronized(entries) {
             val raced = entries[key]
