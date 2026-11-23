@@ -74,6 +74,26 @@ class PerfProbeTest {
         assertFalse(comparison.treatment.meanNanos >= comparison.control.meanNanos)
     }
 
+    @Test
+    fun lightweightEventKeepsCountersWithoutCapturingAStack() {
+        val probe = PerfProbe(enabled = true, clock = PerfClock { 1L }, memory = MemoryProbe { zero() })
+
+        probe.bumpCounter("scroll.reads")
+        probe.bumpCounter("scroll.reads")
+        probe.recordLightweight(
+            section = "scroll.chat",
+            elapsedNanos = 20_000_000L,
+            inputUnits = 3,
+            attributes = mapOf("dropped_frames" to "1"),
+        )
+
+        val sample = probe.snapshot().single()
+        assertEquals(3, sample.inputUnits)
+        assertEquals("1", sample.attributes["dropped_frames"])
+        assertEquals(2L, probe.drainCounter("scroll.reads"))
+        assertTrue(sample.stack.frames.isEmpty())
+    }
+
     private fun sequenced(first: Long, second: Long): MemoryProbe {
         val values = ArrayDeque(listOf(first, second))
         return MemoryProbe { MemorySample(values.removeFirst(), totalBytes = 32, maxBytes = 64) }

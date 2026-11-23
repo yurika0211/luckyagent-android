@@ -10,6 +10,8 @@ data class PerfSample(
     val memoryAfter: MemorySample,
     val stack: StackSnapshot,
     val inputUnits: Int = 0,
+    val capturedAtEpochMs: Long = System.currentTimeMillis(),
+    val attributes: Map<String, String> = emptyMap(),
 ) {
     val memoryDeltaBytes: Long
         get() = memoryAfter.usedBytes - memoryBefore.usedBytes

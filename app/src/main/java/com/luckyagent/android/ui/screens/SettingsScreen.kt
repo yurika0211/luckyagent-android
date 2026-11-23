@@ -136,6 +136,7 @@ fun SettingsScreen(
                     SettingsAppearanceCard(state, vm)
                     SettingsSectionTitle("通知与版本")
                     SettingsNotificationsCard(state, vm)
+                    SettingsPerformanceDiagnosticsCard(state, vm)
                     SettingsUpdateCard(state, vm)
                     SettingsAboutCard()
                 }
@@ -154,6 +155,7 @@ fun SettingsScreen(
                 SettingsAppearanceCard(state, vm)
                 SettingsSectionTitle("通知与版本")
                 SettingsNotificationsCard(state, vm)
+                SettingsPerformanceDiagnosticsCard(state, vm)
                 SettingsUpdateCard(state, vm)
                 SettingsAboutCard()
             }
@@ -438,6 +440,39 @@ body = "定时任务这次跑完或失败时通知一次。同一次运行不会
                     if (context is Activity) ActivityCompat.requestPermissions(context, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
                 },
             ) { Text("Allow notifications") }
+        }
+    }
+}
+
+@Composable
+private fun SettingsPerformanceDiagnosticsCard(state: AppUiState, vm: AppViewModel) {
+    val enabled = state.settings.performanceDiagnosticsEnabled
+    CloverCard {
+        Text("性能诊断", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "只在开启并手动开始采集时记录接口、滚动和 Markdown 数据。每 15 分钟批量上传到当前 LuckyAgent。",
+            color = CloverText2,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        NotificationToggle(
+            title = "允许性能诊断上传",
+            body = "关闭时不采集、不落盘、不上传。",
+            checked = enabled,
+            onChecked = { vm.updateSettings { it.copy(performanceDiagnosticsEnabled = it.performanceDiagnosticsEnabled.not()) } },
+        )
+        if (enabled) {
+            NotificationToggle(
+                title = "仅 Wi-Fi",
+                body = "开启后不使用移动数据上传。",
+                checked = state.settings.performanceDiagnosticsWifiOnly,
+                onChecked = { wifi -> vm.updateSettings { it.copy(performanceDiagnosticsWifiOnly = wifi) } },
+            )
+            Button(
+                onClick = if (state.performanceDiagnosticsActive) vm::stopPerformanceDiagnostics else vm::startPerformanceDiagnostics,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) {
+                Text(if (state.performanceDiagnosticsActive) "停止诊断采集" else "开始诊断采集")
+            }
         }
     }
 }

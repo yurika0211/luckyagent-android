@@ -13,6 +13,7 @@ import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.data.settings.SettingsRepository
 import com.luckyagent.android.data.settings.ClientSettings
 import com.luckyagent.android.ui.util.resolveAttachmentDownloadUrl
+import com.luckyagent.android.perf.PerfProbe
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -485,12 +486,47 @@ class LuckyAgentApi(
     }
 
     suspend fun healthLive(): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        var status = 0
+        var bytes = 0
+        PerfProbe.shared.measure(
+            section = "api.health_live",
+            attributes = {
+                mapOf(
+                    "path" to "/api/v1/health/live",
+                    "status_code" to status.toString(),
+                    "response_bytes" to bytes.toString(),
+                )
+            },
+        ) {
+            runCatching {
             val request = Request.Builder().url(url("/api/v1/health/live")).get().build()
             client.newCall(request).execute().use { resp ->
+                status = resp.code
                 val body = resp.body?.string().orEmpty()
+                bytes = body.toByteArray().size
                 if (!resp.isSuccessful) error("health ${resp.code}: $body")
                 body.ifBlank { """{"ok":true}""" }
+            }
+            }
+        }
+    }
+
+    suspend fun uploadPerformanceDiagnostics(
+        request: PerfDiagnosticsUploadRequest,
+    ): Result<PerfDiagnosticsUploadResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val payload = json.encodeToString(request)
+            val httpRequest = Request.Builder()
+                .url(url("/api/v1/diagnostics/perf"))
+                .post(payload.toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(httpRequest).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw PerfDiagnosticsHttpException(response.code, body)
+                }
+                json.decodeFromString<PerfDiagnosticsUploadResponse>(body)
             }
         }
     }
@@ -618,13 +654,29 @@ class LuckyAgentApi(
     suspend fun reloadRuntimeConfig(): Result<String> = getJson("/api/v1/config/reload", method = "POST")
 
     suspend fun listSessions(query: String = ""): Result<List<RuntimeSession>> = withContext(Dispatchers.IO) {
-        runCatching {
+        var status = 0
+        var bytes = 0
+        PerfProbe.shared.measure(
+            section = "api.list_sessions",
+            attributes = {
+                mapOf(
+                    "path" to "/api/v1/sessions",
+                    "status_code" to status.toString(),
+                    "response_bytes" to bytes.toString(),
+                    "query_present" to (!query.isBlank()).toString(),
+                )
+            },
+        ) {
+            runCatching {
             val q = if (query.isBlank()) emptyMap() else mapOf("q" to query)
             val request = Request.Builder().url(url("/api/v1/sessions", q)).get().build()
             client.newCall(request).execute().use { resp ->
+                status = resp.code
                 val body = resp.body?.string().orEmpty()
+                bytes = body.toByteArray().size
                 if (!resp.isSuccessful) error("sessions ${resp.code}: $body")
                 json.decodeFromString(SessionsResponse.serializer(), body).sessions
+            }
             }
         }
     }
@@ -697,7 +749,23 @@ class LuckyAgentApi(
         includeFull: Boolean = false,
     ): Result<SessionHistoryFetch> =
         withContext(Dispatchers.IO) {
-            runCatching {
+            var status = 0
+            var bytes = 0
+            PerfProbe.shared.measure(
+                section = "api.session_history",
+                inputUnits = limit ?: 0,
+                attributes = {
+                    mapOf(
+                        "path" to "/api/v1/sessions/$sessionId",
+                        "limit" to (limit?.toString() ?: "null"),
+                        "offset" to offset.toString(),
+                        "include" to if (includeFull) "full" else "preview",
+                        "status_code" to status.toString(),
+                        "response_bytes" to bytes.toString(),
+                    )
+                },
+            ) {
+                runCatching {
                 val query = buildMap {
                     limit?.let { put("limit", it.coerceIn(1, 500).toString()) }
                     put("offset", offset.coerceAtLeast(0).toString())
@@ -710,10 +778,13 @@ class LuckyAgentApi(
                     .get()
                     .build()
                 client.newCall(request).execute().use { resp ->
+                    status = resp.code
                     val body = resp.body?.string().orEmpty()
+                    bytes = body.toByteArray().size
                     sessionHistoryFetch(resp.code, body) { raw ->
                         json.decodeFromString(SessionHistory.serializer(), raw)
                     }
+                }
                 }
             }
         }
