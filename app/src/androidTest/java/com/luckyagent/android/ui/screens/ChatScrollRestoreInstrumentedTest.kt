@@ -81,6 +81,26 @@ class ChatScrollRestoreInstrumentedTest {
         compose.onNodeWithTag("restore-tail").assertIsDisplayed()
     }
 
+    @Test fun openingWithoutAnAnchorAndWithoutFollowModeRestoresToTheTailOnce() {
+        val fixture = RestoreFixture(anchor = null).apply { followLatest = false }
+        showList(fixture)
+
+        compose.runOnIdle {
+            fixture.rows = fullHistoryRows()
+            fixture.historyLoading = false
+            fixture.historyReady = true
+        }
+        compose.waitUntil(5_000) { fixture.restored }
+        compose.runOnIdle {
+            assertFalse(fixture.listState.canScrollForward)
+            assertEquals(1, fixture.restores)
+            fixture.rows = fixture.rows.drop(1)
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { assertFalse(fixture.listState.canScrollForward) }
+        compose.onNodeWithTag("restore-tail").assertIsDisplayed()
+    }
+
     @Test fun aFailedInitialLoadWithPendingRowsDoesNotConsumeTheHistoryAnchor() {
         val saved = ScrollAnchor(messageId = "timeline:h-42", index = 3, offset = 17, followLatest = false)
         val fixture = RestoreFixture(saved).apply { historyLoading = false }
