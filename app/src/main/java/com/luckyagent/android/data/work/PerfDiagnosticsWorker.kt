@@ -98,7 +98,7 @@ class PerfDiagnosticsWorker(
             }
         }
         for (line in lines) {
-            val bytes = line.toByteArray(Charsets.UTF_8)
+            val bytes = (line + "\n").toByteArray(Charsets.UTF_8)
             if (current.size() > 0 && current.size() + bytes.size > MAX_BATCH_BYTES) flush()
             current.write(bytes)
         }
