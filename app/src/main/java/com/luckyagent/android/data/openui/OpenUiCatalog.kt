@@ -39,7 +39,56 @@ data class OpenUiAction(
     @SerialName("tree_id") val treeId: String,
     @SerialName("widget_id") val widgetId: String,
     val values: Map<String, String> = emptyMap(),
+    @SerialName("action_id") val actionId: String = "",
+    @SerialName("chart_id") val chartId: String = "",
+    @SerialName("schema_version") val schemaVersion: Int = 0,
+    @SerialName("data_version") val dataVersion: Long = 0,
+    val operation: String = "",
 )
+
+/** Server-declared chart lifecycle. An omitted mode is a legacy chart. */
+data class OpenUiChartContract(
+    val chartId: String,
+    val schemaVersion: Int,
+    val dataVersion: Long,
+    val mode: String,
+    val dataSource: String,
+    val editable: Boolean,
+    val fields: List<OpenUiChartField>,
+    val note: String,
+)
+
+data class OpenUiChartField(
+    val id: String,
+    val label: String,
+    val role: String,
+    val type: String,
+    val value: String,
+    val agentFilled: Boolean,
+    val options: List<String>,
+)
+
+/**
+ * Draft held on the phone until Apply. Cancel throws it away.
+ * A data chart never stores a point drag as an editable parameter.
+ */
+data class OpenUiChartDraft(
+    val chartId: String,
+    val schemaVersion: Int,
+    val dataVersion: Long,
+    val mode: String,
+    val fields: Map<String, String> = emptyMap(),
+    val point: Pair<Int, Float>? = null,
+) {
+    fun applyValues(): Map<String, String> = buildMap {
+        fields.forEach { (key, value) -> if (value.isNotBlank()) put(key, value) }
+        val dragged = point
+        if (mode == "teaching" && dragged != null) {
+            put("point_index", dragged.first.coerceAtLeast(0).toString())
+            put("point_value", dragged.second.toString())
+        }
+    }
+}
 
 private val catalog = setOf("Table", "Chart", "List", "Actions", "Image", "Svg", "Citation", "Map", "Markdown")
 
@@ -606,6 +655,121 @@ fun openUiChartApplyValues(window: Int, kind: String, start: Int? = null): Map<S
     put("kind", kind.trim().lowercase())
     if (start != null) put("start", start.coerceAtLeast(0).toString())
 }
+
+private val openUiChartModes = setOf("data", "teaching")
+private val openUiChartRoles = setOf("x", "y", "group", "aggregate")
+
+/**
+ * Reads the lifecycle the server declared. Android does not invent edit rights.
+ * A missing mode stays legacy and editable so older charts keep their Apply.
+ * `data` is read-only even when the payload says editable. `teaching` is editable.
+ * A declared mode without a positive version, or a data chart without a source, is rejected.
+ */
+fun OpenUiNode.chartContract(): OpenUiChartContract? {
+    if (!type.equals("Chart", ignoreCase = true)) return null
+    val mode = props.string("mode")?.trim()?.lowercase().orEmpty()
+    if (mode.isNotEmpty() && mode !in openUiChartModes) return null
+    val schema = props.long("schema_version") ?: 1L
+    val dataVersion = props.long("data_version") ?: 1L
+    if (mode.isNotEmpty() && (schema < 1L || dataVersion < 1L)) return null
+    val source = props.string("data_source").orEmpty()
+    if (mode == "data" && source.isBlank()) return null
+    val explicit = props.bool("editable")
+    val editable = when (mode) {
+        "data" -> false
+        else -> explicit != false
+    }
+    if (mode == "teaching" && !editable) return null
+    return OpenUiChartContract(
+        chartId = props.string("chart_id")?.trim().orEmpty().ifBlank { id },
+        schemaVersion = schema.toInt(),
+        dataVersion = dataVersion,
+        mode = mode,
+        dataSource = source,
+        editable = editable,
+        fields = chartFields(),
+        note = props.string("binding_note") ?: props.string("note").orEmpty(),
+    )
+}
+
+/** Form fields the server listed. Roles outside the first form are dropped. */
+fun OpenUiNode.chartFields(): List<OpenUiChartField> {
+    val raw = props["fields"] ?: return emptyList()
+    val array = runCatching { raw.jsonArray }.getOrNull() ?: return emptyList()
+    return array.mapNotNull { el ->
+        val obj = el as? JsonObject ?: return@mapNotNull null
+        val role = obj.string("role")?.trim()?.lowercase().orEmpty()
+        if (role !in openUiChartRoles) return@mapNotNull null
+        val id = obj.string("id")?.trim().orEmpty().ifBlank { role }
+        OpenUiChartField(
+            id = id,
+            label = obj.string("label")?.trim().orEmpty().ifBlank { chartRoleLabel(role) },
+            role = role,
+            type = obj.string("type")?.trim()?.lowercase().orEmpty(),
+            value = obj.string("value").orEmpty(),
+            agentFilled = obj.bool("agent_filled") == true,
+            options = obj.stringList("options"),
+        )
+    }
+}
+
+fun chartRoleLabel(role: String): String = when (role) {
+    "x" -> "横轴"
+    "y" -> "纵轴"
+    "group" -> "分组"
+    "aggregate" -> "统计方式"
+    else -> role
+}
+
+/** Options of [type], or every option when the field did not declare a type. */
+fun OpenUiChartField.optionsFor(type: String?): List<String> {
+    if (type.isNullOrBlank() || this.type.isBlank() || this.type == type.trim().lowercase()) return options
+    return emptyList()
+}
+
+/** Local draft. Data charts drop point drags. Teaching charts keep them. */
+fun OpenUiChartContract.draft(base: Map<String, String> = emptyMap()): OpenUiChartDraft {
+    val seeded = fields.associate { it.id to it.value } + base
+    return OpenUiChartDraft(
+        chartId = chartId,
+        schemaVersion = schemaVersion,
+        dataVersion = dataVersion,
+        mode = mode,
+        fields = seeded,
+    )
+}
+
+fun OpenUiChartDraft.withField(fieldId: String, value: String): OpenUiChartDraft =
+    copy(fields = fields + (fieldId to value))
+
+fun OpenUiChartDraft.withPoint(index: Int, value: Float): OpenUiChartDraft =
+    if (mode == "teaching") copy(point = index.coerceAtLeast(0) to value) else this
+
+/** Wire action for Apply. Null when this draft is not a versioned chart. */
+fun OpenUiChartDraft.toAction(treeId: String, widgetId: String, actionId: String): OpenUiAction? {
+    if (chartId.isBlank() || schemaVersion < 1 || dataVersion < 1) return null
+    val operation = if (mode == "data") "observe" else "apply"
+    return OpenUiAction(
+        treeId = treeId,
+        widgetId = widgetId,
+        values = applyValues(),
+        actionId = actionId,
+        chartId = chartId,
+        schemaVersion = schemaVersion,
+        dataVersion = dataVersion,
+        operation = operation,
+    )
+}
+
+private fun JsonObject.long(key: String): Long? =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+
+private fun JsonObject.bool(key: String): Boolean? =
+    when ((this[key] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()) {
+        "true" -> true
+        "false" -> false
+        else -> null
+    }
 
 /** Local inspect line. Chart taps never become ui_action. */
 fun openUiChartReadout(label: String, seriesName: String, value: Float, unit: String): String {
