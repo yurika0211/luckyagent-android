@@ -16,8 +16,8 @@ android {
             "com.luckyagent.android.uitest" else "com.luckyagent.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 56
-        versionName = "0.1.68"
+        versionCode = 58
+        versionName = "0.1.70"
         buildConfigField("String", "DEFAULT_API_BASE", "\"http://10.0.2.2:9090\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
