@@ -114,9 +114,12 @@ data class CompactTraceRecord(
     val id: String? = null,
     val trigger: String? = null,
     val summary: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
     @SerialName("pre_token_estimate") val preTokenEstimate: Int? = null,
     @SerialName("post_token_estimate") val postTokenEstimate: Int? = null,
+    @SerialName("summary_tokens") val summaryTokens: Int? = null,
     @SerialName("dropped_messages") val droppedMessages: Int? = null,
+    @SerialName("retained_messages") val retainedMessages: Int? = null,
     @SerialName("summary_source") val summarySource: String? = null,
 )
 
@@ -422,7 +425,12 @@ data class ContextInspectResponse(
     @SerialName("max_tokens") val maxTokens: Int = 0,
     @SerialName("reserved_tokens") val reservedTokens: Int = 0,
     @SerialName("available_tokens") val availableTokens: Int = 0,
+    @SerialName("sliding_window_size") val slidingWindowSize: Int? = null,
+    @SerialName("max_conversation_turns") val maxConversationTurns: Int? = null,
+    @SerialName("memory_budget") val memoryBudget: Int? = null,
+    @SerialName("summarize_threshold") val summarizeThreshold: Double? = null,
     val strategy: String? = null,
+    @SerialName("compact_trace") val compactTrace: CompactTraceRecord? = null,
     val usage: ContextUsage? = null,
     val sections: List<ContextSection> = emptyList(),
 )
@@ -455,6 +463,7 @@ data class ContextSection(
     val tokens: Int = 0,
     val chars: Int = 0,
     val preview: String = "",
+    val content: String = "",
 )
 
 @Serializable

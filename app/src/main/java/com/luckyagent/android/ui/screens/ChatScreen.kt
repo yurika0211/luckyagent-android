@@ -248,6 +248,7 @@ import com.luckyagent.android.data.api.modelSheetSections
 import com.luckyagent.android.data.api.ContextBucketUsage
 import com.luckyagent.android.data.api.ContextInspectResponse
 import com.luckyagent.android.data.api.ContextSection
+import com.luckyagent.android.data.api.CompactTraceRecord
 import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.data.api.SocketState
 import com.luckyagent.android.ui.AppUiState
@@ -4532,6 +4533,7 @@ private fun ContextInspectSheet(
 ) {
     val inspect = state.contextInspect
     val usage = inspect?.usage
+    var expandedSectionIndex by remember(inspect?.sections) { mutableStateOf<Int?>(null) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = CloverBg,
@@ -4564,6 +4566,12 @@ private fun ContextInspectSheet(
             state.contextInspectError?.let { error ->
                 Text(error, color = CloverError, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
             }
+            inspect?.let { response ->
+                ContextWindowConfig(response)
+                response.compactTrace?.let { trace ->
+                    ContextCompactTrace(trace)
+                }
+            }
             if (usage != null) {
                 val ratioPct = (usage.ratio * 100).toInt().coerceAtLeast(0)
                 Text(
@@ -4586,18 +4594,87 @@ private fun ContextInspectSheet(
                         total = usage.totalTokens.coerceAtLeast(1),
                     )
                 }
-                if (inspect.sections.isNotEmpty()) {
-                    Spacer(Modifier.height(16.dp))
-                    Text("组成", style = MaterialTheme.typography.titleSmall, color = CloverText)
-                    Spacer(Modifier.height(8.dp))
-                    inspect.sections.forEach { section ->
-                        ContextSectionRow(section)
-                    }
+            }
+            inspect?.sections?.takeIf { it.isNotEmpty() }?.let { sections ->
+                Spacer(Modifier.height(16.dp))
+                Text("组成", style = MaterialTheme.typography.titleSmall, color = CloverText)
+                Spacer(Modifier.height(8.dp))
+                sections.forEach { section ->
+                    val expanded = expandedSectionIndex == section.index
+                    ContextSectionRow(
+                        section = section,
+                        expanded = expanded,
+                        showCompactionRetention = section.bucket == "history" && inspect.compactTrace != null,
+                        onToggle = {
+                            expandedSectionIndex = if (expanded) null else section.index
+                        },
+                    )
                 }
             }
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+@Composable
+private fun ContextWindowConfig(response: ContextInspectResponse) {
+    val rows = buildList {
+        response.strategy?.takeIf { it.isNotBlank() }?.let { add("策略" to contextStrategyLabel(it)) }
+        response.slidingWindowSize?.let { add("滑动窗口" to it.toString()) }
+        response.maxConversationTurns?.let { add("最大回合" to it.toString()) }
+        response.memoryBudget?.let { add("记忆预算" to TokenFormat.full(it)) }
+        response.summarizeThreshold?.let { add("压缩阈值" to "${(it * 100).toInt()}%") }
+    }
+    if (rows.isEmpty()) return
+    Spacer(Modifier.height(12.dp))
+    Text("窗口配置", style = MaterialTheme.typography.titleSmall, color = CloverText)
+    Spacer(Modifier.height(4.dp))
+    rows.forEach { (label, value) ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = CloverText3)
+            Text(value, style = MaterialTheme.typography.bodySmall, color = CloverText)
+        }
+    }
+}
+
+@Composable
+private fun ContextCompactTrace(trace: CompactTraceRecord) {
+    Spacer(Modifier.height(14.dp))
+    Text("上次压缩", style = MaterialTheme.typography.titleSmall, color = CloverText)
+    Spacer(Modifier.height(4.dp))
+    val rows = buildList {
+        trace.trigger?.takeIf { it.isNotBlank() }?.let { add("触发" to contextCompactTriggerLabel(it)) }
+        trace.createdAt?.takeIf { it.isNotBlank() }?.let { add("时间" to it) }
+        trace.preTokenEstimate?.let { pre ->
+            val post = trace.postTokenEstimate
+            add("压缩前后" to if (post == null) TokenFormat.full(pre) else "${TokenFormat.full(pre)} → ${TokenFormat.full(post)}")
+        }
+        trace.summaryTokens?.let { add("摘要" to TokenFormat.full(it)) }
+        trace.droppedMessages?.let { add("丢掉" to "$it 条") }
+        trace.retainedMessages?.let { add("留下" to "$it 条") }
+        trace.summarySource?.takeIf { it.isNotBlank() }?.let { add("来源" to it) }
+    }
+    rows.forEach { (label, value) ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = CloverText3)
+            Text(value, style = MaterialTheme.typography.bodySmall, color = CloverText)
+        }
+    }
+}
+
+private fun contextStrategyLabel(strategy: String): String = when (strategy) {
+    "oldest_first" -> "最早优先"
+    "low_priority_first" -> "低优先级优先"
+    "sliding_window" -> "滑动窗口"
+    "summarize" -> "摘要"
+    else -> strategy
+}
+
+private fun contextCompactTriggerLabel(trigger: String): String = when (trigger) {
+    "manual" -> "手动"
+    "auto" -> "自动"
+    "threshold" -> "达到阈值"
+    else -> trigger
 }
 
 @Composable
@@ -4636,8 +4713,18 @@ private fun ContextBucketRow(
 }
 
 @Composable
-private fun ContextSectionRow(section: ContextSection) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+private fun ContextSectionRow(
+    section: ContextSection,
+    expanded: Boolean,
+    showCompactionRetention: Boolean,
+    onToggle: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(vertical = 6.dp),
+    ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "${section.index + 1}. ${contextSectionLabel(section.label)}",
@@ -4652,14 +4739,29 @@ private fun ContextSectionRow(section: ContextSection) {
                 style = MaterialTheme.typography.labelSmall,
                 color = CloverText3,
             )
+            Icon(
+                imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "收起段落" else "展开段落",
+                tint = CloverText3,
+                modifier = Modifier.size(18.dp),
+            )
         }
-        if (section.preview.isNotBlank()) {
+        if (showCompactionRetention) {
             Text(
-                section.preview,
+                "压缩后保留",
+                style = MaterialTheme.typography.labelSmall,
+                color = CloverAccent,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        val body = if (expanded) section.content.ifBlank { section.preview } else section.preview
+        if (body.isNotBlank()) {
+            Text(
+                body,
                 style = MaterialTheme.typography.labelSmall,
                 color = CloverText3,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+                maxLines = if (expanded) Int.MAX_VALUE else 2,
+                overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
             )
         }
     }
