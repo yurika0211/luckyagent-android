@@ -358,6 +358,11 @@ data class UIActionOutboundData(
     @SerialName("tree_id") val treeId: String,
     @SerialName("widget_id") val widgetId: String,
     val values: Map<String, String> = emptyMap(),
+    @SerialName("action_id") val actionId: String = "",
+    @SerialName("chart_id") val chartId: String = "",
+    @SerialName("schema_version") val schemaVersion: Int = 0,
+    @SerialName("data_version") val dataVersion: Long = 0,
+    val operation: String = "",
 )
 
 @Serializable

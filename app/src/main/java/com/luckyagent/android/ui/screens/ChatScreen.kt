@@ -268,6 +268,7 @@ import com.luckyagent.android.ui.PendingMedia
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MarkdownText
 import com.luckyagent.android.ui.components.OpenUiTree
+import com.luckyagent.android.data.openui.OpenUiAction
 import com.luckyagent.android.ui.components.LocalOpenNavigationDrawer
 import com.luckyagent.android.ui.components.socketStateLive
 import com.luckyagent.android.ui.components.socketStateLabel
@@ -2794,7 +2795,7 @@ internal fun BubbleRow(
     expanding: Boolean = false,
     onOpenUiAction: (treeId: String, widgetId: String, label: String) -> Unit = { _, _, _ -> },
     onOpenUiNotice: (String) -> Unit = {},
-    onOpenUiChartApply: (treeId: String, widgetId: String, values: Map<String, String>) -> Boolean = { _, _, _ -> false },
+    onOpenUiChartApply: (treeId: String, widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean = { _, _, _, _ -> false },
     openUiSelection: Map<String, String> = emptyMap(),
     highlighted: Boolean = false,
     growing: Boolean = false,
@@ -2920,7 +2921,9 @@ internal fun BubbleRow(
                                 selectedWidgetId = openUiSelection[tree.treeId],
                                 onAction = { id, label -> onOpenUiAction(tree.treeId, id, label) },
                                 onNotice = onOpenUiNotice,
-                                onChartApply = { id, values -> onOpenUiChartApply(tree.treeId, id, values) },
+                                onChartApply = { id, values, chart ->
+                                    onOpenUiChartApply(tree.treeId, id, values, chart?.copy(treeId = tree.treeId, widgetId = id))
+                                },
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = imageBaseUrl,
                             )

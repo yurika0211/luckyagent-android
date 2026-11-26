@@ -6,6 +6,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -32,6 +34,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.ui.window.Dialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
@@ -64,10 +67,17 @@ import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
 import com.luckyagent.android.data.openui.OpenUiDelta
 import com.luckyagent.android.data.openui.OpenUiNode
+import com.luckyagent.android.data.openui.OpenUiAction
 import com.luckyagent.android.data.openui.canSendAction
 import com.luckyagent.android.data.openui.caption
+import com.luckyagent.android.data.openui.OpenUiChartDraft
+import com.luckyagent.android.data.openui.chartContract
 import com.luckyagent.android.data.openui.chartRange
 import com.luckyagent.android.data.openui.chartSeries
+import com.luckyagent.android.data.openui.draft
+import com.luckyagent.android.data.openui.optionsFor
+import com.luckyagent.android.data.openui.withField
+import com.luckyagent.android.data.openui.toAction
 import com.luckyagent.android.data.openui.heading
 import com.luckyagent.android.data.openui.openUiChartApplyValues
 import com.luckyagent.android.data.openui.openUiChartBrush
@@ -185,7 +195,7 @@ fun OpenUiTree(
     imageHeaders: Map<String, String> = emptyMap(),
     imageBaseUrl: String = "",
     onNotice: (String) -> Unit = {},
-    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean = { _, _ -> false },
+    onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean = { _, _, _ -> false },
 ) {
     if (tree.nodes.isEmpty()) return
     val ion = ionPalette()
@@ -270,7 +280,7 @@ private fun OpenUiNodeView(
     imageBaseUrl: String,
     ion: IonPalette,
     onNotice: (String) -> Unit = {},
-    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean = { _, _ -> false },
+    onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean = { _, _, _ -> false },
 ) {
     when (node.type) {
         "Table" -> OpenUiTable(node, ion)
@@ -496,15 +506,19 @@ private val chartKindChips = listOf(
     "mix" to "混",
 )
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun OpenUiChart(
     node: OpenUiNode,
     ion: IonPalette,
     onNotice: (String) -> Unit,
-    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean,
+    onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean,
 ) {
     val rawSeries = node.chartSeries().filter { it.values.isNotEmpty() }
+    val contract = node.chartContract()
+    var chartDraft by remember(node.id, contract?.dataVersion) {
+        mutableStateOf<OpenUiChartDraft?>(null)
+    }
     val unit = node.props.string("unit").orEmpty()
     val fullLabels = node.props.stringList("labels").ifEmpty { node.props.stringList("categories") }
     val pointCount = rawSeries.maxOfOrNull { it.values.size } ?: 0
@@ -541,7 +555,37 @@ private fun OpenUiChart(
     var hit by remember(node.id, windowSize, hidden, chosenKind) { mutableStateOf<Pair<Int, Int>?>(null) }
     var brush by remember(node.id, windowSize, chosenKind) { mutableStateOf<Pair<Int, Int>?>(null) }
     val colors = ion.series
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.combinedClickable(
+            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+            indication = null,
+            onClick = {},
+            onLongClick = {
+                if (contract != null && contract.fields.isNotEmpty()) {
+                    chartDraft = contract.draft(chartDraft?.fields.orEmpty())
+                }
+            },
+        ),
+    ) {
+        chartDraft?.takeIf { contract != null && contract.fields.isNotEmpty() }?.let { draft ->
+            ChartParameterDialog(
+                note = contract?.note.orEmpty(),
+                fields = contract?.fields.orEmpty(),
+                draft = draft,
+                ion = ion,
+                onChange = { chartDraft = it },
+                onCancel = { chartDraft = null },
+                onApply = {
+                    val sent = onChartApply(
+                        node.id,
+                        draft.applyValues(),
+                        draft.toAction("", node.id, java.util.UUID.randomUUID().toString()),
+                    )
+                    if (sent) chartDraft = null else onNotice("无法发给模型")
+                },
+            )
+        }
         if (!readout.isNullOrBlank()) {
             Text(readout.orEmpty(), color = ion.clayEmphasis, style = MaterialTheme.typography.labelSmall)
         }
@@ -660,28 +704,94 @@ private fun OpenUiChart(
                 valueRange = range.min..range.max.coerceAtLeast(range.min),
                 steps = steps.coerceAtMost(pointCount - 1),
             )
-            Text(
-                "应用这些参数",
-                color = ion.text,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(ion.raised)
-                    .border(1.dp, ion.lineStrong, RoundedCornerShape(999.dp))
-                    .clickable {
-                        val sent = onChartApply(
-                            node.id,
-                            openUiChartApplyValues(
+            if (contract?.mode != "data") {
+                Text(
+                    "应用这些参数",
+                    color = ion.text,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(ion.raised)
+                        .border(1.dp, ion.lineStrong, RoundedCornerShape(999.dp))
+                        .clickable {
+                            val values = openUiChartApplyValues(
                                 window = windowSize,
                                 kind = chosenKind,
                                 start = if (cartesian) brushOrigin else null,
-                            ),
-                        )
-                        if (!sent) onNotice("无法发给模型")
+                            )
+                            val chart = contract?.let {
+                                OpenUiAction(
+                                    treeId = "",
+                                    widgetId = node.id,
+                                    values = values,
+                                    actionId = java.util.UUID.randomUUID().toString(),
+                                    chartId = it.chartId,
+                                    schemaVersion = it.schemaVersion,
+                                    dataVersion = it.dataVersion,
+                                    operation = "apply",
+                                )
+                            }
+                            val sent = onChartApply(node.id, values, chart)
+                            if (!sent) onNotice("无法发给模型")
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+private fun ChartParameterDialog(
+    note: String,
+    fields: List<com.luckyagent.android.data.openui.OpenUiChartField>,
+    draft: OpenUiChartDraft,
+    ion: IonPalette,
+    onChange: (OpenUiChartDraft) -> Unit,
+    onCancel: () -> Unit,
+    onApply: () -> Unit,
+) {
+    Dialog(onDismissRequest = onCancel) {
+        Column(
+            Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(ion.surface)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("图表参数", color = ion.text, style = MaterialTheme.typography.titleSmall)
+            if (note.isNotBlank()) {
+                Text(note, color = ion.text2, style = MaterialTheme.typography.bodySmall)
+            }
+            fields.forEach { field ->
+                Text(field.label, color = if (field.agentFilled) ion.clay else ion.text, style = MaterialTheme.typography.labelSmall)
+                val options = field.optionsFor(field.type)
+                if (options.isEmpty()) {
+                    Text(draft.fields[field.id].orEmpty().ifBlank { "未填" }, color = ion.text2, style = MaterialTheme.typography.bodySmall)
+                } else {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        options.forEach { option ->
+                            val selected = draft.fields[field.id] == option
+                            Text(
+                                option,
+                                color = if (selected) ion.onClay else ion.text,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (selected) ion.clay else ion.raised)
+                                    .clickable { onChange(draft.withField(field.id, option)) }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                        }
                     }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-            )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("取消", color = ion.text2, modifier = Modifier.clickable(onClick = onCancel).padding(8.dp))
+                Text("Apply", color = ion.clay, modifier = Modifier.clickable(onClick = onApply).padding(8.dp))
+            }
         }
     }
 }

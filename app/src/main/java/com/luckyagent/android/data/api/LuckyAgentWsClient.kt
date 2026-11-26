@@ -500,14 +500,32 @@ class LuckyAgentWsClient internal constructor(
         }
     }
 
-    fun sendUiAction(sessionId: String?, treeId: String, widgetId: String, values: Map<String, String> = emptyMap()): Boolean {
+    fun sendUiAction(sessionId: String?, treeId: String, widgetId: String, values: Map<String, String> = emptyMap()): Boolean =
+        sendUiAction(sessionId, treeId, widgetId, values, chart = null)
+
+    fun sendUiAction(
+        sessionId: String?,
+        treeId: String,
+        widgetId: String,
+        values: Map<String, String> = emptyMap(),
+        chart: com.luckyagent.android.data.openui.OpenUiAction? = null,
+    ): Boolean {
         val connection = connectionFor(sessionId) ?: return false
         val payload = json.encodeToString(
             UIActionOutbound.serializer(),
             UIActionOutbound(
-                id = UUID.randomUUID().toString(),
+                id = chart?.actionId?.ifBlank { null } ?: UUID.randomUUID().toString(),
                 sessionId = connection.config.sessionId,
-                data = UIActionOutboundData(treeId = treeId, widgetId = widgetId, values = values),
+                data = UIActionOutboundData(
+                    treeId = treeId,
+                    widgetId = widgetId,
+                    values = chart?.values ?: values,
+                    actionId = chart?.actionId.orEmpty(),
+                    chartId = chart?.chartId.orEmpty(),
+                    schemaVersion = chart?.schemaVersion ?: 0,
+                    dataVersion = chart?.dataVersion ?: 0,
+                    operation = chart?.operation.orEmpty(),
+                ),
             ),
         )
         synchronized(connection) {

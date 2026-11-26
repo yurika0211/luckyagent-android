@@ -368,6 +368,51 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun chartContractKeepsDataReadOnlyAndTeachingEditable() {
+        val json = Json { ignoreUnknownKeys = true }
+        val data = json.parseToJsonElement(
+            """{"chart_id":"c1","schema_version":2,"data_version":4,"mode":"data","data_source":"metrics","editable":true,"binding_note":"横轴是日期","fields":[{"role":"x","type":"date","value":"day","agent_filled":true,"options":["day","hour"]},{"role":"filter","value":"no"}]}""",
+        ).jsonObject
+        val contract = OpenUiNode(id = "node", type = "Chart", props = data).chartContract()
+        assertEquals("c1", contract?.chartId)
+        assertEquals("data", contract?.mode)
+        assertFalse(contract?.editable == true)
+        assertEquals(1, contract?.fields?.size)
+        assertEquals("横轴", contract?.fields?.single()?.label)
+        assertEquals(listOf("day", "hour"), contract?.fields?.single()?.optionsFor("date"))
+        assertEquals(emptyList<String>(), contract?.fields?.single()?.optionsFor("number"))
+
+        val draft = contract!!.draft().withField("x", "hour").withPoint(1, 9f)
+        assertEquals("hour", draft.fields["x"])
+        assertNull(draft.point)
+        val action = draft.toAction("tree", "node", "act-1")
+        assertEquals("observe", action?.operation)
+        assertEquals(4L, action?.dataVersion)
+        assertEquals("act-1", action?.actionId)
+        assertFalse(action?.values?.containsKey("point_index") == true)
+    }
+
+    @Test
+    fun teachingDraftKeepsPointUntilApplyAndRejectsBadContracts() {
+        val json = Json { ignoreUnknownKeys = true }
+        val teaching = json.parseToJsonElement(
+            """{"mode":"teaching","schema_version":1,"data_version":1}""",
+        ).jsonObject
+        val contract = OpenUiNode(id = "lesson", type = "Chart", props = teaching).chartContract()
+        assertEquals("teaching", contract?.mode)
+        assertTrue(contract?.editable == true)
+        val draft = contract!!.draft().withPoint(2, 3.5f)
+        assertEquals("2", draft.applyValues()["point_index"])
+        assertEquals("apply", draft.toAction("t", "lesson", "a")?.operation)
+
+        val badMode = json.parseToJsonElement("""{"mode":"other"}""").jsonObject
+        assertNull(OpenUiNode(id = "c", type = "Chart", props = badMode).chartContract())
+        val noSource = json.parseToJsonElement("""{"mode":"data","schema_version":1,"data_version":1}""").jsonObject
+        assertNull(OpenUiNode(id = "c", type = "Chart", props = noSource).chartContract())
+        assertEquals("legacy", OpenUiNode(id = "old", type = "Chart").chartContract()?.chartId?.let { "legacy" })
+    }
+
+    @Test
     fun parseDeltaFromWireJson() {
         val json = Json { ignoreUnknownKeys = true }
         val el = json.parseToJsonElement(
