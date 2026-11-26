@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -66,6 +67,7 @@ import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
 import com.luckyagent.android.data.openui.OpenUiDelta
 import com.luckyagent.android.data.openui.OpenUiNode
+import com.luckyagent.android.data.openui.OpenUiAction
 import com.luckyagent.android.data.openui.canSendAction
 import com.luckyagent.android.data.openui.caption
 import com.luckyagent.android.data.openui.OpenUiChartDraft
@@ -75,6 +77,7 @@ import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.draft
 import com.luckyagent.android.data.openui.optionsFor
 import com.luckyagent.android.data.openui.withField
+import com.luckyagent.android.data.openui.toAction
 import com.luckyagent.android.data.openui.heading
 import com.luckyagent.android.data.openui.openUiChartApplyValues
 import com.luckyagent.android.data.openui.openUiChartBrush
@@ -192,7 +195,7 @@ fun OpenUiTree(
     imageHeaders: Map<String, String> = emptyMap(),
     imageBaseUrl: String = "",
     onNotice: (String) -> Unit = {},
-    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean = { _, _ -> false },
+    onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean = { _, _, _ -> false },
 ) {
     if (tree.nodes.isEmpty()) return
     val ion = ionPalette()
@@ -277,7 +280,7 @@ private fun OpenUiNodeView(
     imageBaseUrl: String,
     ion: IonPalette,
     onNotice: (String) -> Unit = {},
-    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean = { _, _ -> false },
+    onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean = { _, _, _ -> false },
 ) {
     when (node.type) {
         "Table" -> OpenUiTable(node, ion)
@@ -503,13 +506,13 @@ private val chartKindChips = listOf(
     "mix" to "混",
 )
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun OpenUiChart(
     node: OpenUiNode,
     ion: IonPalette,
     onNotice: (String) -> Unit,
-    onChartApply: (widgetId: String, values: Map<String, String>) -> Boolean,
+    onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean,
 ) {
     val rawSeries = node.chartSeries().filter { it.values.isNotEmpty() }
     val contract = node.chartContract()
@@ -574,7 +577,11 @@ private fun OpenUiChart(
                 onChange = { chartDraft = it },
                 onCancel = { chartDraft = null },
                 onApply = {
-                    val sent = onChartApply(node.id, draft.applyValues())
+                    val sent = onChartApply(
+                        node.id,
+                        draft.applyValues(),
+                        draft.toAction("", node.id, java.util.UUID.randomUUID().toString()),
+                    )
                     if (sent) chartDraft = null else onNotice("无法发给模型")
                 },
             )
@@ -697,33 +704,46 @@ private fun OpenUiChart(
                 valueRange = range.min..range.max.coerceAtLeast(range.min),
                 steps = steps.coerceAtMost(pointCount - 1),
             )
-            Text(
-                "应用这些参数",
-                color = ion.text,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(ion.raised)
-                    .border(1.dp, ion.lineStrong, RoundedCornerShape(999.dp))
-                    .clickable {
-                        val sent = onChartApply(
-                            node.id,
-                            openUiChartApplyValues(
+            if (contract?.mode != "data") {
+                Text(
+                    "应用这些参数",
+                    color = ion.text,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(ion.raised)
+                        .border(1.dp, ion.lineStrong, RoundedCornerShape(999.dp))
+                        .clickable {
+                            val values = openUiChartApplyValues(
                                 window = windowSize,
                                 kind = chosenKind,
                                 start = if (cartesian) brushOrigin else null,
-                            ),
-                        )
-                        if (!sent) onNotice("无法发给模型")
-                    }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-            )
+                            )
+                            val chart = contract?.let {
+                                OpenUiAction(
+                                    treeId = "",
+                                    widgetId = node.id,
+                                    values = values,
+                                    actionId = java.util.UUID.randomUUID().toString(),
+                                    chartId = it.chartId,
+                                    schemaVersion = it.schemaVersion,
+                                    dataVersion = it.dataVersion,
+                                    operation = "apply",
+                                )
+                            }
+                            val sent = onChartApply(node.id, values, chart)
+                            if (!sent) onNotice("无法发给模型")
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
         }
     }
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ChartParameterDialog(
     note: String,
     fields: List<com.luckyagent.android.data.openui.OpenUiChartField>,

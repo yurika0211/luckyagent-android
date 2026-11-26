@@ -2869,9 +2869,14 @@ class AppViewModel(
     }
 
     /** Chart apply may be sent again. It does not lock Actions selection. */
-    fun sendOpenUiChartApply(treeId: String, widgetId: String, values: Map<String, String>): Boolean {
+    fun sendOpenUiChartApply(
+        treeId: String,
+        widgetId: String,
+        values: Map<String, String>,
+        chart: com.luckyagent.android.data.openui.OpenUiAction? = null,
+    ): Boolean {
         if (treeId.isBlank() || widgetId.isBlank()) return false
-        val sent = container.wsClient.sendUiAction(currentSessionId(), treeId, widgetId, values)
+        val sent = container.wsClient.sendUiAction(currentSessionId(), treeId, widgetId, values, chart)
         if (!sent) {
             _ui.update { it.copy(snackbarMessage = "无法发给模型") }
         }
