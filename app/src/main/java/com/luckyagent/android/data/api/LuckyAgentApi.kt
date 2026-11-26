@@ -1068,6 +1068,69 @@ class LuckyAgentApi(
         }
     }
 
+    suspend fun registerCronDevice(registration: CronDeviceRegistration): Result<CronDevice> = withContext(Dispatchers.IO) {
+        runCatching {
+            val payload = json.encodeToString(CronDeviceRegistration.serializer(), registration)
+            val request = Request.Builder()
+                .url(url("/api/v1/cron/results/devices"))
+                .post(payload.toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("register cron device ${resp.code}: $body")
+                json.decodeFromString(CronDevice.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun pendingCronResults(deviceId: String, limit: Int = 1): Result<CronPendingResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(deviceId.isNotBlank()) { "cron device id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/cron/results/pending", mapOf("device_id" to deviceId, "limit" to limit.coerceIn(1, 10).toString())))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("cron pending ${resp.code}: $body")
+                json.decodeFromString(CronPendingResponse.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun cronExecutions(taskId: String): Result<CronExecutionsResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(taskId.isNotBlank()) { "cron task id required" }
+            val request = Request.Builder()
+                .url(url("/api/v1/cron/results/tasks/${taskId.trim()}/executions"))
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("cron executions ${resp.code}: $body")
+                json.decodeFromString(CronExecutionsResponse.serializer(), body)
+            }
+        }
+    }
+
+    suspend fun ackCronDelivery(deliveryId: String, deviceId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(deliveryId.isNotBlank()) { "cron delivery id required" }
+            require(deviceId.isNotBlank()) { "cron device id required" }
+            val payload = json.encodeToString(CronAckRequest.serializer(), CronAckRequest(deviceId.trim()))
+            val request = Request.Builder()
+                .url(url("/api/v1/cron/results/deliveries/${deliveryId.trim()}/ack"))
+                .post(payload.toRequestBody(jsonMedia))
+                .header("Content-Type", "application/json")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("ack cron delivery ${resp.code}: $body")
+            }
+        }
+    }
+
     suspend fun runCommand(
         command: String,
         args: String,

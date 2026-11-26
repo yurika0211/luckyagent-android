@@ -20,6 +20,7 @@ import com.luckyagent.android.data.notification.CronPopup
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.notification.RuntimeNoticePolicy
 import com.luckyagent.android.data.notification.cronPopupSuppressed
+import com.luckyagent.android.data.notification.cronUsesDurableDelivery
 import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.cache.CachedOutboundMessage
 import com.luckyagent.android.data.cache.HistorySync
@@ -49,6 +50,7 @@ import com.luckyagent.android.data.api.ReceivedMemoryTrace
 import com.luckyagent.android.data.api.CommandExecution
 import com.luckyagent.android.data.api.CronJob
 import com.luckyagent.android.data.api.CronCreateRequest
+import com.luckyagent.android.data.api.CronExecution
 import com.luckyagent.android.data.api.AutonomyDashboardResponse
 import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
 import com.luckyagent.android.data.api.AutonomyTaskSummary
@@ -454,6 +456,11 @@ data class AppUiState(
     val cronError: String? = null,
     /** A cron run the person should see without opening the notification shade. */
     val cronPopup: CronPopup? = null,
+    /** Execution selected by a cron-result notification deep link. */
+    val cronExecutionId: String? = null,
+    val cronExecution: CronExecution? = null,
+    val cronExecutionLoading: Boolean = false,
+    val cronExecutionError: String? = null,
     val pendingQuote: MessageQuote? = null,
     /** Server-owned /lucky collector for the visible session. */
     val luckyActive: Boolean = false,
@@ -1694,6 +1701,7 @@ class AppViewModel(
             // how that same run is shown while a page is already open.
             val runKey = "${job.id}:${job.lastRun.orEmpty()}:${job.runCount}"
             val previous = cronFingerprints.put(job.id, runKey)
+            if (cronUsesDurableDelivery(job)) return@forEach
             if (!settings.notifyOnCron || !RuntimeNoticePolicy.cronRunWorthy(previous, runKey)) return@forEach
             val sessionId = job.metadata["session_id"].orEmpty()
             if (cronPopupSuppressed(appInForeground, _ui.value.destination == AppDestination.Chat, currentSessionId(), sessionId)) return@forEach
@@ -6105,6 +6113,36 @@ class AppViewModel(
 
     fun refreshCron() {
         viewModelScope.launch { refreshCronNow() }
+    }
+
+    fun openCronExecutionFromNotification(taskId: String, executionId: String) {
+        val task = taskId.trim()
+        val execution = executionId.trim()
+        if (task.isBlank() || execution.isBlank()) return
+        _ui.update {
+            it.copy(
+                cronExecutionId = execution,
+                cronExecution = null,
+                cronExecutionLoading = true,
+                cronExecutionError = null,
+            )
+        }
+        navigate(AppDestination.Cron)
+        viewModelScope.launch {
+            val result = container.api.cronExecutions(task)
+            val selected = result.getOrNull()?.executions?.firstOrNull { it.id == execution }
+            _ui.update {
+                it.copy(
+                    cronExecution = selected,
+                    cronExecutionLoading = false,
+                    cronExecutionError = when {
+                        result.isFailure -> result.exceptionOrNull()?.message ?: "没能读取定时执行"
+                        selected == null -> "这次定时执行已不可用"
+                        else -> null
+                    },
+                )
+            }
+        }
     }
 
     fun createCronJob(

@@ -39,6 +39,13 @@ class CronPopupTest {
         assertEquals(false, cronPopupSuppressed(true, destinationIsChat = true, "chat-1", ""))
     }
 
+    @Test fun androidCronJobsUseTheDurableDeliveryWorker() {
+        assertTrue(cronUsesDurableDelivery(ran("android").copy(metadata = mapOf("platform" to "android"))))
+        assertTrue(cronUsesDurableDelivery(ran("android").copy(metadata = mapOf("platform" to " Android "))))
+        assertEquals(false, cronUsesDurableDelivery(ran("telegram").copy(metadata = mapOf("platform" to "telegram"))))
+        assertEquals(false, cronUsesDurableDelivery(ran("legacy")))
+    }
+
     @Test fun delayAimsAtTheNextRunInsteadOfPolling() {
         val now = 1_000_000L
         val soon = "1970-01-01T00:16:50Z" // 1_010_000 ms

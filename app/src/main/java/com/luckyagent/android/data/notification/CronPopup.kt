@@ -51,6 +51,10 @@ fun cronPopupForChange(job: CronJob, previousFingerprint: String?): CronPopup? {
 fun cronFingerprint(job: CronJob): String =
     listOf(job.lastRun, job.runCount, job.errorCount, job.status, job.lastError).joinToString("|")
 
+/** Android jobs are surfaced by the durable delivery worker, not this legacy list poll. */
+fun cronUsesDurableDelivery(job: CronJob): Boolean =
+    job.metadata["platform"]?.trim()?.equals("android", ignoreCase = true) == true
+
 /** The person is already looking at the session this run wrote into. */
 fun cronPopupSuppressed(appInForeground: Boolean, destinationIsChat: Boolean, currentSessionId: String, popupSessionId: String): Boolean =
     appInForeground && destinationIsChat && popupSessionId.isNotBlank() && popupSessionId == currentSessionId
