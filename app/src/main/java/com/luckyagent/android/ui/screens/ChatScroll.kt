@@ -33,14 +33,28 @@ internal fun RestoreChatScrollEffect(
     val latestOnRestored by rememberUpdatedState(onRestored)
     LaunchedEffect(listState, sessionId, rows, expectedItemCount, historyLoading, historyReady, hasMessages, anchor, followLatest, restored) {
         if (historyLoading || !historyReady || !hasMessages || restored || expectedItemCount <= 0) return@LaunchedEffect
-        snapshotFlow { listState.layoutInfo.totalItemsCount }
+        val drawnItemCount = snapshotFlow { listState.layoutInfo.totalItemsCount }
             .first { drawnRowsReady(it, expectedItemCount) }
         if (!followLatest) {
-            val (index, offset) = restoreScrollIndex(rows.map { it.key }, anchor, rows.lastIndex)
+            val (index, offset) = initialChatScrollPosition(
+                rowKeys = rows.map { it.key },
+                anchor = anchor,
+                expectedItemCount = drawnItemCount,
+            )
             listState.scrollToItem(index, offset)
         }
         latestOnRestored()
     }
+}
+
+internal fun initialChatScrollPosition(
+    rowKeys: List<String>,
+    anchor: ScrollAnchor?,
+    expectedItemCount: Int,
+): Pair<Int, Int> = if (anchor == null) {
+    followLatestScrollIndex(expectedItemCount) to 0
+} else {
+    restoreScrollIndex(rowKeys, anchor, rowKeys.lastIndex)
 }
 
 /** Keep the fixed tail visible after rows, their heights, or the viewport change. */
@@ -59,7 +73,7 @@ internal fun FollowLatestEffect(
             Triple(listState.layoutInfo, listState.isScrollInProgress, listState.canScrollForward)
         }.collect { (layout, scrolling, canScrollForward) ->
             if (drawnRowsReady(layout.totalItemsCount, expectedItemCount) && !scrolling && canScrollForward) {
-                listState.scrollToItem(followLatestScrollIndex(expectedItemCount))
+                listState.scrollToItem(followLatestScrollIndex(layout.totalItemsCount))
             }
         }
     }

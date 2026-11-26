@@ -11,6 +11,7 @@ import com.luckyagent.android.data.api.SessionHistory
 import com.luckyagent.android.data.api.TokenUsage
 import com.luckyagent.android.ui.replaceBubbleAt
 import com.luckyagent.android.ui.util.paintedChatRows
+import com.luckyagent.android.ui.util.ScrollAnchor
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -530,6 +531,16 @@ class ChatTimelineTest {
     }
 
     @Test
+    fun openingWithoutAnAnchorUsesTheTailOnce() {
+        assertEquals(11 to 0, initialChatScrollPosition(listOf("old", "new"), null, expectedItemCount = 12))
+        assertEquals(1 to 9, initialChatScrollPosition(
+            listOf("old", "anchor", "new"),
+            ScrollAnchor(messageId = "anchor", offset = 9),
+            expectedItemCount = 4,
+        ))
+    }
+
+    @Test
     fun followAfterDateAndUnreadRowsWaitsForTheDrawnCount() {
         val days = listOf(
             LocalDate.of(2026, 11, 6),
@@ -546,6 +557,7 @@ class ChatTimelineTest {
         assertFalse(drawnRowsReady(measuredCount = before.size, expectedCount = after.size))
         assertFalse(drawnRowsReady(measuredCount = 0, expectedCount = after.size))
         assertTrue(drawnRowsReady(measuredCount = after.size, expectedCount = after.size))
+        assertTrue(drawnRowsReady(measuredCount = after.size + 1, expectedCount = after.size))
         assertEquals(after.lastIndex, followLatestScrollIndex(after.size))
         assertTrue(followLatestScrollIndex(after.size) > before.lastIndex)
     }
