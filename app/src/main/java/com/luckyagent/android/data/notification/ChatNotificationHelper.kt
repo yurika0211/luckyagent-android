@@ -30,6 +30,22 @@ class ChatNotificationHelper(private val context: Context) {
     private val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     private val delivered = context.getSharedPreferences("chat_notification_dedupe", Context.MODE_PRIVATE)
 
+    data class CronNotificationCapability(
+        val notificationsEnabled: Boolean,
+        val channelEnabled: Boolean,
+    )
+
+    fun cronNotificationCapability(): CronNotificationCapability {
+        val notificationsEnabled = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        val channelEnabled = if (Build.VERSION.SDK_INT < 26) {
+            true
+        } else {
+            manager.getNotificationChannel(RuntimeNoticeKind.Cron.channelId)?.importance != NotificationManager.IMPORTANCE_NONE
+        }
+        return CronNotificationCapability(notificationsEnabled, channelEnabled)
+    }
+
     @Synchronized
     fun notifyCompleted(sessionId: String, requestId: String?, content: String?) {
         post(
@@ -46,8 +62,15 @@ class ChatNotificationHelper(private val context: Context) {
     }
 
     @Synchronized
-    fun notifyCron(sessionId: String, eventId: String?, content: String?, failed: Boolean = false) {
-        post(
+    fun notifyCron(
+        sessionId: String,
+        eventId: String?,
+        content: String?,
+        failed: Boolean = false,
+        taskId: String? = null,
+        executionId: String? = null,
+    ): Boolean {
+        return post(
             kind = RuntimeNoticeKind.Cron,
             dedupeKey = "cron:${sessionId}:${eventId.orEmpty()}",
             notificationId = "cron:$sessionId:${eventId.orEmpty()}",
@@ -57,7 +80,8 @@ class ChatNotificationHelper(private val context: Context) {
             destination = "chat",
             ongoing = false,
             remember = true,
-            fullScreen = true,
+            taskId = taskId,
+            executionId = executionId,
         )
     }
 
@@ -101,11 +125,12 @@ class ChatNotificationHelper(private val context: Context) {
         ongoing: Boolean,
         remember: Boolean,
         taskId: String? = null,
+        executionId: String? = null,
         quiet: Boolean = false,
-        fullScreen: Boolean = false,
-    ) {
-        if (android.os.Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        if (remember && dedupeKey.isNotBlank() && delivered.getBoolean(dedupeKey, false)) return
+    ): Boolean {
+        if (android.os.Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
+        if (kind == RuntimeNoticeKind.Cron && !cronNotificationCapability().channelEnabled) return false
+        if (remember && dedupeKey.isNotBlank() && delivered.getBoolean(dedupeKey, false)) return true
         val channelKind = if (quiet) RuntimeNoticeKind.Progress else kind
         ensureChannel(channelKind)
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -114,6 +139,7 @@ class ChatNotificationHelper(private val context: Context) {
             // Always carry the task so a missing execution session still opens
             // that card instead of the module list.
             taskId?.takeIf { it.isNotBlank() }?.let { putExtra(MainActivity.EXTRA_TASK_ID, it) }
+            executionId?.takeIf { it.isNotBlank() }?.let { putExtra(MainActivity.EXTRA_EXECUTION_ID, it) }
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         val pending = PendingIntent.getActivity(
@@ -132,17 +158,9 @@ class ChatNotificationHelper(private val context: Context) {
             .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
             .setSilent(quiet)
-            .setCategory(
-                if (fullScreen) {
-                    NotificationCompat.CATEGORY_ALARM
-                } else if (!quiet && (kind == RuntimeNoticeKind.Chat || kind == RuntimeNoticeKind.Cron)) {
-                    NotificationCompat.CATEGORY_MESSAGE
-                } else {
-                    NotificationCompat.CATEGORY_STATUS
-                },
-            )
+            .setCategory(if (!quiet && (kind == RuntimeNoticeKind.Chat || kind == RuntimeNoticeKind.Cron)) NotificationCompat.CATEGORY_MESSAGE else NotificationCompat.CATEGORY_STATUS)
             .setPriority(
-                if (fullScreen) {
+                if (kind == RuntimeNoticeKind.Cron && !quiet) {
                     NotificationCompat.PRIORITY_HIGH
                 } else if (quiet) {
                     NotificationCompat.PRIORITY_LOW
@@ -150,13 +168,15 @@ class ChatNotificationHelper(private val context: Context) {
                     NotificationCompat.PRIORITY_DEFAULT
                 },
             )
-            .setVisibility(if (fullScreen) NotificationCompat.VISIBILITY_PUBLIC else NotificationCompat.VISIBILITY_PRIVATE)
-        if (fullScreen && canUseFullScreenIntent()) {
-            builder.setFullScreenIntent(pending, true)
-        }
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
         val notification = builder.build()
-        manager.notify(notificationId.hashCode(), notification)
+        try {
+            manager.notify(notificationId.hashCode(), notification)
+        } catch (_: SecurityException) {
+            return false
+        }
         if (remember && dedupeKey.isNotBlank()) delivered.edit().putBoolean(dedupeKey, true).apply()
+        return true
     }
 
     fun ensureChannel() {
@@ -165,16 +185,14 @@ class ChatNotificationHelper(private val context: Context) {
 
     private fun ensureChannel(kind: RuntimeNoticeKind) {
         if (Build.VERSION.SDK_INT < 26) return
-        // Cron reminders must wake the screen, so that channel is raised to high
-        // importance on sight. Any other channel keeps the importance it declares.
+        // Cron results are ordinary high-importance reminders. They do not use
+        // alarm categories or a full-screen intent.
         val alarm = kind == RuntimeNoticeKind.Cron
         val importance = if (alarm) NotificationManager.IMPORTANCE_HIGH else kind.importance
         val existing = manager.getNotificationChannel(kind.channelId)
-        // Only the cron channel is ever recreated, because Android 13 ignores a
-        // full-screen intent below high importance. Recreating any other channel
-        // would wipe the sound and vibration the person chose for it.
-        if (existing != null && (!alarm || existing.importance >= importance)) return
-        if (existing != null) manager.deleteNotificationChannel(kind.channelId)
+        // Never recreate an existing channel: Android treats its importance as
+        // a user choice, including IMPORTANCE_NONE (the disabled state).
+        if (existing != null) return
         manager.createNotificationChannel(
             NotificationChannel(kind.channelId, kind.channelName, importance).apply {
                 description = if (alarm) "定时任务到点时弹出，可在锁屏上看到" else "LuckyAgent ${kind.channelName}"
@@ -184,7 +202,7 @@ class ChatNotificationHelper(private val context: Context) {
         )
     }
 
-    /** Android 14 can revoke this. A missing grant still posts the high-importance notice. */
+    /** Kept for settings diagnostics; cron delivery itself never uses a full-screen intent. */
     fun canUseFullScreenIntent(): Boolean {
         if (Build.VERSION.SDK_INT < 34) return true
         return NotificationManagerCompat.from(context).canUseFullScreenIntent()

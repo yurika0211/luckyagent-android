@@ -77,6 +77,23 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
 
         state.cronError?.let { ErrorLine(it) }
 
+        if (state.cronExecutionId != null) {
+            CloverCard {
+                Text("定时执行", style = MaterialTheme.typography.titleSmall)
+                when {
+                    state.cronExecutionLoading -> Text("正在读取这次执行…", color = CloverText2)
+                    state.cronExecutionError != null -> Text(state.cronExecutionError!!, color = CloverError)
+                    state.cronExecution != null -> {
+                        val execution = state.cronExecution!!
+                        Text("状态：${execution.status}", color = CloverText2)
+                        execution.result.ifBlank { execution.error }.takeIf { it.isNotBlank() }?.let {
+                            Text(it, color = CloverText2, maxLines = 5, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+
         when {
             state.cronLoading && state.cronJobs.isEmpty() -> {
                 Text("正在读取定时任务", color = CloverText2, modifier = Modifier.padding(16.dp))

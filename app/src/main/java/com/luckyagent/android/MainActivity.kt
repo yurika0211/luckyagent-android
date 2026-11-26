@@ -59,7 +59,10 @@ class MainActivity : ComponentActivity() {
         val destination = intent?.getStringExtra(EXTRA_DESTINATION).orEmpty()
         val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID).orEmpty()
         val taskId = intent?.getStringExtra(EXTRA_TASK_ID).orEmpty()
+        val executionId = intent?.getStringExtra(EXTRA_EXECUTION_ID).orEmpty()
         when {
+            executionId.isNotBlank() && taskId.isNotBlank() ->
+                appViewModel.openCronExecutionFromNotification(taskId, executionId)
             // A linked execution session opens that chat. The task id still
             // rides along so the card stays the return target.
             sessionId.isNotBlank() && taskId.isNotBlank() -> {
@@ -76,5 +79,6 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_SESSION_ID = "session_id"
         const val EXTRA_DESTINATION = "destination"
         const val EXTRA_TASK_ID = "task_id"
+        const val EXTRA_EXECUTION_ID = "execution_id"
     }
 }
