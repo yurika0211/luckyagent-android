@@ -184,4 +184,51 @@ class ModelsTest {
         assertEquals(99999, parsed.messages.single().blobBytes)
         assertEquals("outbound-1", parsed.messages.single().clientMessageId)
     }
+
+    @Test
+    fun contextInspectDecodesWindowSectionsAndCompactTrace() {
+        val raw = """
+            {
+              "max_tokens": 12000,
+              "reserved_tokens": 2000,
+              "available_tokens": 10000,
+              "sliding_window_size": 10,
+              "max_conversation_turns": 50,
+              "memory_budget": 800,
+              "summarize_threshold": 0.8,
+              "strategy": "sliding_window",
+              "compact_trace": {
+                "trigger": "threshold",
+                "created_at": "2026-11-25T10:00:00Z",
+                "pre_token_estimate": 9000,
+                "post_token_estimate": 3000,
+                "summary_tokens": 400,
+                "dropped_messages": 8,
+                "retained_messages": 4,
+                "summary_source": "local"
+              },
+              "sections": [{
+                "index": 0,
+                "role": "user",
+                "bucket": "history",
+                "label": "history",
+                "tokens": 100,
+                "preview": "摘要…",
+                "content": "完整段落内容"
+              }]
+            }
+        """.trimIndent()
+
+        val parsed = Json { ignoreUnknownKeys = true }
+            .decodeFromString(ContextInspectResponse.serializer(), raw)
+
+        assertEquals(10, parsed.slidingWindowSize)
+        assertEquals(50, parsed.maxConversationTurns)
+        assertEquals(800, parsed.memoryBudget)
+        assertEquals(0.8, parsed.summarizeThreshold)
+        assertEquals("threshold", parsed.compactTrace?.trigger)
+        assertEquals(400, parsed.compactTrace?.summaryTokens)
+        assertEquals(4, parsed.compactTrace?.retainedMessages)
+        assertEquals("完整段落内容", parsed.sections.single().content)
+    }
 }

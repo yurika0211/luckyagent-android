@@ -383,7 +383,11 @@ class LuckyAgentApi(
                 val id = sessionId.trim()
                 require(id.isNotEmpty()) { "session id required" }
                 val request = Request.Builder()
-                    .url(url("/api/v1/context", mapOf("session_id" to id, "inspect" to "1")))
+                    .url(url("/api/v1/context", mapOf(
+                        "session_id" to id,
+                        "inspect" to "1",
+                        "include_messages" to "1",
+                    )))
                     .get()
                     .build()
                 client.newCall(request).execute().use { resp ->
