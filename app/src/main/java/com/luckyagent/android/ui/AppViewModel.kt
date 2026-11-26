@@ -20,6 +20,7 @@ import com.luckyagent.android.data.notification.CronPopup
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.notification.RuntimeNoticePolicy
 import com.luckyagent.android.data.notification.cronPopupSuppressed
+import com.luckyagent.android.data.notification.cronUsesDurableDelivery
 import com.luckyagent.android.data.api.MemoryEntry
 import com.luckyagent.android.data.cache.CachedOutboundMessage
 import com.luckyagent.android.data.cache.HistorySync
@@ -1700,6 +1701,7 @@ class AppViewModel(
             // how that same run is shown while a page is already open.
             val runKey = "${job.id}:${job.lastRun.orEmpty()}:${job.runCount}"
             val previous = cronFingerprints.put(job.id, runKey)
+            if (cronUsesDurableDelivery(job)) return@forEach
             if (!settings.notifyOnCron || !RuntimeNoticePolicy.cronRunWorthy(previous, runKey)) return@forEach
             val sessionId = job.metadata["session_id"].orEmpty()
             if (cronPopupSuppressed(appInForeground, _ui.value.destination == AppDestination.Chat, currentSessionId(), sessionId)) return@forEach
