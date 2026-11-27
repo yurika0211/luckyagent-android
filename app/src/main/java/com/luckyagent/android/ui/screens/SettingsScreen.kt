@@ -71,7 +71,7 @@ import android.os.Build
 import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.app.NotificationManagerCompat
+import com.luckyagent.android.data.notification.ChatNotificationHelper
 import com.luckyagent.android.ui.components.CloverCard
 import com.luckyagent.android.ui.components.MetaChip
 import com.luckyagent.android.ui.components.DetailDisclosure
@@ -390,22 +390,20 @@ private fun SettingsNotificationsCard(state: AppUiState, vm: AppViewModel) {
         )
         NotificationToggle(
             title = "定时消息",
-body = "定时任务这次跑完或失败时通知一次。同一次运行不会反复响。到点后在当前页面弹出；离开 App 或锁屏时用系统弹窗盖在上面，正在看那条会话时不弹。",
+            body = "定时任务这次跑完或失败时通知一次。同一次执行只弹一次。这是普通提醒，不是全屏闹钟。系统通知权限和这条渠道要分开开着，才会弹出。",
             checked = state.settings.notifyOnCron,
             onChecked = { enabled ->
                 vm.updateSettings { it.copy(notifyOnCron = enabled) }
                 requestNoticePermission(context, enabled)
             },
         )
-        if (state.settings.notifyOnCron && !NotificationManagerCompat.from(context).canUseFullScreenIntent()) {
-            Text("锁屏弹窗被系统关掉了。没开时仍会发普通通知。", color = CloverText2, style = MaterialTheme.typography.bodySmall)
-            if (Build.VERSION.SDK_INT >= 34) {
-                TextButton(onClick = {
-                    context.startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
-                        data = android.net.Uri.parse("package:${context.packageName}")
-                    })
-                }) { Text("打开锁屏弹窗") }
-            }
+        if (state.settings.notifyOnCron) {
+            val capability = ChatNotificationHelper(context).cronNotificationCapability()
+            Text(
+                "推送：开。系统通知权限：${if (capability.notificationsEnabled) "开" else "关"}。定时渠道：${if (capability.channelEnabled) "开" else "关"}。",
+                color = CloverText2,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         NotificationToggle(
             title = "子代理",

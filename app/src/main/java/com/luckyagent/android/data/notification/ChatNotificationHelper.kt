@@ -9,7 +9,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.luckyagent.android.MainActivity
 
@@ -70,10 +69,11 @@ class ChatNotificationHelper(private val context: Context) {
         taskId: String? = null,
         executionId: String? = null,
     ): Boolean {
+        val stableId = executionId?.takeIf { it.isNotBlank() } ?: eventId.orEmpty()
         return post(
             kind = RuntimeNoticeKind.Cron,
-            dedupeKey = "cron:${sessionId}:${eventId.orEmpty()}",
-            notificationId = "cron:$sessionId:${eventId.orEmpty()}",
+            dedupeKey = "cron:$stableId",
+            notificationId = "cron:$stableId",
             title = if (failed) "LuckyAgent · 定时失败" else "LuckyAgent · 定时完成",
             body = summarize(content),
             sessionId = sessionId,
@@ -158,7 +158,14 @@ class ChatNotificationHelper(private val context: Context) {
             .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
             .setSilent(quiet)
-            .setCategory(if (!quiet && (kind == RuntimeNoticeKind.Chat || kind == RuntimeNoticeKind.Cron)) NotificationCompat.CATEGORY_MESSAGE else NotificationCompat.CATEGORY_STATUS)
+            .setCategory(
+                when {
+                    quiet -> NotificationCompat.CATEGORY_STATUS
+                    kind == RuntimeNoticeKind.Cron -> NotificationCompat.CATEGORY_REMINDER
+                    kind == RuntimeNoticeKind.Chat -> NotificationCompat.CATEGORY_MESSAGE
+                    else -> NotificationCompat.CATEGORY_STATUS
+                },
+            )
             .setPriority(
                 if (kind == RuntimeNoticeKind.Cron && !quiet) {
                     NotificationCompat.PRIORITY_HIGH
@@ -200,12 +207,6 @@ class ChatNotificationHelper(private val context: Context) {
                 if (kind == RuntimeNoticeKind.Progress) setSound(null, null)
             },
         )
-    }
-
-    /** Kept for settings diagnostics; cron delivery itself never uses a full-screen intent. */
-    fun canUseFullScreenIntent(): Boolean {
-        if (Build.VERSION.SDK_INT < 34) return true
-        return NotificationManagerCompat.from(context).canUseFullScreenIntent()
     }
 
     private fun summarize(value: String?): String {
