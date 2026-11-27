@@ -60,11 +60,14 @@ class CronWatchWorker(
         // Drain the queue, rather than only acknowledging the newest row. The
         // backend cursor is a (scheduled_at, execution_id) tuple, so several
         // executions can legitimately share the same scheduled_at.
+        // Posted ids survive an ACK failure so the retry does not post again.
+        var posted = PostedCronNotifications.decode(prefs.getString(KEY_POSTED_EXECUTIONS, null))
         while (true) {
             val pending = app.container.api.pendingCronResults(deviceId, limit = 10).getOrElse { return Result.retry() }
             if (pending.items.isEmpty()) break
             when (drainCronDeliveries(
                 items = pending.items,
+                alreadyPosted = posted.encoded().lineSequence().filter { it.isNotEmpty() }.toSet(),
                 notify = { item ->
                     val failed = item.execution.status.equals("failed", ignoreCase = true)
                     val detail = item.execution.error.ifBlank { item.execution.result }
@@ -79,6 +82,10 @@ class CronWatchWorker(
                     )
                 },
                 ack = { item -> app.container.api.ackCronDelivery(item.delivery.id, deviceId).isSuccess },
+                onPosted = { item ->
+                    posted = posted.remember(item.execution.id)
+                    prefs.edit().putString(KEY_POSTED_EXECUTIONS, posted.encoded()).apply()
+                },
                 onAck = { item ->
                     prefs.edit()
                         .putString(KEY_CURSOR_AT, item.execution.scheduledAt)
@@ -102,6 +109,7 @@ class CronWatchWorker(
         const val KEY_REGISTERED = "device_registered"
         const val KEY_CURSOR_AT = "cursor_at"
         const val KEY_CURSOR_EXECUTION_ID = "cursor_execution_id"
+        const val KEY_POSTED_EXECUTIONS = "posted_execution_ids"
     }
 }
 
@@ -112,14 +120,50 @@ internal enum class CronDrainOutcome {
 }
 
 /**
+ * Local record that the system notification for this execution was already
+ * submitted. An ACK failure retries the ACK only. It must not post again.
+ * This device keeps the set; it is not written back as account Delivery state.
+ */
+internal class PostedCronNotifications(private val raw: Set<String>) {
+    fun contains(executionId: String): Boolean = raw.contains(executionId)
+
+    fun remember(executionId: String): PostedCronNotifications {
+        if (executionId.isBlank() || raw.contains(executionId)) return this
+        val next = LinkedHashSet(raw)
+        next.add(executionId)
+        while (next.size > MAX) {
+            val oldest = next.iterator().next()
+            next.remove(oldest)
+        }
+        return PostedCronNotifications(next)
+    }
+
+    fun encoded(): String = raw.joinToString("\n")
+
+    companion object {
+        const val MAX = 200
+
+        fun decode(raw: String?): PostedCronNotifications =
+            PostedCronNotifications(
+                raw.orEmpty().lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toCollection(LinkedHashSet()),
+            )
+    }
+}
+
+/**
  * Processes one pending page from oldest to newest. Advancing a cursor past a
  * newer row before an older row is delivered would make that older row
  * invisible to the next poll after a notification failure.
+ *
+ * [alreadyPosted] is the executions whose system notification this device
+ * already submitted. Those rows skip [notify] and only retry [ack].
  */
 internal suspend fun drainCronDeliveries(
     items: List<CronPendingItem>,
+    alreadyPosted: Set<String> = emptySet(),
     notify: suspend (CronPendingItem) -> Boolean,
     ack: suspend (CronPendingItem) -> Boolean,
+    onPosted: (CronPendingItem) -> Unit = {},
     onAck: (CronPendingItem) -> Unit,
 ): CronDrainOutcome {
     val ordered = items.sortedWith(
@@ -128,7 +172,11 @@ internal suspend fun drainCronDeliveries(
         }.thenBy { it.execution.id },
     )
     for (item in ordered) {
-        if (!notify(item)) return CronDrainOutcome.NOTIFICATION_BLOCKED
+        val posted = alreadyPosted.contains(item.execution.id)
+        if (!posted) {
+            if (!notify(item)) return CronDrainOutcome.NOTIFICATION_BLOCKED
+            onPosted(item)
+        }
         if (!ack(item)) return CronDrainOutcome.ACK_FAILED
         onAck(item)
     }

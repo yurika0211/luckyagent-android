@@ -72,6 +72,44 @@ class CronWatchWorkerTest {
     }
 
     @Test
+    fun ackFailureDoesNotPostTheSameExecutionAgain() = runBlocking {
+        val notified = mutableListOf<String>()
+        val acked = mutableListOf<String>()
+        val posted = mutableSetOf<String>()
+
+        val first = drainCronDeliveries(
+            items = listOf(pending("exec", "2026-11-27T09:00:00Z")),
+            alreadyPosted = posted,
+            notify = { notified += it.execution.id; true },
+            ack = { false },
+            onPosted = { posted += it.execution.id },
+            onAck = { acked += it.execution.id },
+        )
+        val retry = drainCronDeliveries(
+            items = listOf(pending("exec", "2026-11-27T09:00:00Z")),
+            alreadyPosted = posted,
+            notify = { notified += it.execution.id; true },
+            ack = { acked += it.execution.id; true },
+            onPosted = { posted += it.execution.id },
+            onAck = {},
+        )
+
+        assertEquals(CronDrainOutcome.ACK_FAILED, first)
+        assertEquals(CronDrainOutcome.COMPLETE, retry)
+        assertEquals(listOf("exec"), notified)
+        assertEquals(listOf("exec"), acked)
+    }
+
+    @Test
+    fun postedSetKeepsTheNewestIds() {
+        var posted = PostedCronNotifications.decode(null)
+        repeat(PostedCronNotifications.MAX + 3) { posted = posted.remember("exec-$it") }
+        assertEquals(false, posted.contains("exec-0"))
+        assertEquals(true, posted.contains("exec-${PostedCronNotifications.MAX + 2}"))
+        assertEquals(PostedCronNotifications.MAX, PostedCronNotifications.decode(posted.encoded()).encoded().lineSequence().count())
+    }
+
+    @Test
     fun newestPendingKeepsOlderRowsUntouched() {
         val newest = pending("new", "2026-11-27T09:02:00Z")
         val chosen = newestPending(listOf(
