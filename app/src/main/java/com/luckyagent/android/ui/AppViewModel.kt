@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import com.luckyagent.android.data.AppContainer
 import com.luckyagent.android.data.openui.OpenUiDelta
 import com.luckyagent.android.data.openui.asOpenUiDelta
+import com.luckyagent.android.data.openui.chartApplyErrorFor
 import com.luckyagent.android.data.notification.CronPopup
 import com.luckyagent.android.data.notification.RuntimeNoticeKind
 import com.luckyagent.android.data.notification.RuntimeNoticePolicy
@@ -472,6 +473,8 @@ data class AppUiState(
     val snackbarMessage: String? = null,
     /** Widget id chosen on an OpenUI tree, keyed by tree id. */
     val openUiSelection: Map<String, String> = emptyMap(),
+    /** Server error for a chart Apply that is still on the last good picture. */
+    val openUiChartError: String? = null,
     val appearanceBusy: Boolean = false,
     val personaName: String = "",
     val models: List<ModelRef> = emptyList(),
@@ -978,6 +981,11 @@ class AppViewModel(
                         "error" -> {
                             val requestId = terminalRequestId(event)
                             val msg = errorText(env)
+                            if (event.sessionId == currentSessionId() &&
+                                chartApplyErrorFor(requestId, foregroundRequestIds[event.sessionId], msg) != null
+                            ) {
+                                failOpenUiChart(msg)
+                            }
                             val matched = completeRun(event, requestId)
                             val visibleStuck = !matched &&
                                 event.sessionId == currentSessionId() &&
@@ -2951,8 +2959,16 @@ class AppViewModel(
         val sent = container.wsClient.sendUiAction(currentSessionId(), treeId, widgetId, values, chart)
         if (!sent) {
             _ui.update { it.copy(snackbarMessage = "无法发给模型") }
+            return false
         }
-        return sent
+        _ui.update { it.copy(openUiChartError = null) }
+        return true
+    }
+
+    /** A chart Apply failed on the server. The last picture stays; the form reopens. */
+    fun failOpenUiChart(message: String) {
+        val text = message.trim().ifBlank { "计算失败" }
+        _ui.update { it.copy(openUiChartError = text) }
     }
 
     fun notifyCopied() {

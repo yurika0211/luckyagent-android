@@ -776,6 +776,37 @@ fun OpenUiChartScreen.failed(message: String): OpenUiChartScreen =
 fun OpenUiChartScreen.accepted(next: OpenUiChartContract): OpenUiChartScreen =
     OpenUiChartScreen(chart = next, draft = null, phase = "complete")
 
+/**
+ * What the chart composable does with one server frame while an Apply is out.
+ * A newer data_version closes the form. An error frame reopens it through
+ * [OpenUiChartScreen.failed] and keeps the rejected draft. Anything else,
+ * including a stream that is still running, stays on loading.
+ */
+/**
+ * A server error reopens the chart form only when it belongs to the Apply
+ * that is in flight. A missing id still counts while that Apply is the
+ * foreground turn. Any other id is left alone.
+ */
+fun chartApplyErrorFor(requestId: String?, chartActionId: String?, message: String): String? {
+    val text = message.trim()
+    val action = chartActionId?.trim().orEmpty()
+    if (text.isEmpty() || action.isEmpty()) return null
+    val request = requestId?.trim().orEmpty()
+    if (request.isNotEmpty() && request != action) return null
+    return text
+}
+
+fun OpenUiChartScreen.onServerFrame(tree: OpenUiDelta?, serverError: String?): OpenUiChartScreen {
+    val message = serverError?.trim().orEmpty()
+    if (message.isNotEmpty()) return failed(message)
+    val node = tree?.nodes?.firstOrNull { node ->
+        node.type.equals("Chart", ignoreCase = true) && node.chartContract()?.chartId == chart.chartId
+    }
+    val next = node?.chartContract()
+    if (next != null && next.dataVersion > chart.dataVersion) return accepted(next)
+    return this
+}
+
 /** Wire action for Apply. Null when this draft is not a versioned chart. */
 fun OpenUiChartDraft.toAction(treeId: String, widgetId: String, actionId: String): OpenUiAction? {
     if (chartId.isBlank() || schemaVersion < 1 || dataVersion < 1) return null
