@@ -52,6 +52,7 @@ import com.luckyagent.android.ui.theme.CloverText3
 fun CronScreen(state: AppUiState, vm: AppViewModel) {
     var showCreate by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<CronJob?>(null) }
+    var pauseTarget by remember { mutableStateOf<CronJob?>(null) }
     Column(
         Modifier
             .fillMaxSize(),
@@ -125,7 +126,7 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
                     items(state.cronJobs, key = { it.id }) { job ->
                         CronJobCard(
                             job = job,
-                            onPause = { vm.pauseCronJob(job.id) },
+                            onPause = { pauseTarget = job },
                             onResume = { vm.resumeCronJob(job.id) },
                             onDelete = { deleteTarget = job },
                             busy = state.cronLoading,
@@ -149,11 +150,34 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("删除定时任务？") },
-            text = { Text("“${job.name.ifBlank { job.id }}”会从电脑上的调度器删除。") },
+            text = {
+                Text(
+                    "“${job.name.ifBlank { job.id }}”会停止以后的调度，历史结果也不再显示。" +
+                        "已经开始的这一次仍会跑完，但不再发新通知。" +
+                        "已经发出的模型调用、工具调用和外部动作不会撤回。已经进推送的消息也不保证能撤回。",
+                )
+            },
             confirmButton = {
                 Button(onClick = { deleteTarget = null; vm.deleteCronJob(job.id) }) { Text("删除") }
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+        )
+    }
+    pauseTarget?.let { job ->
+        AlertDialog(
+            onDismissRequest = { pauseTarget = null },
+            title = { Text("暂停定时任务？") },
+            text = {
+                Text(
+                    "“${job.name.ifBlank { job.id }}”暂停后不再领取下一次。" +
+                        "已经开始的这一次还会跑完，并按原规则发通知。" +
+                        "暂停期间错过的点不会补跑。",
+                )
+            },
+            confirmButton = {
+                Button(onClick = { pauseTarget = null; vm.pauseCronJob(job.id) }) { Text("暂停") }
+            },
+            dismissButton = { TextButton(onClick = { pauseTarget = null }) { Text("取消") } },
         )
     }
 }
