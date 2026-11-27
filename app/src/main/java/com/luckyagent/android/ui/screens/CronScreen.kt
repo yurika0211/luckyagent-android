@@ -31,6 +31,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.ui.Alignment
+import com.luckyagent.android.data.api.CronExecution
 import com.luckyagent.android.data.api.CronJob
 import com.luckyagent.android.ui.AppUiState
 import com.luckyagent.android.ui.AppViewModel
@@ -78,7 +81,13 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
 
         state.cronError?.let { ErrorLine(it) }
 
-        if (state.cronExecutionId != null) {
+        if (state.cronHistoryTaskId != null) {
+            CronHistoryCard(
+                state = state,
+                onClose = vm::closeCronTaskHistory,
+                onRefresh = vm::refreshCronHistory,
+            )
+        } else if (state.cronExecutionId != null) {
             CloverCard {
                 Text("定时执行", style = MaterialTheme.typography.titleSmall)
                 when {
@@ -126,6 +135,7 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
                     items(state.cronJobs, key = { it.id }) { job ->
                         CronJobCard(
                             job = job,
+                            onOpen = { vm.openCronTaskHistory(job.id) },
                             onPause = { pauseTarget = job },
                             onResume = { vm.resumeCronJob(job.id) },
                             onDelete = { deleteTarget = job },
@@ -185,12 +195,13 @@ fun CronScreen(state: AppUiState, vm: AppViewModel) {
 @Composable
 private fun CronJobCard(
     job: CronJob,
+    onOpen: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onDelete: () -> Unit,
     busy: Boolean,
 ) {
-    CloverCard {
+    CloverCard(onClick = onOpen) {
         CardTitleRow(
             title = job.name.ifBlank { job.id.ifBlank { "定时任务" } },
             subtitle = job.schedule.ifBlank { null },
@@ -238,6 +249,92 @@ private fun CronJobCard(
         }
         job.lastError?.takeIf { it.isNotBlank() }?.let {
             Text(it, color = CloverError, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
+        Text("查看执行历史", color = CloverText3, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/** One task's runs, newest first. The server already orders them; sorting keeps it stable. */
+@Composable
+private fun CronHistoryCard(
+    state: AppUiState,
+    onClose: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    CloverCard {
+        CardTitleRow(
+            title = "任务执行",
+            subtitle = "按执行时间倒序 · ${state.cronHistory.size} 条",
+            trailing = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(onClick = onRefresh, enabled = !state.cronHistoryLoading) {
+                        Icon(
+                            Icons.Outlined.Refresh,
+                            contentDescription = "刷新执行历史",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    IconButton(onClick = onClose) {
+                        Icon(
+                            Icons.Outlined.Close,
+                            contentDescription = "关闭执行历史",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            },
+        )
+        when {
+            state.cronHistoryError != null && state.cronHistory.isEmpty() -> {
+                Text(state.cronHistoryError!!, color = CloverError)
+            }
+            state.cronHistoryLoading && state.cronHistory.isEmpty() -> {
+                Text("正在读取执行历史…", color = CloverText2)
+            }
+            state.cronHistory.isEmpty() -> {
+                Text("这条任务还没有执行记录。到点跑完一次后，每次执行都会记在这里。", color = CloverText2)
+            }
+            else -> {
+                state.cronHistory.forEach { execution ->
+                    CronHistoryRow(
+                        execution = execution,
+                        highlighted = execution.id == state.cronExecutionId,
+                    )
+                }
+                state.cronHistoryError?.let { Text(it, color = CloverError) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CronHistoryRow(execution: CronExecution, highlighted: Boolean) {
+    val detail = execution.result.ifBlank { execution.error }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = formatCronTimestamp(execution.scheduledAt),
+                color = if (highlighted) MaterialTheme.colorScheme.primary else CloverText2,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            StatusChip(execution.status)
+            if (highlighted) {
+                Text("通知指向这一次", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        execution.finishedAt?.takeIf { it.isNotBlank() }?.let {
+            Text("结束 ${formatCronTimestamp(it)}", color = CloverText3, style = MaterialTheme.typography.labelSmall)
+        }
+        detail.takeIf { it.isNotBlank() }?.let {
+            Text(it, color = CloverText3, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
     }
 }

@@ -20,7 +20,14 @@ class CronWatchWorker(
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val app = applicationContext as? LuckyAgentApp ?: return Result.failure()
-        if (!app.container.settingsRepository.snapshot().notifyOnCron) return Result.success()
+        if (!app.container.settingsRepository.snapshot().notifyOnCron) {
+            // The switch silences the banner, not the watch chain. Polling stays
+            // alive so turning it back on does not wait for the next app launch,
+            // and account deliveries stay pending instead of going stale.
+            val jobs = app.container.api.listCronJobs().getOrElse { return Result.retry() }.jobs
+            CronWatchWork.enqueue(applicationContext, jobs)
+            return Result.success()
+        }
         val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val deviceId = prefs.getString(KEY_DEVICE_ID, null) ?: UUID.randomUUID().toString().also {
             prefs.edit().putString(KEY_DEVICE_ID, it).apply()

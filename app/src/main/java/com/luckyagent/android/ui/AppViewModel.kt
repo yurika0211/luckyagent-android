@@ -52,6 +52,7 @@ import com.luckyagent.android.data.api.CommandExecution
 import com.luckyagent.android.data.api.CronJob
 import com.luckyagent.android.data.api.CronCreateRequest
 import com.luckyagent.android.data.api.CronExecution
+import com.luckyagent.android.data.api.CronExecutionsResponse
 import com.luckyagent.android.data.api.AutonomyDashboardResponse
 import com.luckyagent.android.data.api.AutonomyTaskDetailResponse
 import com.luckyagent.android.data.api.AutonomyTaskSummary
@@ -170,6 +171,28 @@ internal fun <T> samePolledList(
         !nextLoading &&
         previousError == nextError &&
         (previous === next || previous == next)
+
+/**
+ * Applies one execution-history response to the visible task, newest first.
+ *
+ * Two rules live here so they can be tested without a network call:
+ * a late response for a task the person already left must not win, and a failed
+ * refresh keeps the rows already on screen instead of blanking the list.
+ */
+internal fun applyCronHistory(
+    state: AppUiState,
+    taskId: String,
+    result: Result<CronExecutionsResponse>,
+): AppUiState {
+    if (state.cronHistoryTaskId != taskId) return state
+    val executions = result.getOrNull()?.executions
+    return state.copy(
+        cronHistory = executions?.sortedByDescending { it.scheduledAt } ?: state.cronHistory,
+        cronHistoryLoading = false,
+        cronHistoryError = result.exceptionOrNull()?.message
+            ?.let { message -> "没能读取执行历史：$message" },
+    )
+}
 
 enum class TrajectoryFilter { All, Success, Failure }
 
@@ -463,6 +486,11 @@ data class AppUiState(
     val cronExecution: CronExecution? = null,
     val cronExecutionLoading: Boolean = false,
     val cronExecutionError: String? = null,
+    /** Task whose execution history is open, newest first. */
+    val cronHistoryTaskId: String? = null,
+    val cronHistory: List<CronExecution> = emptyList(),
+    val cronHistoryLoading: Boolean = false,
+    val cronHistoryError: String? = null,
     val pendingQuote: MessageQuote? = null,
     /** Server-owned /lucky collector for the visible session. */
     val luckyActive: Boolean = false,
@@ -6205,14 +6233,24 @@ class AppViewModel(
                 cronExecution = null,
                 cronExecutionLoading = true,
                 cronExecutionError = null,
+                // The notification opens one run, but the person should also see
+                // the task's other runs. Both come from the same executions call.
+                cronHistoryTaskId = task,
+                cronHistory = emptyList(),
+                cronHistoryLoading = true,
+                cronHistoryError = null,
             )
         }
         navigate(AppDestination.Cron)
         viewModelScope.launch {
             val result = container.api.cronExecutions(task)
-            val selected = result.getOrNull()?.executions?.firstOrNull { it.id == execution }
+            val executions = result.getOrNull()?.executions.orEmpty().sortedByDescending { it.scheduledAt }
+            val selected = executions.firstOrNull { it.id == execution }
             _ui.update {
+                if (it.cronHistoryTaskId != task) return@update it
                 it.copy(
+                    cronHistory = executions,
+                    cronHistoryLoading = false,
                     cronExecution = selected,
                     cronExecutionLoading = false,
                     cronExecutionError = when {
@@ -6223,6 +6261,51 @@ class AppViewModel(
                 )
             }
         }
+    }
+
+    /** Opens one task's execution history, newest first. */
+    fun openCronTaskHistory(taskId: String) {
+        val task = taskId.trim()
+        if (task.isBlank()) return
+        _ui.update {
+            it.copy(
+                cronHistoryTaskId = task,
+                cronHistory = emptyList(),
+                cronHistoryLoading = true,
+                cronHistoryError = null,
+                cronExecutionId = null,
+                cronExecution = null,
+                cronExecutionLoading = false,
+                cronExecutionError = null,
+            )
+        }
+        viewModelScope.launch { loadCronHistory(task) }
+    }
+
+    fun closeCronTaskHistory() {
+        _ui.update {
+            it.copy(
+                cronHistoryTaskId = null,
+                cronHistory = emptyList(),
+                cronHistoryLoading = false,
+                cronHistoryError = null,
+                cronExecutionId = null,
+                cronExecution = null,
+                cronExecutionLoading = false,
+                cronExecutionError = null,
+            )
+        }
+    }
+
+    fun refreshCronHistory() {
+        val task = _ui.value.cronHistoryTaskId ?: return
+        _ui.update { it.copy(cronHistoryLoading = true, cronHistoryError = null) }
+        viewModelScope.launch { loadCronHistory(task) }
+    }
+
+    private suspend fun loadCronHistory(taskId: String) {
+        val result = container.api.cronExecutions(taskId)
+        _ui.update { applyCronHistory(it, taskId, result) }
     }
 
     fun createCronJob(
