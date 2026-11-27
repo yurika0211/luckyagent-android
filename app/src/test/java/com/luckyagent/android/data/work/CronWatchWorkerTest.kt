@@ -71,6 +71,18 @@ class CronWatchWorkerTest {
         assertEquals(listOf("old"), acked)
     }
 
+    @Test
+    fun newestPendingKeepsOlderRowsUntouched() {
+        val newest = pending("new", "2026-11-27T09:02:00Z")
+        val chosen = newestPending(listOf(
+            newest,
+            pending("old", "2026-11-27T09:00:00Z"),
+            pending("tie-z", "2026-11-27T09:02:00Z"),
+        ))
+        assertEquals("tie-z", chosen?.execution?.id)
+        assertEquals(null, newestPending(emptyList()))
+    }
+
     private fun pending(id: String, scheduledAt: String): CronPendingItem = CronPendingItem(
         execution = CronExecution(
             id = id,

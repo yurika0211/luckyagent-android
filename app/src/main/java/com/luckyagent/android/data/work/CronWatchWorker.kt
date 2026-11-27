@@ -134,3 +134,14 @@ internal suspend fun drainCronDeliveries(
     }
     return CronDrainOutcome.COMPLETE
 }
+
+/**
+ * Newest row on one pending page. The foreground path shows this one and
+ * leaves older rows for the background worker. An empty page returns null.
+ */
+internal fun newestPending(items: List<CronPendingItem>): CronPendingItem? =
+    items.maxWithOrNull(
+        compareBy<CronPendingItem> {
+            runCatching { Instant.parse(it.execution.scheduledAt) }.getOrElse { Instant.MIN }
+        }.thenBy { it.execution.id },
+    )
