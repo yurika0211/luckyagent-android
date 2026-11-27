@@ -745,6 +745,37 @@ fun OpenUiChartDraft.withField(fieldId: String, value: String): OpenUiChartDraft
 fun OpenUiChartDraft.withPoint(index: Int, value: Float): OpenUiChartDraft =
     if (mode == "teaching") copy(point = index.coerceAtLeast(0) to value) else this
 
+/**
+ * What the chart screen shows while a version is in flight or has failed.
+ * [chart] stays the last accepted picture. [draft] keeps the values the user
+ * typed, including values the server rejected. [phase] is loading or error.
+ */
+data class OpenUiChartScreen(
+    val chart: OpenUiChartContract,
+    val draft: OpenUiChartDraft?,
+    val phase: String,
+    val message: String = "",
+) {
+    val canEdit: Boolean get() = chart.editable && phase != "loading"
+}
+
+/**
+ * Apply was sent. The picture does not change. The form stays so a failure
+ * can put the same values back.
+ */
+fun OpenUiChartScreen.loading(): OpenUiChartScreen = copy(phase = "loading", message = "")
+
+/**
+ * Validation or calculation failed. The last chart stays. The rejected draft
+ * stays open and the error text is readable.
+ */
+fun OpenUiChartScreen.failed(message: String): OpenUiChartScreen =
+    copy(phase = "error", message = message.ifBlank { "计算失败" })
+
+/** A new accepted version replaces the picture and closes the form. */
+fun OpenUiChartScreen.accepted(next: OpenUiChartContract): OpenUiChartScreen =
+    OpenUiChartScreen(chart = next, draft = null, phase = "complete")
+
 /** Wire action for Apply. Null when this draft is not a versioned chart. */
 fun OpenUiChartDraft.toAction(treeId: String, widgetId: String, actionId: String): OpenUiAction? {
     if (chartId.isBlank() || schemaVersion < 1 || dataVersion < 1) return null

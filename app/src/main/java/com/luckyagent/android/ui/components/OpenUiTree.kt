@@ -519,6 +519,8 @@ private fun OpenUiChart(
     var chartDraft by remember(node.id, contract?.dataVersion) {
         mutableStateOf<OpenUiChartDraft?>(null)
     }
+    var chartPhase by remember(node.id, contract?.dataVersion) { mutableStateOf("complete") }
+    var chartMessage by remember(node.id, contract?.dataVersion) { mutableStateOf("") }
     val unit = node.props.string("unit").orEmpty()
     val fullLabels = node.props.stringList("labels").ifEmpty { node.props.stringList("categories") }
     val pointCount = rawSeries.maxOfOrNull { it.values.size } ?: 0
@@ -568,7 +570,14 @@ private fun OpenUiChart(
             },
         ),
     ) {
-        chartDraft?.takeIf { contract != null && contract.fields.isNotEmpty() }?.let { draft ->
+        if (chartPhase == "loading" || (chartPhase == "error" && chartMessage.isNotBlank())) {
+            Text(
+                if (chartPhase == "loading") "正在计算" else chartMessage,
+                color = if (chartPhase == "error") ion.clayEmphasis else ion.text2,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        chartDraft?.takeIf { contract != null && contract.fields.isNotEmpty() && chartPhase != "loading" }?.let { draft ->
             ChartParameterDialog(
                 note = contract?.note.orEmpty(),
                 fields = contract?.fields.orEmpty(),
@@ -582,7 +591,14 @@ private fun OpenUiChart(
                         draft.applyValues(),
                         draft.toAction("", node.id, java.util.UUID.randomUUID().toString()),
                     )
-                    if (sent) chartDraft = null else onNotice("无法发给模型")
+                    if (sent) {
+                        chartPhase = "loading"
+                        chartMessage = ""
+                    } else {
+                        chartPhase = "error"
+                        chartMessage = "无法发给模型"
+                        onNotice("无法发给模型")
+                    }
                 },
             )
         }

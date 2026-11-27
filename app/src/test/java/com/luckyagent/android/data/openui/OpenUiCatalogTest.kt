@@ -413,6 +413,34 @@ class OpenUiCatalogTest {
     }
 
     @Test
+    fun chartFailureKeepsTheLastPictureAndTheRejectedDraft() {
+        val json = Json { ignoreUnknownKeys = true }
+        val accepted = json.parseToJsonElement(
+            """{"chart_id":"trend","schema_version":1,"data_version":4,"mode":"teaching","fields":[{"role":"x","type":"date","value":"day","options":["day","hour"]}]}""",
+        ).jsonObject
+        val contract = OpenUiNode(id = "chart", type = "Chart", props = accepted).chartContract()!!
+        val rejected = contract.draft().withField("x", "not-a-field")
+        val screen = OpenUiChartScreen(chart = contract, draft = rejected, phase = "complete")
+            .loading()
+            .failed("字段不匹配")
+        assertEquals(4L, screen.chart.dataVersion)
+        assertEquals("day", screen.chart.fields.single().value)
+        assertEquals("not-a-field", screen.draft?.fields?.get("x"))
+        assertEquals("error", screen.phase)
+        assertEquals("字段不匹配", screen.message)
+        assertTrue(screen.canEdit)
+        val next = json.parseToJsonElement(
+            """{"chart_id":"trend","schema_version":1,"data_version":5,"mode":"teaching","fields":[{"role":"x","type":"date","value":"hour","options":["day","hour"]}]}""",
+        ).jsonObject
+        val published = screen.accepted(OpenUiNode(id = "chart", type = "Chart", props = next).chartContract()!!)
+        assertEquals(5L, published.chart.dataVersion)
+        assertEquals("hour", published.chart.fields.single().value)
+        assertNull(published.draft)
+        assertEquals("complete", published.phase)
+        assertFalse(published.loading().canEdit)
+    }
+
+    @Test
     fun parseDeltaFromWireJson() {
         val json = Json { ignoreUnknownKeys = true }
         val el = json.parseToJsonElement(
