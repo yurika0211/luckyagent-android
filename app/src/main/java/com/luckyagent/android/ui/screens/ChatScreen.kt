@@ -2014,6 +2014,7 @@ private fun ChatConversation(
                                 onOpenUiNotice = vm::showSnackbar,
                                 onOpenUiChartApply = vm::sendOpenUiChartApply,
                                 openUiSelection = state.openUiSelection,
+                                chartServerError = state.openUiChartError,
                                 highlighted = item.key == activeHitId,
                                 growing = item.bubble.streaming,
                                 dragging = listState.isScrollInProgress && !followLatest,
@@ -2797,6 +2798,7 @@ internal fun BubbleRow(
     onOpenUiNotice: (String) -> Unit = {},
     onOpenUiChartApply: (treeId: String, widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean = { _, _, _, _ -> false },
     openUiSelection: Map<String, String> = emptyMap(),
+    chartServerError: String? = null,
     highlighted: Boolean = false,
     growing: Boolean = false,
     dragging: Boolean = false,
@@ -2924,6 +2926,7 @@ internal fun BubbleRow(
                                 onChartApply = { id, values, chart ->
                                     onOpenUiChartApply(tree.treeId, id, values, chart?.copy(treeId = tree.treeId, widgetId = id))
                                 },
+                                chartServerError = chartServerError,
                                 imageHeaders = imageHeaders,
                                 imageBaseUrl = imageBaseUrl,
                             )

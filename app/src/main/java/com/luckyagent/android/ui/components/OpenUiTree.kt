@@ -71,7 +71,11 @@ import com.luckyagent.android.data.openui.OpenUiAction
 import com.luckyagent.android.data.openui.canSendAction
 import com.luckyagent.android.data.openui.caption
 import com.luckyagent.android.data.openui.OpenUiChartDraft
+import com.luckyagent.android.data.openui.OpenUiChartScreen
 import com.luckyagent.android.data.openui.chartContract
+import com.luckyagent.android.data.openui.failed
+import com.luckyagent.android.data.openui.loading
+import com.luckyagent.android.data.openui.onServerFrame
 import com.luckyagent.android.data.openui.chartRange
 import com.luckyagent.android.data.openui.chartSeries
 import com.luckyagent.android.data.openui.draft
@@ -196,6 +200,7 @@ fun OpenUiTree(
     imageBaseUrl: String = "",
     onNotice: (String) -> Unit = {},
     onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean = { _, _, _ -> false },
+    chartServerError: String? = null,
 ) {
     if (tree.nodes.isEmpty()) return
     val ion = ionPalette()
@@ -233,6 +238,7 @@ fun OpenUiTree(
                         ion = ion,
                         onNotice = onNotice,
                         onChartApply = onChartApply,
+                        chartServerError = chartServerError,
                     )
                 }
                 if (actionsWaiting) {
@@ -281,11 +287,12 @@ private fun OpenUiNodeView(
     ion: IonPalette,
     onNotice: (String) -> Unit = {},
     onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean = { _, _, _ -> false },
+    chartServerError: String? = null,
 ) {
     when (node.type) {
         "Table" -> OpenUiTable(node, ion)
         "List" -> OpenUiList(node, ion)
-        "Chart" -> OpenUiChart(node, ion, onNotice, onChartApply)
+        "Chart" -> OpenUiChart(node, ion, onNotice, onChartApply, chartServerError)
         "Map" -> OpenUiMap(node, ion)
         "Citation" -> OpenUiCitation(node, ion)
         "Image" -> {
@@ -513,11 +520,27 @@ private fun OpenUiChart(
     ion: IonPalette,
     onNotice: (String) -> Unit,
     onChartApply: (widgetId: String, values: Map<String, String>, chart: OpenUiAction?) -> Boolean,
+    chartServerError: String? = null,
 ) {
     val rawSeries = node.chartSeries().filter { it.values.isNotEmpty() }
     val contract = node.chartContract()
     var chartDraft by remember(node.id, contract?.dataVersion) {
         mutableStateOf<OpenUiChartDraft?>(null)
+    }
+    var chartPhase by remember(node.id, contract?.dataVersion) { mutableStateOf("complete") }
+    var chartMessage by remember(node.id, contract?.dataVersion) { mutableStateOf("") }
+    val chartScreen = contract?.let { current ->
+        OpenUiChartScreen(
+            chart = current,
+            draft = chartDraft,
+            phase = chartPhase,
+            message = chartMessage,
+        ).onServerFrame(OpenUiDelta(treeId = "", state = "complete", nodes = listOf(node)), chartServerError)
+    }
+    if (chartScreen != null && (chartScreen.phase != chartPhase || chartScreen.message != chartMessage || chartScreen.draft != chartDraft)) {
+        chartPhase = chartScreen.phase
+        chartMessage = chartScreen.message
+        chartDraft = chartScreen.draft
     }
     val unit = node.props.string("unit").orEmpty()
     val fullLabels = node.props.stringList("labels").ifEmpty { node.props.stringList("categories") }
@@ -568,7 +591,14 @@ private fun OpenUiChart(
             },
         ),
     ) {
-        chartDraft?.takeIf { contract != null && contract.fields.isNotEmpty() }?.let { draft ->
+        if (chartPhase == "loading" || (chartPhase == "error" && chartMessage.isNotBlank())) {
+            Text(
+                if (chartPhase == "loading") "正在计算" else chartMessage,
+                color = if (chartPhase == "error") ion.clayEmphasis else ion.text2,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        chartDraft?.takeIf { contract != null && contract.fields.isNotEmpty() && chartPhase != "loading" }?.let { draft ->
             ChartParameterDialog(
                 note = contract?.note.orEmpty(),
                 fields = contract?.fields.orEmpty(),
@@ -582,7 +612,14 @@ private fun OpenUiChart(
                         draft.applyValues(),
                         draft.toAction("", node.id, java.util.UUID.randomUUID().toString()),
                     )
-                    if (sent) chartDraft = null else onNotice("无法发给模型")
+                    if (sent) {
+                        chartPhase = "loading"
+                        chartMessage = ""
+                    } else {
+                        chartPhase = "error"
+                        chartMessage = "无法发给模型"
+                        onNotice("无法发给模型")
+                    }
                 },
             )
         }

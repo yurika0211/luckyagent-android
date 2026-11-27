@@ -8,6 +8,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -410,6 +411,59 @@ class OpenUiCatalogTest {
         val noSource = json.parseToJsonElement("""{"mode":"data","schema_version":1,"data_version":1}""").jsonObject
         assertNull(OpenUiNode(id = "c", type = "Chart", props = noSource).chartContract())
         assertEquals("legacy", OpenUiNode(id = "old", type = "Chart").chartContract()?.chartId?.let { "legacy" })
+    }
+
+    @Test
+    fun chartFailureKeepsTheLastPictureAndTheRejectedDraft() {
+        val json = Json { ignoreUnknownKeys = true }
+        val accepted = json.parseToJsonElement(
+            """{"chart_id":"trend","schema_version":1,"data_version":4,"mode":"teaching","fields":[{"role":"x","type":"date","value":"day","options":["day","hour"]}]}""",
+        ).jsonObject
+        val contract = OpenUiNode(id = "chart", type = "Chart", props = accepted).chartContract()!!
+        val rejected = contract.draft().withField("x", "not-a-field")
+        val screen = OpenUiChartScreen(chart = contract, draft = rejected, phase = "complete")
+            .loading()
+            .failed("字段不匹配")
+        assertEquals(4L, screen.chart.dataVersion)
+        assertEquals("day", screen.chart.fields.single().value)
+        assertEquals("not-a-field", screen.draft?.fields?.get("x"))
+        assertEquals("error", screen.phase)
+        assertEquals("字段不匹配", screen.message)
+        assertTrue(screen.canEdit)
+        val next = json.parseToJsonElement(
+            """{"chart_id":"trend","schema_version":1,"data_version":5,"mode":"teaching","fields":[{"role":"x","type":"date","value":"hour","options":["day","hour"]}]}""",
+        ).jsonObject
+        val published = screen.accepted(OpenUiNode(id = "chart", type = "Chart", props = next).chartContract()!!)
+        assertEquals(5L, published.chart.dataVersion)
+        assertEquals("hour", published.chart.fields.single().value)
+        assertNull(published.draft)
+        assertEquals("complete", published.phase)
+        assertFalse(published.loading().canEdit)
+    }
+
+    @Test
+    fun serverFailureReopensTheFormOnTheLastChart() {
+        val json = Json { ignoreUnknownKeys = true }
+        val accepted = json.parseToJsonElement(
+            """{"chart_id":"trend","schema_version":1,"data_version":4,"mode":"teaching","fields":[{"role":"x","type":"date","value":"day","options":["day","hour"]}]}""",
+        ).jsonObject
+        val contract = OpenUiNode(id = "chart", type = "Chart", props = accepted).chartContract()!!
+        val typed = contract.draft().withField("x", "not-a-field")
+        val sameTree = OpenUiDelta(treeId = "t", state = "complete", nodes = listOf(OpenUiNode(id = "chart", type = "Chart", props = accepted)))
+        val waiting = OpenUiChartScreen(chart = contract, draft = typed, phase = "complete").loading()
+        val failed = waiting.onServerFrame(sameTree, "字段组合不匹配")
+        assertEquals("error", failed.phase)
+        assertEquals("字段组合不匹配", failed.message)
+        assertEquals(4L, failed.chart.dataVersion)
+        assertEquals("day", failed.chart.fields.single().value)
+        assertEquals("not-a-field", failed.draft?.fields?.get("x"))
+        assertTrue(failed.canEdit)
+        assertNotNull(failed.draft?.toAction("t", "chart", "again"))
+        val unrelated = waiting.onServerFrame(sameTree, null)
+        assertEquals("loading", unrelated.phase)
+        assertNull(chartApplyErrorFor("other-turn", "act-1", "字段组合不匹配"))
+        assertEquals("字段组合不匹配", chartApplyErrorFor("act-1", "act-1", "字段组合不匹配"))
+        assertEquals("字段组合不匹配", chartApplyErrorFor(null, "act-1", " 字段组合不匹配 "))
     }
 
     @Test
