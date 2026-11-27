@@ -104,6 +104,7 @@ import com.luckyagent.android.data.standalone.standaloneContextTokens
 import com.luckyagent.android.data.update.AvailableUpdate
 import com.luckyagent.android.data.work.AgentTaskWork
 import com.luckyagent.android.data.work.CronWatchWork
+import com.luckyagent.android.data.work.newestPending
 import com.luckyagent.android.BuildConfig
 import com.luckyagent.android.ui.util.MessageQuote
 import com.luckyagent.android.ui.util.TokenFormat
@@ -2647,9 +2648,72 @@ class AppViewModel(
         if (value) {
             ensureRuntimeWatch()
             startHostResourceWatch()
+            refreshForegroundCronPending()
         } else {
             stopRuntimeWatch()
             stopHostResourceWatch()
+        }
+    }
+
+    /**
+     * One pending check while a page is open. Shows the newest durable result
+     * and leaves the rest for the background worker. A failure stays quiet;
+     * the worker retries. This is not FCM and does not clear stored tasks.
+     */
+    private fun refreshForegroundCronPending() {
+        if (!container.settingsRepository.snapshot().notifyOnCron) return
+        if (isStandaloneConnection()) return
+        viewModelScope.launch {
+            val capability = container.notifications.cronNotificationCapability()
+            if (!capability.notificationsEnabled || !capability.channelEnabled) return@launch
+            val deviceId = container.appContext
+                .getSharedPreferences(com.luckyagent.android.data.work.CronWatchWorker.PREFS, android.content.Context.MODE_PRIVATE)
+                .getString(com.luckyagent.android.data.work.CronWatchWorker.KEY_DEVICE_ID, null)
+                ?: return@launch
+            val pending = container.api.pendingCronResults(deviceId, limit = 10).getOrNull() ?: return@launch
+            val item = newestPending(pending.items) ?: return@launch
+            val prefs = container.appContext.getSharedPreferences(
+                com.luckyagent.android.data.work.CronWatchWorker.PREFS,
+                android.content.Context.MODE_PRIVATE,
+            )
+            val posted = com.luckyagent.android.data.work.PostedCronNotifications.decode(
+                prefs.getString(com.luckyagent.android.data.work.CronWatchWorker.KEY_POSTED_EXECUTIONS, null),
+            )
+            // Already submitted on this device: retry the ACK only. Do not
+            // raise the in-app card or the system notification again.
+            if (posted.contains(item.execution.id)) {
+                container.api.ackCronDelivery(item.delivery.id, deviceId)
+                return@launch
+            }
+            val failed = item.execution.status.equals("failed", ignoreCase = true)
+            val name = item.task.name.ifBlank { item.task.id }
+            val detail = item.execution.error.ifBlank { item.execution.result }
+            val body = RuntimeNoticePolicy.cronBody(name, failed, detail)
+            val shown = container.notifications.notifyCron(
+                sessionId = "",
+                eventId = item.execution.id,
+                content = body,
+                failed = failed,
+                taskId = item.task.id,
+                executionId = item.execution.id,
+            )
+            if (!shown) return@launch
+            prefs.edit()
+                .putString(
+                    com.luckyagent.android.data.work.CronWatchWorker.KEY_POSTED_EXECUTIONS,
+                    posted.remember(item.execution.id).encoded(),
+                )
+                .apply()
+            container.api.ackCronDelivery(item.delivery.id, deviceId)
+            _ui.update {
+                it.copy(cronPopup = CronPopup(
+                    jobId = item.task.id,
+                    sessionId = "",
+                    title = RuntimeNoticePolicy.cronHeadline(name, failed),
+                    body = body,
+                    eventId = item.execution.id,
+                ))
+            }
         }
     }
 
